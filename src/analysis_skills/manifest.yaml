@@ -1,0 +1,6 @@
+skills:
+  - name: trends_over_time
+    version: 0.1.0
+    entrypoint: src.analysis_skills.trends_over_time:run
+    input_schema: schemas/skills_trends_input.yaml
+    output_schema: schemas/skills_trends_output.yaml
