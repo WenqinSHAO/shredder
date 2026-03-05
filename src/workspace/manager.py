@@ -47,11 +47,13 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
                         "openalex": {"enabled": True, "timeout_s": 8.0},
                         "crossref": {"enabled": True, "timeout_s": 8.0},
                         "semantic_scholar": {"enabled": True, "timeout_s": 8.0},
+                        "searxng": {"enabled": False, "timeout_s": 8.0, "base_url": ""},
                     },
                     "rate_limits": {
                         "openalex": 1.0,
                         "crossref": 1.0,
                         "semantic_scholar": 1.0,
+                        "searxng": 1.0,
                     },
                 },
             },

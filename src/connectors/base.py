@@ -8,6 +8,7 @@ class ConnectorConfig:
     enabled: bool = True
     rate_limit_per_sec: float = 1.0
     timeout_s: float = 8.0
+    base_url: str = ""
 
 
 class DiscoveryConnector:
