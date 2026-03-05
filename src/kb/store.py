@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import sqlite3
 from pathlib import Path
 
@@ -52,7 +53,7 @@ def init_kb() -> Path:
     return KB_PATH
 
 
-def upsert_paper(paper: dict, source: str = "unknown") -> None:
+def upsert_paper(paper: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
     with _connect() as conn:
         conn.execute(
@@ -82,9 +83,15 @@ def upsert_paper(paper: dict, source: str = "unknown") -> None:
                 now,
             ),
         )
+
+
+def add_provenance(entity_id: str, source: str, source_key: str = "", confidence: float = 0.5, raw_ref: dict | None = None) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps(raw_ref or {}, sort_keys=True)
+    with _connect() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO provenance (id, entity_type, entity_id, source, source_key, confidence, fetched_at, raw_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (f"{paper['id']}::{source}", "paper", paper["id"], source, paper.get("doi", ""), 0.5, now, "{}"),
+            (f"{entity_id}::{source}::{source_key}", "paper", entity_id, source, source_key, confidence, now, payload),
         )
 
 

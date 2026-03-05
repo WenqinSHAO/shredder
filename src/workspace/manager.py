@@ -41,6 +41,19 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
                 "year_min": 2020,
                 "year_max": datetime.now(timezone.utc).year,
                 "venues": ["SIGCOMM", "NSDI", "HPCA", "OSDI", "MLSys", "ASPLOS"],
+                "discovery": {
+                    "limit": 25,
+                    "connectors": {
+                        "openalex": {"enabled": True, "timeout_s": 8.0},
+                        "crossref": {"enabled": True, "timeout_s": 8.0},
+                        "semantic_scholar": {"enabled": True, "timeout_s": 8.0},
+                    },
+                    "rate_limits": {
+                        "openalex": 1.0,
+                        "crossref": 1.0,
+                        "semantic_scholar": 1.0,
+                    },
+                },
             },
         )
 

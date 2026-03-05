@@ -4,7 +4,7 @@ This repository provides an MVP scaffold for a local-first, agentic research pip
 
 ## What works in this iteration
 - Initialize a project workspace with editable YAML/Markdown specs.
-- Run discovery stub and produce TSV artifacts.
+- Run connector-based discovery and produce per-source/raw/dedup TSV artifacts with offline mock fallback.
 - Initialize shared KB (`kb/kb.sqlite`) with paper/author/provenance tables.
 - Parse a local PDF into normalized `sections.yaml` (stub parser).
 - Run extraction stub from `sections.yaml` + `schema.yaml` into per-paper YAML.
@@ -58,3 +58,6 @@ Endpoints:
 - `POST /projects/{project_id}/steps/{step}`
 - `GET /projects/{project_id}/artifacts`
 - `GET /healthz`
+
+
+See `docs/CLI_SMOKE_TEST.md` for a full smoke-test command sequence.

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-import csv
-
-from src.kb import init_kb, upsert_paper
+from src.kb import add_provenance, init_kb, upsert_paper
 from src.parsing.grobid_wrapper import parse_pdf_stub
 from src.parsing.normalize import write_sections_yaml
 from src.extraction.loader import load_schema
@@ -14,41 +12,37 @@ from src.extraction.writer import write_extraction
 from src.render.generator import render_reports
 from src.utils.paths import project_dir
 from src.utils.yamlx import load
+from src.orchestrator.discovery import run_discovery_aggregation
 
 
 def run_discovery(project_id: str) -> Path:
     pdir = project_dir(project_id)
     pmeta = load(pdir / "project.yaml")
-    theme = pmeta.get("theme", "unknown")
-    raw_path = pdir / "artifacts" / "discovery" / "raw.tsv"
-    dedup_path = pdir / "artifacts" / "discovery" / "deduped.tsv"
-    rows = [
-        {"paper_id": "doi:10.0000/example1", "title": f"{theme} Systems Paper", "venue": "NSDI", "year": "2024", "doi": "10.0000/example1"},
-        {"paper_id": "doi:10.0000/example1", "title": f"{theme} Systems Paper", "venue": "NSDI", "year": "2024", "doi": "10.0000/example1"},
-        {"paper_id": "doi:10.0000/example2", "title": f"{theme} ML Systems Paper", "venue": "MLSys", "year": "2023", "doi": "10.0000/example2"},
-    ]
-    raw_path.parent.mkdir(parents=True, exist_ok=True)
-    with raw_path.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()), delimiter="\t")
-        w.writeheader()
-        w.writerows(rows)
-
-    dedup = {r["paper_id"]: r for r in rows}
-    with dedup_path.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()), delimiter="\t")
-        w.writeheader()
-        w.writerows(dedup.values())
+    raw_rows, dedup_rows = run_discovery_aggregation(pdir, pmeta)
 
     init_kb()
-    for row in dedup.values():
+    for row in dedup_rows:
         upsert_paper({
             "id": row["paper_id"],
             "title": row["title"],
             "venue": row["venue"],
-            "year": int(row["year"]),
-            "doi": row["doi"],
-        }, source="mock_discovery")
-    return dedup_path
+            "year": int(row["year"]) if str(row.get("year", "")).isdigit() else None,
+            "doi": row.get("doi") or None,
+            "html_url": row.get("url") or None,
+        })
+
+    for row in raw_rows:
+        paper_id = row.get("paper_id")
+        if not paper_id:
+            continue
+        add_provenance(
+            entity_id=paper_id,
+            source=row.get("source", "unknown"),
+            source_key=row.get("source_id") or row.get("doi") or row.get("arxiv_id") or "",
+            raw_ref={"title": row.get("title"), "year": row.get("year")},
+        )
+
+    return pdir / "artifacts" / "discovery" / "deduped.tsv"
 
 
 def run_parsing(project_id: str, paper_id: str, pdf_path: str) -> Path:
