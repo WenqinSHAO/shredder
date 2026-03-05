@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
 from difflib import SequenceMatcher
 from pathlib import Path
 
 from src.connectors.base import ConnectorConfig
 from src.connectors.crossref import CrossrefConnector
 from src.connectors.openalex import OpenAlexConnector
+from src.connectors.searxng import SearxngConnector
 from src.connectors.semantic_scholar import SemanticScholarConnector
+from src.connectors.http import normalize_arxiv_id, normalize_doi
 
 FIELDS = ["source", "source_id", "paper_id", "title", "venue", "year", "doi", "arxiv_id", "url"]
 
@@ -16,57 +20,136 @@ def _norm_title(value: str) -> str:
     return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in (value or "")).split())
 
 
-def _stable_id(row: dict) -> str:
-    if row.get("doi"):
-        return f"doi:{row['doi']}"
-    if row.get("arxiv_id"):
-        return f"arxiv:{row['arxiv_id']}"
-    return f"title:{_norm_title(row.get('title', ''))}:{row.get('year', '')}"
+def raw_row_key(row: dict) -> str:
+    source = (row.get("source") or "unknown").strip().lower()
+    source_id = (row.get("source_id") or "").strip()
+    if source_id:
+        return f"{source}:{source_id}"
+    fallback_payload = {
+        "title": row.get("title", ""),
+        "year": str(row.get("year", "")),
+        "doi": normalize_doi(row.get("doi", "")),
+        "arxiv_id": normalize_arxiv_id(row.get("arxiv_id", "")),
+        "url": row.get("url", ""),
+    }
+    digest = hashlib.sha1(json.dumps(fallback_payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return f"{source}:fallback:{digest}"
 
 
-def deduplicate_candidates(rows: list[dict]) -> list[dict]:
-    deduped: list[dict] = []
-    for row in rows:
-        row = dict(row)
-        doi = (row.get("doi") or "").strip().lower()
-        arxiv = (row.get("arxiv_id") or "").strip().lower()
+def _stable_id(doi: str, arxiv_id: str, title: str, year: str) -> str:
+    if doi:
+        return f"doi:{doi}"
+    if arxiv_id:
+        return f"arxiv:{arxiv_id}"
+    return f"title:{title}:{year}"
+
+
+def deduplicate_candidates(rows: list[dict]) -> tuple[list[dict], dict[str, str]]:
+    prepared = []
+    for idx, row in enumerate(rows):
         title = _norm_title(row.get("title", ""))
         year = str(row.get("year", ""))
+        prepared.append(
+            {
+                "idx": idx,
+                "row": dict(row),
+                "doi": normalize_doi(row.get("doi", "")),
+                "arxiv": normalize_arxiv_id(row.get("arxiv_id", "")),
+                "title": title,
+                "year": year,
+            }
+        )
 
-        found = None
-        for idx, existing in enumerate(deduped):
-            existing_title = _norm_title(existing.get("title", ""))
-            if doi and doi == (existing.get("doi") or "").strip().lower():
-                found = idx
-                break
-            if not doi and arxiv and arxiv == (existing.get("arxiv_id") or "").strip().lower():
-                found = idx
-                break
-            if not doi and not arxiv:
-                same_year = year and year == str(existing.get("year", ""))
-                similar = SequenceMatcher(None, title, existing_title).ratio() >= 0.94
-                if same_year and similar:
-                    found = idx
-                    break
+    parent = list(range(len(prepared)))
 
-        if found is None:
-            row["paper_id"] = _stable_id(row)
-            deduped.append(row)
-            continue
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
 
-        existing = deduped[found]
-        for key in ("doi", "arxiv_id", "url", "venue"):
-            if not existing.get(key) and row.get(key):
-                existing[key] = row[key]
-        if len(row.get("title", "")) > len(existing.get("title", "")):
-            existing["title"] = row["title"]
-        if row.get("doi"):
-            existing["paper_id"] = f"doi:{row['doi']}"
-        elif row.get("arxiv_id") and not existing.get("doi"):
-            existing["paper_id"] = f"arxiv:{row['arxiv_id']}"
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        if ra < rb:
+            parent[rb] = ra
+        else:
+            parent[ra] = rb
+
+    doi_owner: dict[str, int] = {}
+    arxiv_owner: dict[str, int] = {}
+    for item in prepared:
+        idx = item["idx"]
+        if item["doi"]:
+            prev = doi_owner.get(item["doi"])
+            if prev is not None:
+                union(idx, prev)
+            doi_owner[item["doi"]] = idx
+        if item["arxiv"]:
+            prev = arxiv_owner.get(item["arxiv"])
+            if prev is not None:
+                union(idx, prev)
+            arxiv_owner[item["arxiv"]] = idx
+
+    for i in range(len(prepared)):
+        for j in range(i + 1, len(prepared)):
+            a = prepared[i]
+            b = prepared[j]
+            if not a["title"] or not b["title"]:
+                continue
+            if not a["year"] or a["year"] != b["year"]:
+                continue
+            if SequenceMatcher(None, a["title"], b["title"]).ratio() >= 0.94:
+                union(a["idx"], b["idx"])
+
+    clusters: dict[int, list[dict]] = {}
+    for item in prepared:
+        clusters.setdefault(find(item["idx"]), []).append(item)
+
+    deduped: list[dict] = []
+    raw_to_canonical: dict[str, str] = {}
+
+    for root in sorted(clusters):
+        members = sorted(clusters[root], key=lambda m: raw_row_key(m["row"]))
+        dois = sorted({m["doi"] for m in members if m["doi"]})
+        arxivs = sorted({m["arxiv"] for m in members if m["arxiv"]})
+        canonical_doi = dois[0] if dois else ""
+        canonical_arxiv = arxivs[0] if arxivs else ""
+
+        best_title = ""
+        for m in members:
+            candidate = m["row"].get("title", "")
+            if len(candidate) > len(best_title) or (len(candidate) == len(best_title) and candidate < best_title):
+                best_title = candidate
+        canonical_year = ""
+        for m in members:
+            year = m["year"]
+            if year and (not canonical_year or year < canonical_year):
+                canonical_year = year
+
+        canonical_id = _stable_id(canonical_doi, canonical_arxiv, _norm_title(best_title), canonical_year)
+
+        merged = {k: "" for k in FIELDS}
+        merged.update({
+            "paper_id": canonical_id,
+            "source": members[0]["row"].get("source", ""),
+            "source_id": members[0]["row"].get("source_id", ""),
+            "title": best_title,
+            "year": canonical_year,
+            "doi": canonical_doi,
+            "arxiv_id": canonical_arxiv,
+        })
+        for field in ("venue", "url"):
+            values = sorted({(m["row"].get(field) or "") for m in members if m["row"].get(field)})
+            merged[field] = values[0] if values else ""
+
+        deduped.append(merged)
+        for m in members:
+            raw_to_canonical[raw_row_key(m["row"])] = canonical_id
 
     deduped.sort(key=lambda r: (r.get("paper_id", ""), r.get("source", "")))
-    return deduped
+    return deduped, raw_to_canonical
 
 
 def _write_tsv(path: Path, rows: list[dict]) -> None:
@@ -105,7 +188,7 @@ def mock_rows(theme: str) -> list[dict]:
     ]
 
 
-def run_discovery_aggregation(pdir: Path, pmeta: dict) -> tuple[list[dict], list[dict]]:
+def run_discovery_aggregation(pdir: Path, pmeta: dict) -> tuple[list[dict], list[dict], dict[str, str]]:
     discovery_cfg = pmeta.get("discovery", {})
     connectors_cfg = discovery_cfg.get("connectors", {})
     rate_limits = discovery_cfg.get("rate_limits", {})
@@ -120,6 +203,7 @@ def run_discovery_aggregation(pdir: Path, pmeta: dict) -> tuple[list[dict], list
         ("openalex", OpenAlexConnector),
         ("crossref", CrossrefConnector),
         ("semantic_scholar", SemanticScholarConnector),
+        ("searxng", SearxngConnector),
     ]
 
     all_rows: list[dict] = []
@@ -133,8 +217,11 @@ def run_discovery_aggregation(pdir: Path, pmeta: dict) -> tuple[list[dict], list
             enabled=True,
             rate_limit_per_sec=float(rate_limits.get(name, settings.get("rate_limit_per_sec", 1.0))),
             timeout_s=float(settings.get("timeout_s", 8.0)),
+            base_url=str(settings.get("base_url", "")),
         )
         connector = klass(cfg)
+        if name == "searxng" and not connector.has_endpoint():
+            continue
         try:
             rows = connector.search(theme, venues, year_min, year_max, limit)
         except Exception:
@@ -150,12 +237,17 @@ def run_discovery_aggregation(pdir: Path, pmeta: dict) -> tuple[list[dict], list
         _write_tsv(pdir / "artifacts" / "discovery" / "raw_mock.tsv", all_rows)
 
     for row in all_rows:
-        row["paper_id"] = _stable_id(row)
+        row["paper_id"] = _stable_id(
+            normalize_doi(row.get("doi", "")),
+            normalize_arxiv_id(row.get("arxiv_id", "")),
+            _norm_title(row.get("title", "")),
+            str(row.get("year", "")),
+        )
 
     merged_path = pdir / "artifacts" / "discovery" / "raw.tsv"
     _write_tsv(merged_path, all_rows)
 
-    deduped = deduplicate_candidates(all_rows)
+    deduped, raw_to_canonical = deduplicate_candidates(all_rows)
     dedup_path = pdir / "artifacts" / "discovery" / "deduped.tsv"
     _write_tsv(dedup_path, deduped)
-    return all_rows, deduped
+    return all_rows, deduped, raw_to_canonical

@@ -12,13 +12,13 @@ from src.extraction.writer import write_extraction
 from src.render.generator import render_reports
 from src.utils.paths import project_dir
 from src.utils.yamlx import load
-from src.orchestrator.discovery import run_discovery_aggregation
+from src.orchestrator.discovery import raw_row_key, run_discovery_aggregation
 
 
 def run_discovery(project_id: str) -> Path:
     pdir = project_dir(project_id)
     pmeta = load(pdir / "project.yaml")
-    raw_rows, dedup_rows = run_discovery_aggregation(pdir, pmeta)
+    raw_rows, dedup_rows, raw_to_canonical = run_discovery_aggregation(pdir, pmeta)
 
     init_kb()
     for row in dedup_rows:
@@ -32,13 +32,16 @@ def run_discovery(project_id: str) -> Path:
         })
 
     for row in raw_rows:
-        paper_id = row.get("paper_id")
+        source = row.get("source", "unknown")
+        source_id = row.get("source_id") or ""
+        row_key = f"{source.strip().lower()}:{source_id.strip()}" if source_id else raw_row_key(row)
+        paper_id = raw_to_canonical.get(row_key)
         if not paper_id:
             continue
         add_provenance(
             entity_id=paper_id,
-            source=row.get("source", "unknown"),
-            source_key=row.get("source_id") or row.get("doi") or row.get("arxiv_id") or "",
+            source=source,
+            source_key=source_id or row.get("doi") or row.get("arxiv_id") or row_key,
             raw_ref={"title": row.get("title"), "year": row.get("year")},
         )
 
