@@ -18,6 +18,23 @@ This repository provides an MVP scaffold for a local-first, agentic research pip
 - `examples/`: sample project and extraction schema
 - `docker/`: optional compose for GROBID with host bind mounts
 
+## Bootstrap / dependencies
+
+Create a virtual environment and install project dependencies (including **PyYAML**, used for all YAML artifact I/O):
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -e .
+```
+
+If YAML commands fail with a PyYAML dependency error, install it explicitly:
+
+```bash
+pip install pyyaml
+```
+
 ## Quickstart
 
 ```bash
