@@ -1,0 +1,5 @@
+artifact_type: extraction
+schema_version: 0.1.0
+required:
+  - meta
+  - data

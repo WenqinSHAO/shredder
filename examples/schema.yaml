@@ -1,0 +1,7 @@
+name: default_extraction
+version: 0.1.0
+fields:
+  - problem_statement
+  - method
+  - key_result
+  - limitations
