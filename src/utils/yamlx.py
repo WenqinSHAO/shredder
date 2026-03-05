@@ -1,100 +1,50 @@
 from __future__ import annotations
 
+from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
+from typing import Any
 
 
-def _parse_scalar(value: str):
-    value = value.strip()
-    if value.startswith('"') and value.endswith('"'):
-        return value[1:-1]
-    if value.startswith("'") and value.endswith("'"):
-        return value[1:-1]
-    if value.isdigit():
-        return int(value)
-    if value.lower() in {"true", "false"}:
-        return value.lower() == "true"
-    return value
+class YamlDependencyError(RuntimeError):
+    """Raised when PyYAML is not available."""
 
 
-def loads(text: str):
-    lines = [ln.rstrip("\n") for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    root = {}
-    stack = [(-1, root)]
+def _require_yaml_module():
+    if find_spec("yaml") is None:
+        raise YamlDependencyError(
+            "PyYAML is required for YAML read/write operations. "
+            "Install dependencies with `pip install -e .` or `pip install pyyaml`."
+        )
 
-    for ln in lines:
-        indent = len(ln) - len(ln.lstrip(" "))
-        stripped = ln.strip()
-
-        while stack and indent <= stack[-1][0]:
-            stack.pop()
-        parent = stack[-1][1]
-
-        if stripped.startswith("- "):
-            item = stripped[2:]
-            if isinstance(parent, list):
-                parent.append(_parse_scalar(item))
-            continue
-
-        if ":" not in stripped:
-            continue
-        key, rest = stripped.split(":", 1)
-        key, rest = key.strip(), rest.strip()
-
-        if rest == "":
-            # decide list vs dict by peeking next line
-            container = {}
-            # heuristic: keys ending with 's' often lists in our files, plus known key
-            if key in {"fields", "sections", "venues", "authors", "affiliations", "sources", "skills"}:
-                container = []
-            if isinstance(parent, dict):
-                parent[key] = container
-            elif isinstance(parent, list):
-                parent.append({key: container})
-                container = parent[-1][key]
-            stack.append((indent, container))
-        else:
-            val = _parse_scalar(rest)
-            if isinstance(parent, dict):
-                parent[key] = val
-            elif isinstance(parent, list):
-                parent.append({key: val})
-    return root
+    try:
+        return import_module("yaml")
+    except ModuleNotFoundError as exc:
+        raise YamlDependencyError(
+            "PyYAML is required for YAML read/write operations. "
+            "Install dependencies with `pip install -e .` or `pip install pyyaml`."
+        ) from exc
 
 
-def load(path: Path):
+def loads(text: str) -> Any:
+    yaml = _require_yaml_module()
+    data = yaml.safe_load(text)
+    return {} if data is None else data
+
+
+def load(path: Path) -> Any:
     return loads(path.read_text(encoding="utf-8"))
 
 
-def _dump_scalar(v):
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, (int, float)):
-        return str(v)
-    s = str(v)
-    if any(ch in s for ch in [":", "#", "[", "]"]):
-        return f'"{s}"'
-    return s
+def dumps(data: Any) -> str:
+    yaml = _require_yaml_module()
+    return yaml.safe_dump(
+        data,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+    ).rstrip()
 
 
-def dumps(data, indent: int = 0) -> str:
-    lines = []
-    sp = " " * indent
-    if isinstance(data, dict):
-        for k, v in data.items():
-            if isinstance(v, (dict, list)):
-                lines.append(f"{sp}{k}:")
-                lines.append(dumps(v, indent + 2))
-            else:
-                lines.append(f"{sp}{k}: {_dump_scalar(v)}")
-    elif isinstance(data, list):
-        for item in data:
-            if isinstance(item, (dict, list)):
-                lines.append(f"{sp}-")
-                lines.append(dumps(item, indent + 2))
-            else:
-                lines.append(f"{sp}- {_dump_scalar(item)}")
-    return "\n".join(lines)
-
-
-def dump_to_path(path: Path, data) -> None:
+def dump_to_path(path: Path, data: Any) -> None:
     path.write_text(dumps(data) + "\n", encoding="utf-8")

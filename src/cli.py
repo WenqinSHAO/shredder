@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 
 from src.orchestrator.runner import run_step
+from src.utils.yamlx import YamlDependencyError
 
 
 def main() -> None:
@@ -23,20 +24,23 @@ def main() -> None:
     p_render.add_argument("project_id")
 
     args = parser.parse_args()
-    if args.cmd == "init":
-        result = run_step(args.project_id, "init", theme=args.theme or None)
-        print(f"Initialized project at: {result}")
-    elif args.cmd == "run-step":
-        kwargs = {}
-        if args.paper_id:
-            kwargs["paper_id"] = args.paper_id
-        if args.pdf:
-            kwargs["pdf_path"] = args.pdf
-        result = run_step(args.project_id, args.step, **kwargs)
-        print(f"Step {args.step} complete: {result}")
-    elif args.cmd == "render":
-        result = run_step(args.project_id, "render")
-        print(f"Rendered outputs: {result}")
+    try:
+        if args.cmd == "init":
+            result = run_step(args.project_id, "init", theme=args.theme or None)
+            print(f"Initialized project at: {result}")
+        elif args.cmd == "run-step":
+            kwargs = {}
+            if args.paper_id:
+                kwargs["paper_id"] = args.paper_id
+            if args.pdf:
+                kwargs["pdf_path"] = args.pdf
+            result = run_step(args.project_id, args.step, **kwargs)
+            print(f"Step {args.step} complete: {result}")
+        elif args.cmd == "render":
+            result = run_step(args.project_id, "render")
+            print(f"Rendered outputs: {result}")
+    except YamlDependencyError as exc:
+        raise SystemExit(f"YAML dependency error: {exc}") from exc
 
 
 if __name__ == "__main__":
