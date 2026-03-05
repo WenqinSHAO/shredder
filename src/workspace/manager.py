@@ -21,6 +21,7 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
     dirs = [
         base / "specs",
         base / "artifacts" / "discovery",
+        base / "artifacts" / "retrieval",
         base / "artifacts" / "parsing",
         base / "artifacts" / "extraction",
         base / "artifacts" / "analysis",
@@ -54,6 +55,17 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
                         "crossref": 1.0,
                         "semantic_scholar": 1.0,
                         "searxng": 1.0,
+                    },
+                },
+                "retrieval": {
+                    "open_enabled": False,
+                    "open_top_n": 5,
+                    "deterministic": {"ambiguity_delta": 0.05},
+                    "adapters": {
+                        "habanero": {"enabled": True},
+                        "arxiv": {"enabled": True},
+                        "pyalex": {"enabled": True},
+                        "semanticscholar": {"enabled": True},
                     },
                 },
             },

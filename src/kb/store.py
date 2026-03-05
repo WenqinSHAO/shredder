@@ -38,6 +38,26 @@ def init_kb() -> Path:
                 created_at TEXT,
                 updated_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS orgs (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                ror TEXT UNIQUE,
+                country TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS paper_authors (
+                paper_id TEXT,
+                author_id TEXT,
+                position INTEGER,
+                PRIMARY KEY(paper_id, author_id)
+            );
+            CREATE TABLE IF NOT EXISTS author_orgs (
+                author_id TEXT,
+                org_id TEXT,
+                role TEXT,
+                PRIMARY KEY(author_id, org_id)
+            );
             CREATE TABLE IF NOT EXISTS provenance (
                 id TEXT PRIMARY KEY,
                 entity_type TEXT,
@@ -85,13 +105,69 @@ def upsert_paper(paper: dict) -> None:
         )
 
 
-def add_provenance(entity_id: str, source: str, source_key: str = "", confidence: float = 0.5, raw_ref: dict | None = None) -> None:
+def upsert_author(author: dict) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO authors (id, name, orcid, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              name=excluded.name,
+              orcid=excluded.orcid,
+              updated_at=excluded.updated_at
+            """,
+            (author["id"], author.get("name"), author.get("orcid"), now, now),
+        )
+
+
+def upsert_org(org: dict) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO orgs (id, name, ror, country, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              name=excluded.name,
+              ror=excluded.ror,
+              country=excluded.country,
+              updated_at=excluded.updated_at
+            """,
+            (org["id"], org.get("name"), org.get("ror"), org.get("country"), now, now),
+        )
+
+
+def upsert_paper_author(paper_id: str, author_id: str, position: int | None = None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO paper_authors (paper_id, author_id, position) VALUES (?, ?, ?)",
+            (paper_id, author_id, position),
+        )
+
+
+def upsert_author_org(author_id: str, org_id: str, role: str = "") -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO author_orgs (author_id, org_id, role) VALUES (?, ?, ?)",
+            (author_id, org_id, role),
+        )
+
+
+def add_provenance(
+    entity_id: str,
+    source: str,
+    source_key: str = "",
+    confidence: float = 0.5,
+    raw_ref: dict | None = None,
+    entity_type: str = "paper",
+) -> None:
     now = datetime.now(timezone.utc).isoformat()
     payload = json.dumps(raw_ref or {}, sort_keys=True)
     with _connect() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO provenance (id, entity_type, entity_id, source, source_key, confidence, fetched_at, raw_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (f"{entity_id}::{source}::{source_key}", "paper", entity_id, source, source_key, confidence, now, payload),
+            (f"{entity_type}::{entity_id}::{source}::{source_key}", entity_type, entity_id, source, source_key, confidence, now, payload),
         )
 
 
@@ -101,3 +177,39 @@ def search_papers(query: str) -> list[dict]:
             "SELECT id, title, venue, year, doi FROM papers WHERE title LIKE ? ORDER BY year DESC", (f"%{query}%",)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_paper_with_authors(paper_id: str) -> dict:
+    with _connect() as conn:
+        paper = conn.execute("SELECT id, title, venue, year, doi FROM papers WHERE id=?", (paper_id,)).fetchone()
+        if not paper:
+            return {}
+        authors = conn.execute(
+            """
+            SELECT a.id, a.name, a.orcid, pa.position
+            FROM paper_authors pa
+            JOIN authors a ON a.id = pa.author_id
+            WHERE pa.paper_id = ?
+            ORDER BY pa.position ASC, a.name ASC
+            """,
+            (paper_id,),
+        ).fetchall()
+    return {"paper": dict(paper), "authors": [dict(r) for r in authors]}
+
+
+def get_author_profile(author_id: str) -> dict:
+    with _connect() as conn:
+        author = conn.execute("SELECT id, name, orcid FROM authors WHERE id=?", (author_id,)).fetchone()
+        if not author:
+            return {}
+        orgs = conn.execute(
+            """
+            SELECT o.id, o.name, o.ror, o.country, ao.role
+            FROM author_orgs ao
+            JOIN orgs o ON o.id = ao.org_id
+            WHERE ao.author_id = ?
+            ORDER BY o.name ASC
+            """,
+            (author_id,),
+        ).fetchall()
+    return {"author": dict(author), "orgs": [dict(r) for r in orgs]}

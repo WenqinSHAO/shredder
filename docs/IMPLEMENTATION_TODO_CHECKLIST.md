@@ -2,107 +2,173 @@
 
 Last updated: 2026-03-05
 
-## 1) Current Progress Snapshot
+## 0) Progress Bar
 
-- Validation: `PYTHONPATH=. python3 -m unittest discover -s tests -q` -> `Ran 16 tests ... OK`.
-- M0 foundations are implemented and runnable:
-  - CLI flow: `init -> discovery -> parsing -> extraction -> render`
-  - FastAPI skeleton endpoints
-  - Workspace scaffolding + shared SQLite KB bootstrap
-- M1 discovery is mostly implemented:
-  - OpenAlex/Crossref/Semantic Scholar connectors
-  - SearxNG connector wiring + config toggle
-  - Dedup with canonical precedence and order-invariance tests
-  - Canonical provenance mapping tests
-- M2+ remains mostly stub-level:
-  - Parsing/extraction outputs are still minimal and not strongly schema-validated
-  - Analysis skills/rendering are basic
-  - KB schema/migrations are incomplete versus design
+- Overall retrieval-first program: `65%` (`███████░░░`)
+- Track A deterministic retrieval: `80%` (`████████░░`)
+- Track B open-ended retrieval: `55%` (`██████░░░░`)
+- Deferred backlog (parsing/extraction/rendering): `10%` (`█░░░░░░░░░`)
 
-## 2) Milestone Status
+## 1) Replanned Priority
 
-### M0 (MVP skeleton)
-- DONE: Project/workspace bootstrap (`src/workspace/manager.py`)
-- DONE: KB bootstrap and paper/provenance writes (`src/kb/store.py`, `src/orchestrator/steps.py`)
-- DONE: CLI + API skeleton (`src/cli.py`, `src/app.py`)
+Primary objective is now retrieval reliability and completeness:
 
-### M1 (metadata + parsing baseline)
-- DONE: Real discovery connectors (`src/connectors/*.py`)
-- DONE: Discovery aggregation + per-source/raw/dedup TSV outputs
-- DONE: Deterministic dedup + canonical provenance mapping tests
-- PARTIAL: Retry/backoff is implemented in HTTP adapter, but not yet configured/passed by connectors
-- TODO: Parsing is still stub-only (no real GROBID integration path yet)
+1. Deterministic retrieval first:
+   - Given a paper title or arXiv URL, retrieve canonical paper metadata plus full author metadata.
+   - Persist hardened records to shared KB with provenance.
+2. Open-ended retrieval second:
+   - Given a user prompt, generate and persist an intermediate candidate-paper list.
+   - Then pass candidates through deterministic retrieval pipeline.
 
-### M2 (schema-driven extraction)
-- TODO: Formal schema validation for sections/extraction artifacts
-- TODO: Structured sections model (section objects, page spans, offsets) instead of pipe-delimited strings
-- TODO: Field-level extraction confidence/status and stronger verifier behavior
+All other work (parsing/extraction/rendering) is temporarily lower priority.
 
-### M3 (analysis + rendering)
-- PARTIAL: One skill exists (`trends_over_time`) with minimal registry
-- TODO: Integrate skills into pipeline step execution and artifact logging
-- TODO: Rich report/slides templates with evidence tables and charts
+## 2) Current State Baseline
 
-### M4 (stabilization)
-- TODO: DB migrations + schema versioning/migrators
-- TODO: Caching/provenance audit hardening
-- TODO: Packaging/release/test hardening (pytest in dev env, CI command parity)
+- Discovery connectors exist: OpenAlex, Crossref, Semantic Scholar, SearxNG.
+- Dedup + canonical provenance mapping is present for discovery rows.
+- KB now hardens paper/author/org graph + provenance.
+- Deterministic and open retrieval entrypoints are implemented with retrieval artifacts.
+- Validation in current environment: `PYTHONPATH=. python3 -m unittest discover -s tests -q` passed (21 tests).
 
-## 3) Detailed Follow-up TODO (Prioritized)
+## 3) Reuse Strategy
 
-## P0 - Correctness / reliability
+| Component | Decision | Current integration status |
+|---|---|---|
+| `pyalex` | Adopt | Adapter added (`src/retrieval/adapters.py`) |
+| `semanticscholar` | Adopt | Adapter added (`src/retrieval/adapters.py`) |
+| `habanero` | Adopt | Adapter added (`src/retrieval/adapters.py`) |
+| `arxiv.py` | Adopt | Adapter added (`src/retrieval/adapters.py`) |
+| `openalex-official` | Adapt patterns only | deferred (checkpoint/resume tuning) |
+| `paper-qa` | Adapt patterns only | deferred (planner sophistication) |
 
-- [ ] Wire retry policy into all network connectors.
-  - Add discovery config for retry policy (`max_attempts`, backoff, jitter, retry statuses).
-  - Pass `retry_policy` from connector calls to `get_json(...)`.
-  - Acceptance: transient failures are retried during real connector runs.
+## 4) Track A - Deterministic Retrieval (Do First)
 
-- [ ] Add connector integration tests for retry behavior.
-  - Acceptance: tests prove retry + fail-fast behavior through connector layer, not only `http.py` unit tests.
+Goal: deterministic input -> deterministic paper+author KB records.
 
-- [ ] Tighten provenance consistency checks in discovery runs.
-  - Acceptance: integration test validates every discovery provenance `entity_id` exists in `papers` for that run.
+## A0 - Retrieval contract and CLI/API surface
 
-## P1 - Close M1/M2 contract gaps
+- [x] Define deterministic retrieval input contract:
+  - accepted inputs: exact/near-exact paper title, DOI, arXiv URL/arXiv id.
+  - normalized internal key output: canonical `paper_id` (`doi:` > `arxiv:` > stable title-year key).
+- [x] Add explicit command/API entrypoint:
+  - CLI: `retrieve-paper <project> --title/--doi/--arxiv-url/--arxiv-id`
+  - API: `POST /projects/{id}/retrieve/paper`
+- [x] Artifact contract for deterministic runs:
+  - `artifacts/retrieval/deterministic_request.yaml`
+  - `artifacts/retrieval/deterministic_result.yaml`
+  - `artifacts/retrieval/deterministic_sources.tsv`
+- Acceptance:
+  - same input resolves to same canonical paper ID across reruns.
+  - failure modes are explicit and actionable.
 
-- [ ] Replace pipe-delimited sections representation with structured YAML.
-  - Target fields: `section_id`, `title`, `text`, `page_span`, `source_offsets`.
-  - Acceptance: extraction reads structured sections without manual split logic.
+## A1 - Deterministic paper resolution logic
 
-- [ ] Implement schema validation against `schemas/artifact_sections.yaml` and `schemas/artifact_extraction.yaml`.
-  - Add explicit validation errors to `artifacts/errors/*.md`.
-  - Acceptance: invalid artifacts fail with clear user-visible error files.
+- [x] Implement resolver strategy with strict precedence:
+  1) DOI lookup
+  2) arXiv lookup
+  3) title-year fuzzy fallback
+- [x] Add connector-specific fetch-by-id helpers:
+  - `habanero`, `arxiv.py`, `pyalex`, `semanticscholar` adapters.
+- [x] Add conflict resolution rules for paper fields:
+  - deterministic source precedence and field-level confidence/provenance.
+- [x] Persist source snapshots in deterministic source TSV artifact.
+- Acceptance:
+  - arXiv URL input returns one canonical paper record.
+  - known title input returns one canonical paper record (or deterministic no-match).
 
-- [ ] Improve extraction output contract.
-  - Per-field: `value`, `confidence`, `evidence[]`, `status`.
-  - Acceptance: every non-empty extracted field includes evidence pointers.
+## A2 - Author metadata retrieval and normalization
 
-## P2 - Pipeline completeness
+- [x] Extend connector normalization to capture author payloads per paper.
+- [x] Define normalized author model:
+  - `author_id` strategy (ORCID preferred; otherwise source-prefixed stable key)
+  - `name`, `aliases`, `orcid`, `source_ids`, `affiliations`, optional `email/homepage` if available.
+- [x] Define normalized org model for affiliations:
+  - `org_id` strategy (ROR preferred; fallback stable source key), `name`, `country`.
+- [x] Add deterministic merge policy for author identities across connectors.
+- Acceptance:
+  - deterministic retrieval of one paper stores paper + all available authors + affiliations.
+  - rerun is idempotent (no duplicate author/org rows).
 
-- [ ] Add missing orchestrator steps from design: enrichment (30), fetch (40), analyze (65).
-  - Acceptance: CLI/API can run each step and write expected artifact directories.
+## A3 - KB hardening for paper-author graph
 
-- [ ] Expand KB schema to include org tables and join tables from design.
-  - Add `orgs`, `paper_authors`, `author_orgs`.
-  - Acceptance: idempotent upserts + relation tests.
+- [x] Add/confirm KB tables:
+  - `authors`, `orgs`, `paper_authors`, `author_orgs`, `provenance`.
+- [x] Implement upserts:
+  - `upsert_author`, `upsert_org`, `upsert_paper_author`, `upsert_author_org`.
+- [x] Ensure referential integrity via resolver/persistence path + tests.
+  - every `paper_authors.paper_id` exists in `papers`
+  - every `paper_authors.author_id` exists in `authors`
+  - provenance `entity_id` always references existing entities.
+- [x] Add query helpers:
+  - `get_paper_with_authors(paper_id)`
+  - `get_author_profile(author_id)`
+- Acceptance:
+  - one deterministic retrieval call can fully populate and query paper+author graph from KB.
 
-- [ ] Add CLI KB subcommands (`search-papers`, `show-paper`).
-  - Acceptance: commands return useful outputs from shared KB.
+## A4 - Deterministic reliability and tests
 
-## P3 - Developer workflow and release readiness
+- [ ] Wire configurable retry policy through all connectors.
+- [x] Add deterministic integration tests:
+  - title input -> canonical paper + authors persisted.
+  - arXiv URL input -> canonical paper + authors persisted.
+  - rerun idempotency and stable IDs.
+  - provenance integrity across papers/authors/orgs.
+- [x] Add fixtures/mocks to keep tests offline and reproducible.
+- Acceptance:
+  - deterministic test suite passes reliably without network.
 
-- [ ] Add `pytest` to dev dependencies and CI-friendly test command.
-  - Acceptance: documented command works on clean environment.
+## 5) Track B - Open-Ended Retrieval (After Track A)
 
-- [ ] Add Makefile targets (`init`, `test`, `lint`, `demo`).
-  - Acceptance: one-command local bootstrap and smoke flow.
+Goal: prompt -> candidate list artifact -> deterministic ingestion.
 
-- [ ] Document production-ready vs stub components in release notes.
-  - Acceptance: users can quickly see what is stable vs planned.
+## B0 - Intermediate candidate-list artifact
 
-## 4) Suggested Next Execution Order
+- [x] Add open-ended retrieval step that produces:
+  - `artifacts/retrieval/candidates_raw.tsv`
+  - `artifacts/retrieval/candidates_ranked.tsv`
+  - `artifacts/retrieval/handoff.tsv`
+  - `artifacts/retrieval/candidates_summary.yaml`
+- [x] Define candidate fields:
+  - `query_used`, `source`, `source_id`, `title`, `year`, `doi`, `arxiv_id`, `url`, `score`, `reason`.
+- Acceptance:
+  - open-ended run always outputs explicit candidate artifacts, even when empty.
 
-1. Wire connector retry policy + tests (P0).
-2. Restructure parsing/extraction artifacts + schema validation (P1).
-3. Add missing pipeline steps and KB relation tables (P2).
-4. Harden dev/release workflow docs and commands (P3).
+## B1 - Query planning heuristics (LLM-assisted, deterministic envelope)
+
+- [x] Add baseline query planner (heuristic templates) that converts prompt into query set.
+- [x] Planner outputs structured plan:
+  - connector target, query string, year/venue constraints, expected recall intent.
+- [ ] Keep planner bounded by deterministic guardrails:
+  - max query count, explicit cost/time limits, strict output schema.
+- Acceptance:
+  - same prompt + same config yields reproducible query plan.
+
+## B2 - Multi-source retrieval and ranking
+
+- [ ] Execute planned queries across scholarly APIs and optional web search fallback.
+- [ ] Dedup and rank candidates with transparent scoring policy.
+- [ ] Keep all raw evidence for explainability.
+- Acceptance:
+  - ranked candidate list is reproducible and inspectable.
+
+## B3 - Handoff to deterministic ingestion
+
+- [x] Select top-N candidates (configurable) for deterministic retrieval ingestion.
+- [x] Persist handoff map:
+  - candidate row -> canonical paper_id / no-match reason.
+- [x] Enforce strict rule: open-ended path does not directly write uncertain entities to KB.
+
+## 6) Deferred Backlog (After Retrieval Tracks)
+
+- [ ] Parsing contract upgrade (structured sections, validators).
+- [ ] Extraction contract hardening (confidence/evidence/status verifier).
+- [ ] Analysis skills expansion + richer render outputs.
+- [ ] Dev UX hardening (`pytest` tooling, Makefile, release docs).
+
+## 7) Recommended Next Execution Order
+
+1. Wire retrieval retry policy and adapter-level backoff config.
+2. Improve title disambiguation and confidence scoring.
+3. Add richer query planner (LLM optional) with deterministic schema validation.
+4. Add checkpoint/resume ingestion patterns inspired by `openalex-official`.
+5. Expand coverage and docs for productionization.
