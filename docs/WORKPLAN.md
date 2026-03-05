@@ -1,5 +1,7 @@
 # Workplan: MVP -> v1
 
+Detailed execution tracking lives in `docs/IMPLEMENTATION_TODO_CHECKLIST.md`.
+
 ## Milestones
 
 ### M0 (Current MVP Skeleton)
