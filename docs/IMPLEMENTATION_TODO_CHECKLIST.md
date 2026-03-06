@@ -12,7 +12,7 @@ Detailed task tables are maintained only for modules currently in active impleme
 | Module | Progress | Status |
 |---|---:|---|
 | Meta Info Retrieval (deterministic) | `85%` (`████████░░`) | Stabilized |
-| Agentic Meta Info Retrieval | `35%` (`███░░░░░░░`) | Active (I1 kickoff landed) |
+| Agentic Meta Info Retrieval | `55%` (`█████░░░░░`) | Active (I1 core completed) |
 | Data Backend and RAG | `20%` (`██░░░░░░░░`) | Planned |
 | Paper Context Retrieval | `5%` (`░░░░░░░░░░`) | Not started |
 | Paper Context Formatted Extraction | `10%` (`█░░░░░░░░░`) | Not started |
@@ -78,11 +78,11 @@ Execution strategy:
 |---|---|---|---|---|---|
 | A1 | Session Contracts | Define `agentic_request.yaml`, `agentic_session.yaml`, `agentic_result.yaml`, `agentic_questions.yaml`, `agentic_cycles.tsv`, `agentic_candidates_latest.tsv` schemas/contracts. | Done | Artifacts are versioned, deterministic-fielded, and loadable across resume cycles. | None |
 | A2 | Orchestrator Core | Build single-loop orchestrator state machine: `plan -> retrieve -> rank -> decide(ask/continue/stop)`. | Done | One full cycle runs with no user interrupt path and writes all session artifacts. | A1 |
-| A3 | Progress Memory | Persist per-cycle memory: planned query, tool calls, candidate deltas, rationale, stop-check signals. | In progress | Resume from checkpoint reproduces same next step given same inputs. | A1,A2 |
-| A4 | Tool Router | Implement scholarly-first tool routing (KB + OpenAlex/Crossref/S2/arXiv), web fallback trigger policy scaffold. | Todo | Router calls web only when scholarly retrieval is insufficient by policy. | A2 |
-| A5 | Workflow: Theme Refinement | Implement `theme_refine` workflow with iterative narrowing and candidate shortlist updates. | In progress | Broad-theme prompt converges to shortlist with >=2 cycles and explicit rationale history. | A2,A4 |
-| A6 | CLI/API Session UX | Add checkpoint-resume interfaces: start session, fetch status, submit answers, finalize. | In progress | CLI/API can pause on question and resume without losing cycle memory. | A2,A3 |
-| A7 | Tests I1 | Unit + integration coverage for state machine, artifact writing, resume idempotence, theme workflow. | In progress | CI tests cover happy path + resume path + empty-result fallback path. | A1-A6 |
+| A3 | Progress Memory | Persist per-cycle memory: planned query, tool calls, candidate deltas, rationale, stop-check signals. | Done | Resume from checkpoint reproduces same next step given same inputs. | A1,A2 |
+| A4 | Tool Router | Implement scholarly-first tool routing (KB + OpenAlex/Crossref/S2/arXiv), web fallback trigger policy scaffold. | Done | Router calls web only when scholarly retrieval is insufficient by policy. | A2 |
+| A5 | Workflow: Theme Refinement | Implement `theme_refine` workflow with iterative narrowing and candidate shortlist updates. | Done | Broad-theme prompt converges to shortlist with >=2 cycles and explicit rationale history. | A2,A4 |
+| A6 | CLI/API Session UX | Add checkpoint-resume interfaces: start session, fetch status, submit answers, finalize. | Done | CLI/API can pause on question and resume without losing cycle memory. | A2,A3 |
+| A7 | Tests I1 | Unit + integration coverage for state machine, artifact writing, resume idempotence, theme workflow. | Done | CI tests cover happy path + resume path + empty-result fallback path. | A1-A6 |
 
 #### Increment 2: Fuzzy Reference + Feedback Learning (`M-Agentic-I2`)
 
@@ -180,65 +180,53 @@ Done when:
 Use this queue at the start of the next session:
 
 1. Session handoff snapshot (completed in this session):
-   - Increment-1 `A1/A2` landed:
-     - New agentic orchestrator: `src/orchestrator/agentic.py`.
-     - Single-loop state machine implemented: `plan -> retrieve -> rank -> decide`.
-     - Artifacts written per run:
-       - `agentic_request.yaml`
-       - `agentic_session.yaml`
-       - `agentic_result.yaml`
-       - `agentic_questions.yaml`
-       - `agentic_cycles.tsv`
-       - `agentic_candidates_latest.tsv`
-     - Contract versions currently set to `0.1.0`.
-   - Entry points added:
-     - Runner step: `retrieve-agentic`
-     - CLI command: `python -m src.cli retrieve-agentic <project_id> --prompt ...`
-     - API endpoint: `POST /projects/{project_id}/retrieve/agentic`
-   - Project defaults updated:
-     - `project.yaml -> retrieval.agentic` scaffold (`enabled/workflow/top_n/max_cycles`).
+   - Increment-1 `A3/A4/A5/A6/A7` landed:
+     - Agentic orchestrator upgraded to deterministic multi-cycle progression with resume-safe state replay in `src/orchestrator/agentic.py`.
+     - Cycle ledger now persists route decisions + fallback triggers (`router_decision`, `fallback_triggered`, `insufficiency_reason`, `plan_rationale`) in `agentic_cycles.tsv`.
+     - Scholarly-first router implemented with conditional SearXNG fallback scaffold and policy thresholds from `project.yaml`.
+     - `theme_refine` now performs iterative narrowing with minimum-two-cycle behavior when budget allows and explicit convergence stop.
+     - Session UX surfaces added:
+       - runner steps: `retrieve-agentic-start`, `retrieve-agentic-status`, `retrieve-agentic-answer`, `retrieve-agentic-finalize`
+       - CLI commands with the same names
+       - API endpoints:
+         - `POST /projects/{project_id}/retrieve/agentic/start`
+         - `GET /projects/{project_id}/retrieve/agentic/status`
+         - `POST /projects/{project_id}/retrieve/agentic/answer`
+         - `POST /projects/{project_id}/retrieve/agentic/finalize`
+     - Project defaults updated with `retrieval.agentic.web_fallback` scaffold and `max_cycles=3`.
+   - Focused I1 test expansion landed: `tests/test_retrieval_agentic_i1.py`
+     - resume idempotence
+     - multi-cycle convergence
+     - web fallback trigger path
+     - session UX flow (`start/status/answer/finalize`)
 
-2. Environment + validation baseline for fresh session:
+2. Environment + validation baseline:
    - Use virtual environment: `/home/wenqin/.virtualenvs/shredder`.
    - Verified command baseline:
-     - Full test suite: `48 passed, 27 subtests passed`.
+     - Full test suite: `52 passed, 27 subtests passed`.
      - Command used: `/home/wenqin/.virtualenvs/shredder/bin/python -m pytest -q`
-   - Focused I1 test file added: `tests/test_retrieval_agentic_i1.py`.
+   - Focused I1 test file status: `6 passed` for `tests/test_retrieval_agentic_i1.py`.
 
-3. Execute Increment-1 `A3` next (resume-safe progress memory):
-   - Upgrade current single-cycle behavior into deterministic multi-cycle progression.
-   - Ensure resume idempotence:
-     - same `session_id` + unchanged inputs => deterministic next action/cycle.
-     - no accidental state reset except explicit new session.
-   - Persist and replay per-cycle memory fields already scaffolded in `agentic_cycles.tsv` and `agentic_result.yaml`.
+3. Start Increment-2 `B1` next (fuzzy reference workflow):
+   - Implement `fuzzy_reference` workflow:
+     - shorthand/inexact mention parsing
+     - lexical candidate generation
+     - deterministic rerank scaffold with confidence + alternatives
+   - Persist confidence + ambiguity rationale to cycle ledger/result artifacts.
 
-4. Execute Increment-1 `A4` next (tool router, scholarly-first):
-   - Add explicit router layer in agentic runtime:
-     - primary scholarly path: KB + OpenAlex + Crossref + Semantic Scholar + arXiv adapters.
-     - conditional web fallback path gated by insufficiency policy.
-   - Integrate `SEARXNG_URL` as configurable fallback provider scaffold.
-   - Keep policy decisions traceable in cycle ledger (reason + trigger).
+4. Start Increment-2 `B2/B3` (feedback + clarification policy):
+   - Add feedback capture (`keep/remove/why-missing`) and apply to next-cycle ranking.
+   - Implement interrupt policy with threshold-based clarification and per-cycle question limits.
 
-5. Execute Increment-1 `A5/A6` next (theme workflow + session UX):
-   - Extend `theme_refine` from bootstrap into iterative narrowing (`>=2` cycles when needed).
-   - Add checkpoint-resume UX surface:
-     - start session
-     - get session status
-     - submit clarification answers
-     - finalize session
-   - Ensure CLI/API can pause/resume without losing cycle memory.
+5. Start Increment-2 `B4/B5` (ranking + stop controller):
+   - Add component score breakdown (relevance, source quality, novelty, feedback alignment).
+   - Implement explicit convergence controller + guardrails (cycle/tool/token/time budgets).
 
-6. Execute Increment-1 `A7` next (test hardening):
-   - Expand tests to include:
-     - resume path idempotence
-     - multi-cycle convergence behavior
-     - scholarly-first success and web-fallback trigger path
-     - empty-result fallback (already covered; keep regression)
-   - Add dedicated agentic loop harness before real LLM integration:
-     - `DummyLLMClient` (fixture-driven deterministic planner/ranker/question outputs)
-     - optional `ReplayLLMClient` (captured JSON replay)
-     - env-gated backend switch: `dummy | replay | deepseek`
-     - note: direct redirection to Codex session is not a runtime API backend.
+6. Add dedicated agentic loop harness before real LLM integration:
+   - `DummyLLMClient` (fixture-driven deterministic planner/ranker/question outputs)
+   - optional `ReplayLLMClient` (captured JSON replay)
+   - env-gated backend switch: `dummy | replay | deepseek`
+   - note: direct redirection to Codex session is not a runtime API backend.
 
 7. Sprint defaults to keep fixed for I1 completion:
    - Agentic runtime remains an internal single-controller state machine (no external framework dependency in I1).

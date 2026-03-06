@@ -64,7 +64,13 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
                         "enabled": True,
                         "workflow": "theme_refine",
                         "top_n": 5,
-                        "max_cycles": 1,
+                        "max_cycles": 3,
+                        "web_fallback": {
+                            "enabled": True,
+                            "provider": "searxng",
+                            "min_ranked_candidates": 2,
+                            "searxng_base_url": "",
+                        },
                     },
                     "deterministic": {"ambiguity_delta": 0.05, "policy": "cache_first"},
                     "adapters": {

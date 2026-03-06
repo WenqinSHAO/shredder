@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from src.workspace.manager import init_project
 from .steps import run_discovery, run_parsing, run_extraction, run_render
-from .agentic import run_retrieve_agentic
+from .agentic import finalize_agentic_session, get_agentic_status, run_retrieve_agentic, submit_agentic_answers
 from .retrieval import run_retrieve_open, run_retrieve_paper
 
 
@@ -40,6 +40,31 @@ def run_step(project_id: str, step: str, **kwargs):
             workflow=kwargs.get("workflow", "theme_refine"),
             top_n=int(kwargs.get("top_n", 5)),
             max_cycles=int(kwargs.get("max_cycles", 1)),
+            session_id=kwargs.get("session_id", ""),
+        )
+    if step == "retrieve-agentic-start":
+        return run_retrieve_agentic(
+            project_id,
+            prompt=kwargs.get("prompt", ""),
+            workflow=kwargs.get("workflow", "theme_refine"),
+            top_n=int(kwargs.get("top_n", 5)),
+            max_cycles=int(kwargs.get("max_cycles", 1)),
+            session_id=kwargs.get("session_id", ""),
+        )
+    if step == "retrieve-agentic-status":
+        return get_agentic_status(
+            project_id,
+            session_id=kwargs.get("session_id", ""),
+        )
+    if step == "retrieve-agentic-answer":
+        return submit_agentic_answers(
+            project_id,
+            session_id=kwargs.get("session_id", ""),
+            answers=kwargs.get("answers", {}),
+        )
+    if step == "retrieve-agentic-finalize":
+        return finalize_agentic_session(
+            project_id,
             session_id=kwargs.get("session_id", ""),
         )
     raise ValueError(f"Unknown step: {step}")

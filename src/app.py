@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.orchestrator.runner import run_step
 from src.workspace.manager import list_artifacts
@@ -38,6 +38,15 @@ class RetrieveAgenticRequest(BaseModel):
     top_n: int = 5
     max_cycles: int = 1
     session_id: str = ""
+
+
+class AgenticAnswerRequest(BaseModel):
+    session_id: str
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
+class AgenticFinalizeRequest(BaseModel):
+    session_id: str
 
 
 @app.get("/healthz")
@@ -93,14 +102,59 @@ def retrieve_open(project_id: str, body: RetrieveOpenRequest):
 
 @app.post("/projects/{project_id}/retrieve/agentic")
 def retrieve_agentic(project_id: str, body: RetrieveAgenticRequest):
+    return retrieve_agentic_start(project_id, body)
+
+
+@app.post("/projects/{project_id}/retrieve/agentic/start")
+def retrieve_agentic_start(project_id: str, body: RetrieveAgenticRequest):
     try:
         result = run_step(
             project_id,
-            "retrieve-agentic",
+            "retrieve-agentic-start",
             prompt=body.prompt,
             workflow=body.workflow,
             top_n=body.top_n,
             max_cycles=body.max_cycles,
+            session_id=body.session_id,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"project": project_id, "result": str(result)}
+
+
+@app.get("/projects/{project_id}/retrieve/agentic/status")
+def retrieve_agentic_status(project_id: str, session_id: str = ""):
+    try:
+        result = run_step(
+            project_id,
+            "retrieve-agentic-status",
+            session_id=session_id,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"project": project_id, "status": result}
+
+
+@app.post("/projects/{project_id}/retrieve/agentic/answer")
+def retrieve_agentic_answer(project_id: str, body: AgenticAnswerRequest):
+    try:
+        result = run_step(
+            project_id,
+            "retrieve-agentic-answer",
+            session_id=body.session_id,
+            answers=body.answers or {},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"project": project_id, "status": result}
+
+
+@app.post("/projects/{project_id}/retrieve/agentic/finalize")
+def retrieve_agentic_finalize(project_id: str, body: AgenticFinalizeRequest):
+    try:
+        result = run_step(
+            project_id,
+            "retrieve-agentic-finalize",
             session_id=body.session_id,
         )
     except Exception as exc:

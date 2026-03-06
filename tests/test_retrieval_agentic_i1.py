@@ -140,6 +140,147 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 candidate_rows = list(csv.DictReader(f, delimiter="\t"))
             self.assertEqual(candidate_rows, [])
 
+    def test_agentic_resume_with_same_session_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws):
+                run_step("demo", "init", theme="systems")
+                session_id = "agentic-test-session-idempotent"
+                with patch("src.orchestrator.agentic.build_adapters", return_value=[_AgenticAdapter()]):
+                    run_step(
+                        "demo",
+                        "retrieve-agentic",
+                        prompt="memory disaggregation",
+                        workflow="theme_refine",
+                        top_n=2,
+                        max_cycles=2,
+                        session_id=session_id,
+                    )
+                    run_step(
+                        "demo",
+                        "retrieve-agentic",
+                        prompt="memory disaggregation",
+                        workflow="theme_refine",
+                        top_n=2,
+                        max_cycles=2,
+                        session_id=session_id,
+                    )
+
+            rdir = ws / "demo" / "artifacts" / "retrieval"
+            with (rdir / "agentic_cycles.tsv").open("r", encoding="utf-8") as f:
+                cycle_rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertEqual(len(cycle_rows), 2)
+            self.assertEqual(cycle_rows[-1]["session_id"], session_id)
+
+            result = yamlx.load(rdir / "agentic_result.yaml")
+            self.assertEqual(int(result["cycle_count"]), 2)
+            self.assertEqual(len(result["decision_history"]), 2)
+
+    def test_agentic_theme_refine_converges_before_max_cycle_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.agentic.build_adapters", return_value=[_AgenticAdapter()]):
+                    run_step(
+                        "demo",
+                        "retrieve-agentic",
+                        prompt="memory disaggregation",
+                        workflow="theme_refine",
+                        top_n=2,
+                        max_cycles=3,
+                        session_id="agentic-test-session-converge",
+                    )
+
+            rdir = ws / "demo" / "artifacts" / "retrieval"
+            result = yamlx.load(rdir / "agentic_result.yaml")
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["stop_reason"], "converged")
+            self.assertEqual(int(result["cycle_count"]), 2)
+            self.assertEqual(result["decision_history"][-1]["decision_reason"], "converged_candidate_set")
+
+    def test_agentic_router_triggers_web_fallback_when_scholarly_is_insufficient(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws):
+                run_step("demo", "init", theme="systems")
+                project_yaml = ws / "demo" / "project.yaml"
+                project_payload = yamlx.load(project_yaml)
+                project_payload["discovery"]["connectors"]["searxng"]["enabled"] = True
+                project_payload["discovery"]["connectors"]["searxng"]["base_url"] = "https://searx.local"
+                yamlx.dump_to_path(project_yaml, project_payload)
+
+                web_payload = [
+                    {
+                        "source": "searxng",
+                        "source_id": "https://example.org/paper",
+                        "title": "Web Fallback Systems Paper",
+                        "venue": "NSDI",
+                        "year": "2024",
+                        "doi": "",
+                        "arxiv_id": "",
+                        "url": "https://example.org/paper",
+                    }
+                ]
+                with patch("src.orchestrator.agentic.build_adapters", return_value=[_EmptyAgenticAdapter()]):
+                    with patch("src.orchestrator.agentic.SearxngConnector.search", return_value=web_payload):
+                        run_step(
+                            "demo",
+                            "retrieve-agentic",
+                            prompt="memory disaggregation",
+                            workflow="theme_refine",
+                            top_n=2,
+                            max_cycles=1,
+                        )
+
+            rdir = ws / "demo" / "artifacts" / "retrieval"
+            result = yamlx.load(rdir / "agentic_result.yaml")
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(len(result["final_candidates"]), 1)
+            self.assertEqual(result["final_candidates"][0]["source"], "searxng")
+
+            with (rdir / "agentic_cycles.tsv").open("r", encoding="utf-8") as f:
+                cycle_rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertEqual(cycle_rows[0]["fallback_triggered"], "1")
+            self.assertIn("web:searxng:search", cycle_rows[0]["tool_calls"])
+            self.assertEqual(cycle_rows[0]["router_decision"], "scholarly_plus_web")
+
+    def test_agentic_session_ux_steps_status_answer_finalize(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws):
+                run_step("demo", "init", theme="systems")
+                session_id = "agentic-test-session-ux"
+                with patch("src.orchestrator.agentic.build_adapters", return_value=[_AgenticAdapter()]):
+                    run_step(
+                        "demo",
+                        "retrieve-agentic-start",
+                        prompt="memory disaggregation",
+                        workflow="theme_refine",
+                        top_n=2,
+                        max_cycles=1,
+                        session_id=session_id,
+                    )
+
+                status = run_step("demo", "retrieve-agentic-status", session_id=session_id)
+                self.assertEqual(status["session_id"], session_id)
+                self.assertEqual(status["session"]["status"], "completed")
+
+                answered = run_step(
+                    "demo",
+                    "retrieve-agentic-answer",
+                    session_id=session_id,
+                    answers={"scope": "systems"},
+                )
+                self.assertEqual(answered["questions"]["history"][-1]["answers"]["scope"], "systems")
+
+                result_path = run_step("demo", "retrieve-agentic-finalize", session_id=session_id)
+                self.assertTrue(result_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

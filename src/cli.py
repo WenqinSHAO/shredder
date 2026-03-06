@@ -6,6 +6,22 @@ from src.orchestrator.runner import run_step
 from src.utils.yamlx import YamlDependencyError
 
 
+def _parse_answers(items: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in items:
+        part = str(raw or "").strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise SystemExit(f"Invalid --answer value '{part}'. Expected key=value.")
+        key, value = part.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise SystemExit(f"Invalid --answer value '{part}'. Key cannot be empty.")
+        out[key] = value.strip()
+    return out
+
+
 def _print_retrieve_paper_progress(event: dict) -> None:
     name = str(event.get("event") or "")
     if not name:
@@ -155,6 +171,27 @@ def main() -> None:
     p_retrieve_agentic.add_argument("--max-cycles", type=int, default=1)
     p_retrieve_agentic.add_argument("--session-id", default="")
 
+    p_retrieve_agentic_start = sub.add_parser("retrieve-agentic-start")
+    p_retrieve_agentic_start.add_argument("project_id")
+    p_retrieve_agentic_start.add_argument("--prompt", required=True)
+    p_retrieve_agentic_start.add_argument("--workflow", default="theme_refine")
+    p_retrieve_agentic_start.add_argument("--top-n", type=int, default=5)
+    p_retrieve_agentic_start.add_argument("--max-cycles", type=int, default=1)
+    p_retrieve_agentic_start.add_argument("--session-id", default="")
+
+    p_retrieve_agentic_status = sub.add_parser("retrieve-agentic-status")
+    p_retrieve_agentic_status.add_argument("project_id")
+    p_retrieve_agentic_status.add_argument("--session-id", default="")
+
+    p_retrieve_agentic_answer = sub.add_parser("retrieve-agentic-answer")
+    p_retrieve_agentic_answer.add_argument("project_id")
+    p_retrieve_agentic_answer.add_argument("--session-id", required=True)
+    p_retrieve_agentic_answer.add_argument("--answer", action="append", default=[])
+
+    p_retrieve_agentic_finalize = sub.add_parser("retrieve-agentic-finalize")
+    p_retrieve_agentic_finalize.add_argument("project_id")
+    p_retrieve_agentic_finalize.add_argument("--session-id", required=True)
+
     args = parser.parse_args()
     try:
         if args.cmd == "init":
@@ -197,6 +234,52 @@ def main() -> None:
                 session_id=args.session_id,
             )
             print(f"Agentic retrieval complete: {result}")
+        elif args.cmd == "retrieve-agentic-start":
+            result = run_step(
+                args.project_id,
+                "retrieve-agentic-start",
+                prompt=args.prompt,
+                workflow=args.workflow,
+                top_n=args.top_n,
+                max_cycles=args.max_cycles,
+                session_id=args.session_id,
+            )
+            print(f"Agentic retrieval start/continue complete: {result}")
+        elif args.cmd == "retrieve-agentic-status":
+            result = run_step(
+                args.project_id,
+                "retrieve-agentic-status",
+                session_id=args.session_id,
+            )
+            session = result.get("session") or {}
+            print(
+                "Agentic session status: "
+                f"session_id={result.get('session_id')} "
+                f"status={session.get('status')} "
+                f"state={session.get('state')} "
+                f"current_cycle={session.get('current_cycle')}"
+            )
+        elif args.cmd == "retrieve-agentic-answer":
+            result = run_step(
+                args.project_id,
+                "retrieve-agentic-answer",
+                session_id=args.session_id,
+                answers=_parse_answers(args.answer or []),
+            )
+            session = result.get("session") or {}
+            print(
+                "Agentic answers submitted: "
+                f"session_id={result.get('session_id')} "
+                f"status={session.get('status')} "
+                f"state={session.get('state')}"
+            )
+        elif args.cmd == "retrieve-agentic-finalize":
+            result = run_step(
+                args.project_id,
+                "retrieve-agentic-finalize",
+                session_id=args.session_id,
+            )
+            print(f"Agentic session finalized: {result}")
     except YamlDependencyError as exc:
         raise SystemExit(f"YAML dependency error: {exc}") from exc
 
