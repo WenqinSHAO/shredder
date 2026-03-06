@@ -20,6 +20,7 @@ Per-project, versionable directory (e.g., `workspace/<project>/`) containing:
 - `project.yaml` (project metadata, constraints, selected schemas)
 - `specs/*.md` (StepSpec prompts for each pipeline stage)
 - `artifacts/**` hardened step outputs
+- `artifacts/retrieval/*` deterministic retrieval index/request/source artifacts
 - `inputs/` user-provided PDFs and references
 - `reports/` generated report/slide/pdf outputs
 
@@ -78,10 +79,11 @@ aliases: ["Example U"]
 ```
 
 ### 4.2 SQLite Tables (Initial)
-- `papers(id PRIMARY KEY, title, venue, year, doi UNIQUE, abstract, pdf_url, html_url, created_at, updated_at)`
+- `papers(id PRIMARY KEY, title, venue, year, doi UNIQUE, arxiv_id, abstract, keywords_json, categories_json, pdf_url, html_url, created_at, updated_at)`
 - `authors(id PRIMARY KEY, name, orcid UNIQUE, created_at, updated_at)`
 - `orgs(id PRIMARY KEY, name, ror UNIQUE, country, created_at, updated_at)`
 - `paper_authors(paper_id, author_id, position, PRIMARY KEY(paper_id, author_id))`
+- `paper_author_metadata(paper_id, author_id, source_ids_json, affiliations_json, PRIMARY KEY(paper_id, author_id))`
 - `author_orgs(author_id, org_id, role, PRIMARY KEY(author_id, org_id))`
 - `provenance(id PRIMARY KEY, entity_type, entity_id, source, source_key, confidence, fetched_at, raw_ref)`
 
@@ -92,6 +94,10 @@ Suggested step numbers (10..70) with hardened outputs:
   Output: `project.yaml`, `specs/*.md`, baseline directories.
 - **20-discovery**: Query OpenAlex/Crossref/S2/SearxNG + venue filters.  
   Output: `artifacts/discovery/raw.tsv`, `artifacts/discovery/deduped.tsv`.
+- **25-retrieve-paper (deterministic)**: Resolve DOI/arXiv/title to canonical paper metadata + persist KB/index.  
+  Output: `artifacts/retrieval/deterministic_result.yaml`, `deterministic_request.yaml`, `deterministic_sources.tsv` (+ latest snapshots).
+- **26-retrieve-open (optional)**: Open recall retrieval for candidate generation/handoff.  
+  Output: `artifacts/retrieval/candidates_raw.tsv`, `candidates_ranked.tsv`, `handoff.tsv`.
 - **30-enrichment**: Merge metadata, normalize ids/authors/orgs, upsert KB.  
   Output: `artifacts/enrichment/papers.yaml`, `authors.yaml`, `orgs.yaml`.
 - **40-fetch**: Download PDFs/HTML into workspace cache/inputs.  
@@ -120,9 +126,13 @@ meta:
 
 ## 7) Provenance and Dedup Rules
 - Dedup priority: DOI > arXiv id > title+year fuzzy match.
-- Canonical paper ID strategy: `doi:<doi>` if DOI exists else provider-prefixed IDs.
+- Canonical paper ID strategy: `doi:<doi>` if DOI exists, else `arxiv:<arxiv_id>`, else `title:<normalized_title>:<year>`.
 - Maintain provenance rows for each imported field with source and confidence.
 - Preserve source conflicts instead of destructive overwrite; store selected canonical value + alternatives.
+
+Deterministic retrieval stabilization note:
+- Deterministic paper+author metadata retrieval and DB hardening are stabilized for handoff.
+- Remaining enhancements (cross-source author canonicalization, legacy metadata backfill, web fallback enrichment, author homepage field) are non-blocking and deferred.
 
 ## 8) Cost-Control Extraction Strategy
 1. **Section selection**: rank sections relevant to schema fields (title/abstract/method/results/conclusion first).

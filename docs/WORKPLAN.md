@@ -3,6 +3,11 @@
 Detailed execution tracking lives in `docs/IMPLEMENTATION_TODO_CHECKLIST.md`.
 Current module-level progress bars are maintained in section `2) Module Progress Bars` of that checklist.
 
+Current status (2026-03-06):
+- Deterministic paper/author metadata retrieval is stabilized for handoff (`M-Deterministic-RC1` achieved).
+- Next active focus is Agentic Meta Info Retrieval + Data Backend/RAG integration.
+- Remaining deterministic items are non-blocking hardening/wishlist unless they become concrete blockers.
+
 ## Milestones
 
 ### M0 (Current MVP Skeleton)
@@ -30,6 +35,11 @@ Current module-level progress bars are maintained in section `2) Module Progress
 - Better caching/provenance/audit logs.
 - Migrations and schema version support.
 - Regression test suite, packaging, docs hardening.
+
+### M4.5 (Current Transition Gate)
+- Freeze deterministic metadata layer except bugfixes.
+- Open detailed execution boards for Agentic Meta + Data Backend/RAG.
+- Keep deterministic P1 backlog parked (author canonicalization, legacy metadata backfill, CI fixture expansion).
 
 ## Task Breakdown + Acceptance Criteria
 
@@ -89,3 +99,4 @@ Current module-level progress bars are maintained in section `2) Module Progress
 - PDF parse quality variability -> keep raw parse snapshot + manual edit loop.
 - Extraction hallucinations -> mandatory evidence pointers + verifier pass.
 - Schema drift -> explicit schema_version fields + migration utilities.
+- Deferred deterministic wishlist can expand scope unexpectedly -> keep wishlist explicitly non-blocking until next-stage blockers require activation.
