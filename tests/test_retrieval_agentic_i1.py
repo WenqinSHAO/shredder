@@ -50,6 +50,34 @@ class _EmptyAgenticAdapter:
         return []
 
 
+class _IdentifierAgenticAdapter:
+    def lookup_doi(self, doi: str) -> list[dict]:
+        return [
+            {
+                "source": "habanero",
+                "source_id": doi,
+                "title": "Identifier Resolved Paper",
+                "venue": "NeurIPS",
+                "year": "2025",
+                "doi": doi,
+                "arxiv_id": "",
+                "url": f"https://doi.org/{doi}",
+                "authors": [],
+                "score": 1.0,
+                "reason": "lookup_doi",
+            }
+        ]
+
+    def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+        return []
+
+    def search_title(self, title: str, limit: int = 5) -> list[dict]:
+        return []
+
+    def search_open(self, query: str, limit: int = 20) -> list[dict]:
+        return []
+
+
 @unittest.skipUnless(HAS_PYYAML, "PyYAML is not installed in this environment")
 class TestAgenticRetrievalI1(unittest.TestCase):
     def test_agentic_single_cycle_writes_all_contract_artifacts(self):
@@ -280,6 +308,33 @@ class TestAgenticRetrievalI1(unittest.TestCase):
 
                 result_path = run_step("demo", "retrieve-agentic-finalize", session_id=session_id)
                 self.assertTrue(result_path.exists())
+
+    def test_agentic_prompt_identifier_runs_deterministic_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.agentic.build_adapters", return_value=[_IdentifierAgenticAdapter()]):
+                    run_step(
+                        "demo",
+                        "retrieve-agentic",
+                        prompt="find details for doi 10.1234/agentic.2025.001 and related work",
+                        workflow="theme_refine",
+                        top_n=3,
+                        max_cycles=1,
+                    )
+
+            rdir = ws / "demo" / "artifacts" / "retrieval"
+            result = yamlx.load(rdir / "agentic_result.yaml")
+            self.assertEqual(result["status"], "completed")
+            self.assertGreaterEqual(len(result["final_candidates"]), 1)
+            self.assertEqual(result["final_candidates"][0]["doi"], "10.1234/agentic.2025.001")
+
+            with (rdir / "agentic_cycles.tsv").open("r", encoding="utf-8") as f:
+                cycle_rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertIn("deterministic:resolve", cycle_rows[0]["tool_calls"])
+            self.assertEqual(cycle_rows[0]["plan_rationale"], "identifier_first_then_theme_expand")
 
 
 if __name__ == "__main__":

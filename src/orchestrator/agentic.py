@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from time import perf_counter
+from typing import Any, Callable
 
 from src.connectors.base import ConnectorConfig
+from src.connectors.http import normalize_arxiv_id, normalize_doi
 from src.connectors.searxng import SearxngConnector
-from src.retrieval.service import SOURCE_FIELDS, build_adapters, plan_queries, run_open_retrieval, write_yaml
+from src.retrieval.service import SOURCE_FIELDS, build_adapters, plan_queries, resolve_deterministic, write_yaml
 from src.utils.paths import project_dir
 from src.utils.yamlx import load
 
@@ -16,6 +20,7 @@ REQUEST_SCHEMA_VERSION = "0.1.0"
 SESSION_SCHEMA_VERSION = "0.1.0"
 RESULT_SCHEMA_VERSION = "0.1.0"
 QUESTIONS_SCHEMA_VERSION = "0.1.0"
+ProgressCallback = Callable[[dict], None]
 
 CYCLE_FIELDS = [
     "timestamp",
@@ -52,6 +57,14 @@ CANDIDATE_LATEST_FIELDS = [
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _emit_progress(progress_callback: ProgressCallback | None, *, event: str, **payload) -> None:
+    if progress_callback is None:
+        return
+    body = {"event": event}
+    body.update(payload)
+    progress_callback(body)
 
 
 def _retrieval_dir(pdir: Path) -> Path:
@@ -242,6 +255,27 @@ def _safe_int(value: Any, default: int) -> int:
         return int(default)
 
 
+def _llm_runtime(agentic_cfg: dict) -> dict:
+    llm_cfg = agentic_cfg.get("llm") if isinstance(agentic_cfg.get("llm"), dict) else {}
+    backend = str(
+        llm_cfg.get("backend")
+        or agentic_cfg.get("llm_backend")
+        or "deepseek"
+    ).strip().lower()
+    model = str(llm_cfg.get("model") or "").strip()
+    api_key_env = str(llm_cfg.get("api_key_env") or "").strip()
+    if backend == "deepseek":
+        model = model or "deepseek-chat"
+        api_key_env = api_key_env or "DS_API_KEY"
+    api_key_present = bool(os.environ.get(api_key_env)) if api_key_env else False
+    return {
+        "backend": backend,
+        "model": model,
+        "api_key_env": api_key_env,
+        "api_key_present": api_key_present,
+    }
+
+
 def _load_cycle_rows(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -276,6 +310,166 @@ def _rank_rows(rows: list[dict]) -> list[dict]:
         reverse=True,
     )
     return ranked
+
+
+def _extract_prompt_signals(prompt: str) -> dict:
+    text = str(prompt or "").strip()
+    doi_matches = re.findall(r"(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", text, flags=re.IGNORECASE)
+    dois: list[str] = []
+    for doi in doi_matches:
+        cleaned = normalize_doi(doi.rstrip(".,);]"))
+        if cleaned and cleaned not in dois:
+            dois.append(cleaned)
+
+    arxiv_urls = re.findall(r"(https?://arxiv\.org/(?:abs|pdf)/[^\s]+)", text, flags=re.IGNORECASE)
+    arxiv_ids: list[str] = []
+    for url in arxiv_urls:
+        aid = normalize_arxiv_id(url)
+        if aid and aid not in arxiv_ids:
+            arxiv_ids.append(aid)
+
+    direct_arxiv = re.findall(r"\b(\d{4}\.\d{4,5}(?:v\d+)?)\b", text)
+    for raw in direct_arxiv:
+        aid = normalize_arxiv_id(raw)
+        if aid and aid not in arxiv_ids:
+            arxiv_ids.append(aid)
+
+    quoted_titles = re.findall(r"\"([^\"]{8,220})\"", text)
+    title_hint = quoted_titles[0].strip() if quoted_titles else ""
+    return {
+        "dois": dois,
+        "arxiv_ids": arxiv_ids,
+        "title_hint": title_hint,
+        "has_identifier": bool(dois or arxiv_ids),
+    }
+
+
+def _derive_query_seed(prompt: str, signals: dict) -> str:
+    seed = str(prompt or "").strip()
+    for doi in list(signals.get("dois") or []):
+        seed = re.sub(re.escape(doi), " ", seed, flags=re.IGNORECASE)
+    for arxiv_id in list(signals.get("arxiv_ids") or []):
+        seed = re.sub(re.escape(arxiv_id), " ", seed, flags=re.IGNORECASE)
+    seed = re.sub(r"https?://arxiv\.org/(?:abs|pdf)/[^\s]+", " ", seed, flags=re.IGNORECASE)
+    seed = re.sub(r"https?://doi\.org/[^\s]+", " ", seed, flags=re.IGNORECASE)
+    seed = re.sub(r"\bdoi\b", " ", seed, flags=re.IGNORECASE)
+    seed = re.sub(r"\barxiv\b", " ", seed, flags=re.IGNORECASE)
+    lowered = seed.lower()
+    for prefix in (
+        "find details for ",
+        "details for ",
+        "find ",
+        "show me ",
+        "give me ",
+    ):
+        if lowered.startswith(prefix):
+            seed = seed[len(prefix) :].strip()
+            lowered = seed.lower()
+            break
+    for prefix in (
+        "latest paper on ",
+        "latest papers on ",
+        "paper on ",
+        "papers on ",
+        "find papers on ",
+        "search papers on ",
+    ):
+        if lowered.startswith(prefix):
+            seed = seed[len(prefix) :].strip()
+            break
+    for phrase in ("from top ai conferences", "top ai conferences", "latest ", "recent "):
+        seed = re.sub(re.escape(phrase), " ", seed, flags=re.IGNORECASE)
+    seed = re.sub(r"\bfor and\b", " ", seed, flags=re.IGNORECASE)
+    seed = re.sub(r"\band related work\b", " related work", seed, flags=re.IGNORECASE)
+    seed = " ".join(seed.split())
+    tokens = [token for token in re.findall(r"[a-z0-9]+", seed.lower()) if len(token) >= 3]
+    if len(tokens) <= 1 and str(signals.get("title_hint") or "").strip():
+        seed = str(signals.get("title_hint") or "").strip()
+    if not seed:
+        seed = str(signals.get("title_hint") or "").strip()
+    return seed or str(prompt or "").strip()
+
+
+def _build_deterministic_queries(signals: dict) -> list[dict]:
+    queries: list[dict] = []
+    for doi in list(signals.get("dois") or []):
+        queries.append({"doi": doi, "policy": "fast", "limit": 5})
+    for arxiv_id in list(signals.get("arxiv_ids") or []):
+        queries.append({"arxiv_id": arxiv_id, "policy": "fast", "limit": 5})
+    title_hint = str(signals.get("title_hint") or "").strip()
+    if title_hint and not queries:
+        queries.append({"title": title_hint, "policy": "consensus", "limit": 5})
+    return queries
+
+
+def _deterministic_result_to_row(result: dict, query_label: str) -> dict:
+    paper = dict(result.get("paper") or {})
+    return {
+        "source": "deterministic",
+        "source_id": str(paper.get("paper_id") or ""),
+        "title": str(paper.get("title") or ""),
+        "venue": str(paper.get("venue") or ""),
+        "year": str(paper.get("year") or ""),
+        "doi": str(paper.get("doi") or ""),
+        "arxiv_id": str(paper.get("arxiv_id") or ""),
+        "url": str(paper.get("url") or ""),
+        "abstract": str(paper.get("abstract") or ""),
+        "keywords": list(paper.get("keywords") or []),
+        "categories": list(paper.get("categories") or []),
+        "authors": list(paper.get("authors") or []),
+        "score": 1.2,
+        "reason": "deterministic_resolved",
+        "query_used": query_label,
+    }
+
+
+def _candidate_seed_queries(row: dict) -> list[tuple[str, dict]]:
+    seeds: list[tuple[str, dict]] = []
+    doi = normalize_doi(str(row.get("doi") or ""))
+    if doi:
+        seeds.append((f"doi:{doi}", {"doi": doi, "policy": "fast", "limit": 5}))
+    arxiv = normalize_arxiv_id(str(row.get("arxiv_id") or ""))
+    if arxiv:
+        seeds.append((f"arxiv:{arxiv}", {"arxiv_id": arxiv, "policy": "fast", "limit": 5}))
+    title = str(row.get("title") or "").strip()
+    if title:
+        seeds.append((f"title:{title}", {"title": title, "policy": "consensus", "limit": 3}))
+    return seeds
+
+
+def _fit_score(prompt: str, row: dict) -> tuple[float, str]:
+    stop_words = {
+        "the", "and", "for", "with", "from", "that", "this", "into", "about", "latest", "paper", "papers",
+        "research", "top", "conference", "conferences", "find", "details", "related", "work", "on",
+    }
+    prompt_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(prompt or "").lower())
+        if len(token) >= 3 and token not in stop_words
+    }
+    target_text = " ".join(
+        [
+            str(row.get("title") or ""),
+            str(row.get("abstract") or ""),
+            str(row.get("venue") or ""),
+            " ".join(str(k) for k in (row.get("keywords") or [])),
+            " ".join(str(c) for c in (row.get("categories") or [])),
+        ]
+    ).lower()
+    target_tokens = {
+        token for token in re.findall(r"[a-z0-9]+", target_text) if len(token) >= 3
+    }
+    if not prompt_tokens:
+        base = 0.0
+        overlap = set()
+    else:
+        overlap = prompt_tokens & target_tokens
+        base = float(len(overlap)) / float(len(prompt_tokens))
+    id_bonus = 0.15 if (row.get("doi") or row.get("arxiv_id")) else 0.0
+    score = min(1.0, base + id_bonus)
+    if overlap:
+        return score, f"overlap={','.join(sorted(list(overlap))[:6])}"
+    return score, "no_token_overlap"
 
 
 def _web_fallback_config(project_meta: dict, agentic_cfg: dict) -> dict:
@@ -315,12 +509,12 @@ def _search_web_searxng(
     query: str,
     top_n: int,
     connector_cfg: ConnectorConfig,
-) -> list[dict]:
+) -> tuple[list[dict], str]:
     if not bool(connector_cfg.enabled):
-        return []
+        return ([], "connector_disabled")
     connector = SearxngConnector(connector_cfg)
     if not connector.has_endpoint():
-        return []
+        return ([], "missing_endpoint")
     try:
         rows = connector.search(
             theme=query,
@@ -329,8 +523,8 @@ def _search_web_searxng(
             year_max=2100,
             limit=max(top_n * 4, 20),
         )
-    except Exception:
-        return []
+    except Exception as exc:
+        return ([], f"{type(exc).__name__}: {exc}")
     out: list[dict] = []
     for row in rows:
         payload = dict(row)
@@ -350,21 +544,254 @@ def _search_web_searxng(
         payload["reason"] = str(payload.get("reason") or "web_fallback")
         payload["query_used"] = query
         out.append(payload)
-    return out
+    return (out, "")
 
 
 def _route_retrieval(
     *,
     prompt: str,
+    plan: dict,
     project_meta: dict,
     agentic_cfg: dict,
     top_n: int,
+    progress_callback: ProgressCallback | None = None,
+    session_id: str = "",
+    cycle_index: int = 0,
 ) -> dict:
     adapters = build_adapters(project_meta)
-    scholarly = run_open_retrieval(prompt=prompt, adapters=adapters, top_n=top_n)
-    raw_rows = list(scholarly.get("raw") or [])
-    ranked_rows = list(scholarly.get("ranked") or [])
-    tool_calls = [f"scholarly:search_open:{type(adapter).__name__}" for adapter in adapters]
+    deterministic_queries = list(plan.get("deterministic_queries") or [])
+    queries = list(plan.get("query_plan") or [])
+    if not queries:
+        queries = plan_queries(str(plan.get("retrieval_query") or prompt))
+    raw_rows: list[dict] = []
+    deterministic_resolved = 0
+    deterministic_titles: list[str] = []
+
+    for det_index, det_query in enumerate(deterministic_queries, start=1):
+        label_parts = []
+        if det_query.get("doi"):
+            label_parts.append(f"doi:{det_query.get('doi')}")
+        if det_query.get("arxiv_id"):
+            label_parts.append(f"arxiv:{det_query.get('arxiv_id')}")
+        if det_query.get("title"):
+            label_parts.append(f"title:{det_query.get('title')}")
+        query_label = ",".join(label_parts) or "deterministic_query"
+        tool_call = "deterministic:resolve"
+        _emit_progress(
+            progress_callback,
+            event="agentic_tool_start",
+            session_id=session_id,
+            cycle_index=cycle_index,
+            query_index=det_index,
+            query=query_label,
+            adapter_index=1,
+            adapter_total=1,
+            tool_call=tool_call,
+        )
+        started = perf_counter()
+        det_error = ""
+        det_result: dict = {}
+        try:
+            det_result = resolve_deterministic(det_query, adapters, progress_callback=None)
+        except Exception as exc:
+            det_error = f"{type(exc).__name__}: {exc}"
+        resolved = str(det_result.get("status") or "") == "resolved" and bool((det_result.get("paper") or {}).get("paper_id"))
+        if resolved:
+            raw_rows.append(_deterministic_result_to_row(det_result, query_label))
+            deterministic_resolved += 1
+            resolved_title = str((det_result.get("paper") or {}).get("title") or "").strip()
+            if resolved_title:
+                deterministic_titles.append(resolved_title)
+        elapsed_ms = int((perf_counter() - started) * 1000)
+        detail = f"status={det_result.get('status','')} reason={det_result.get('reason','')}".strip()
+        _emit_progress(
+            progress_callback,
+            event="agentic_tool_done",
+            session_id=session_id,
+            cycle_index=cycle_index,
+            query_index=det_index,
+            query=query_label,
+            tool_call=tool_call,
+            rows_returned=1 if resolved else 0,
+            elapsed_ms=elapsed_ms,
+            error=det_error,
+            detail=detail,
+        )
+
+    if deterministic_titles:
+        replanned_seed = f"{deterministic_titles[0]} related work".strip()
+        queries = plan_queries(replanned_seed)
+        _emit_progress(
+            progress_callback,
+            event="agentic_query_replanned",
+            session_id=session_id,
+            cycle_index=cycle_index,
+            reason="deterministic_title_seed",
+            replanned_seed=replanned_seed,
+            query_count=len(queries),
+        )
+
+    for query_index, plan_item in enumerate(queries, start=1):
+        query = str(plan_item.get("query") or "").strip()
+        _emit_progress(
+            progress_callback,
+            event="agentic_query_start",
+            session_id=session_id,
+            cycle_index=cycle_index,
+            query_index=query_index,
+            query_total=len(queries),
+            query=query,
+        )
+        for adapter_index, adapter in enumerate(adapters, start=1):
+            adapter_name = type(adapter).__name__
+            tool_call = f"scholarly:search_open:{adapter_name}"
+            _emit_progress(
+                progress_callback,
+                event="agentic_tool_start",
+                session_id=session_id,
+                cycle_index=cycle_index,
+                query_index=query_index,
+                query=query,
+                adapter_index=adapter_index,
+                adapter_total=len(adapters),
+                tool_call=tool_call,
+            )
+            started = perf_counter()
+            error = ""
+            rows: list[dict] = []
+            try:
+                rows = adapter.search_open(query, limit=max(top_n * 4, 20))
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+            elapsed_ms = int((perf_counter() - started) * 1000)
+            _emit_progress(
+                progress_callback,
+                event="agentic_tool_done",
+                session_id=session_id,
+                cycle_index=cycle_index,
+                query_index=query_index,
+                query=query,
+                tool_call=tool_call,
+                rows_returned=len(rows),
+                elapsed_ms=elapsed_ms,
+                error=error,
+            )
+            for row in rows:
+                row_copy = dict(row)
+                row_copy["query_used"] = query
+                raw_rows.append(row_copy)
+
+    discovery_ranked = _rank_rows(raw_rows)
+    ranked_rows: list[dict] = []
+    keep_count = 0
+    ignore_count = 0
+    deterministic_capable = all(
+        hasattr(adapter, "lookup_doi") and hasattr(adapter, "lookup_arxiv") and hasattr(adapter, "search_title")
+        for adapter in adapters
+    )
+
+    if deterministic_capable:
+        seen_seed: set[str] = set()
+        verified_rows: list[dict] = []
+        fit_threshold = float((agentic_cfg.get("fit_filter") or {}).get("min_fit_score", 0.12)) if isinstance(agentic_cfg, dict) else 0.12
+        max_seed_checks = max(top_n * 6, 24)
+        for row in discovery_ranked:
+            for seed_label, seed_query in _candidate_seed_queries(row):
+                if seed_label in seen_seed:
+                    continue
+                seen_seed.add(seed_label)
+                tool_call = "deterministic:resolve_candidate"
+                _emit_progress(
+                    progress_callback,
+                    event="agentic_tool_start",
+                    session_id=session_id,
+                    cycle_index=cycle_index,
+                    query_index=len(queries) + 1,
+                    query=seed_label,
+                    adapter_index=1,
+                    adapter_total=1,
+                    tool_call=tool_call,
+                )
+                started = perf_counter()
+                resolved_result: dict = {}
+                resolve_error = ""
+                try:
+                    resolved_result = resolve_deterministic(seed_query, adapters, progress_callback=None)
+                except Exception as exc:
+                    resolve_error = f"{type(exc).__name__}: {exc}"
+                elapsed_ms = int((perf_counter() - started) * 1000)
+                resolved = str(resolved_result.get("status") or "") == "resolved" and bool((resolved_result.get("paper") or {}).get("paper_id"))
+                filter_decision = "ignore_unresolved"
+                filter_reason = "deterministic_not_resolved"
+                rows_returned = 0
+                if resolved:
+                    det_row = _deterministic_result_to_row(resolved_result, seed_label)
+                    fit_score, fit_reason = _fit_score(prompt, det_row)
+                    det_row["score"] = max(float(det_row.get("score", 0.0) or 0.0), fit_score)
+                    rows_returned = 1
+                    if fit_score >= fit_threshold:
+                        verified_rows.append(det_row)
+                        keep_count += 1
+                        filter_decision = "keep"
+                        filter_reason = f"fit={fit_score:.3f} {fit_reason}"
+                    else:
+                        ignore_count += 1
+                        filter_decision = "ignore_low_fit"
+                        filter_reason = f"fit={fit_score:.3f} {fit_reason}"
+                else:
+                    ignore_count += 1
+                _emit_progress(
+                    progress_callback,
+                    event="agentic_tool_done",
+                    session_id=session_id,
+                    cycle_index=cycle_index,
+                    query_index=len(queries) + 1,
+                    query=seed_label,
+                    tool_call=tool_call,
+                    rows_returned=rows_returned,
+                    elapsed_ms=elapsed_ms,
+                    error=resolve_error,
+                    detail=f"{filter_decision}:{filter_reason}",
+                )
+                _emit_progress(
+                    progress_callback,
+                    event="agentic_candidate_filter",
+                    session_id=session_id,
+                    cycle_index=cycle_index,
+                    candidate_seed=seed_label,
+                    decision=filter_decision,
+                    reason=filter_reason,
+                )
+                if len(seen_seed) >= max_seed_checks:
+                    break
+            if len(seen_seed) >= max_seed_checks:
+                break
+        if verified_rows:
+            ranked_rows = _rank_rows(verified_rows)
+        else:
+            raw_fit_rows: list[dict] = []
+            raw_fit_threshold = max(0.06, fit_threshold * 0.75)
+            for row in discovery_ranked:
+                fit_score, fit_reason = _fit_score(prompt, row)
+                if fit_score >= raw_fit_threshold:
+                    row_copy = dict(row)
+                    row_copy["score"] = max(float(row_copy.get("score", 0.0) or 0.0), fit_score)
+                    raw_fit_rows.append(row_copy)
+            if raw_fit_rows:
+                ranked_rows = _rank_rows(raw_fit_rows)
+                keep_count += len(raw_fit_rows)
+            else:
+                ranked_rows = []
+    else:
+        ranked_rows = discovery_ranked
+        keep_count = len(ranked_rows)
+
+    tool_calls: list[str] = []
+    if deterministic_queries:
+        tool_calls.append("deterministic:resolve")
+    if deterministic_capable:
+        tool_calls.append("deterministic:resolve_candidate")
+    tool_calls.extend(f"scholarly:search_open:{type(adapter).__name__}" for adapter in adapters)
 
     fallback_cfg = _web_fallback_config(project_meta, agentic_cfg)
     min_ranked = max(1, min(int(top_n), int(fallback_cfg["min_ranked_candidates"])))
@@ -380,10 +807,35 @@ def _route_retrieval(
             router_decision = "scholarly_only_provider_unsupported"
         else:
             tool_calls.append("web:searxng:search")
-            fallback_rows = _search_web_searxng(
+            _emit_progress(
+                progress_callback,
+                event="agentic_tool_start",
+                session_id=session_id,
+                cycle_index=cycle_index,
+                query_index=len(queries) + 1,
+                query=prompt,
+                adapter_index=1,
+                adapter_total=1,
+                tool_call="web:searxng:search",
+            )
+            started = perf_counter()
+            fallback_rows, fallback_error = _search_web_searxng(
                 query=prompt,
                 top_n=top_n,
                 connector_cfg=fallback_cfg["searx_config"],
+            )
+            elapsed_ms = int((perf_counter() - started) * 1000)
+            _emit_progress(
+                progress_callback,
+                event="agentic_tool_done",
+                session_id=session_id,
+                cycle_index=cycle_index,
+                query_index=len(queries) + 1,
+                query=prompt,
+                tool_call="web:searxng:search",
+                rows_returned=len(fallback_rows),
+                elapsed_ms=elapsed_ms,
+                error=fallback_error,
             )
             if fallback_rows:
                 fallback_triggered = True
@@ -396,23 +848,32 @@ def _route_retrieval(
     return {
         "raw": raw_rows,
         "ranked": ranked_rows,
-        "query_plan": scholarly.get("query_plan") or [],
+        "query_plan": queries,
         "tool_calls": tool_calls,
         "router_decision": router_decision,
         "fallback_triggered": fallback_triggered,
         "insufficiency_reason": insufficiency_reason,
+        "deterministic_resolved": deterministic_resolved,
+        "deterministic_queries": deterministic_queries,
+        "kept_candidates": keep_count,
+        "ignored_candidates": ignore_count,
     }
 
 
 def _build_cycle_plan(prompt: str, workflow: str, cycle_index: int, previous_candidates: list[dict]) -> dict:
+    signals = _extract_prompt_signals(prompt)
+    deterministic_queries = _build_deterministic_queries(signals)
     if workflow == "theme_refine":
         if cycle_index == 1 or not previous_candidates:
-            seed = prompt.strip()
-            rationale = "theme_refine_bootstrap"
+            seed = _derive_query_seed(prompt, signals)
+            if deterministic_queries:
+                rationale = "identifier_first_then_theme_expand"
+            else:
+                rationale = "theme_refine_bootstrap"
         else:
             anchor_title = str(previous_candidates[0].get("title") or "").strip()
             anchor = " ".join(anchor_title.split()[:6])
-            seed = f"{prompt.strip()} {anchor}".strip()
+            seed = f"{_derive_query_seed(prompt, signals)} {anchor}".strip()
             rationale = "theme_refine_iterative_narrowing"
         query_plan = plan_queries(seed)
         planned_query = query_plan[0]["query"] if query_plan else seed
@@ -421,14 +882,18 @@ def _build_cycle_plan(prompt: str, workflow: str, cycle_index: int, previous_can
             "planned_query": planned_query,
             "retrieval_query": planned_query,
             "query_plan": query_plan,
+            "signals": signals,
+            "deterministic_queries": deterministic_queries,
             "rationale": rationale,
         }
-    planned = prompt.strip()
+    planned = _derive_query_seed(prompt, signals)
     return {
         "workflow": workflow,
         "planned_query": planned,
         "retrieval_query": planned,
         "query_plan": [{"query": planned, "connector_scope": "all", "intent": "generic"}],
+        "signals": signals,
+        "deterministic_queries": deterministic_queries,
         "rationale": "generic_bootstrap",
     }
 
@@ -441,8 +906,11 @@ def _decision_for_cycle(
     shortlisted: list[dict],
     previous_keys: list[str],
     current_keys: list[str],
+    ignored_candidates: int = 0,
 ) -> tuple[str, str, str]:
     if not shortlisted:
+        if ignored_candidates > 0:
+            return ("stop", "needs_user_feedback", "needs_feedback")
         return ("stop", "no_candidates", "no_candidates")
     if cycle_index >= max_cycles:
         return ("stop", "cycle_budget_reached", "max_cycles_reached")
@@ -490,6 +958,33 @@ def _build_candidate_outputs(
             }
         )
     return candidate_rows, final_candidates, current_keys
+
+
+def _preview_candidates(rows: list[dict], limit: int = 3) -> list[dict]:
+    out: list[dict] = []
+    for idx, row in enumerate(rows[:limit], start=1):
+        key = str(row.get("candidate_key") or "").strip()
+        if not key:
+            key = _candidate_key(row)
+        out.append(
+            {
+                "rank": idx,
+                "candidate_key": key,
+                "title": str(row.get("title") or ""),
+                "source": str(row.get("source") or ""),
+                "year": str(row.get("year") or ""),
+                "score": float(row.get("score", 0.0) or 0.0),
+            }
+        )
+    return out
+
+
+def _feedback_template() -> dict:
+    return {
+        "keep": "candidate_key_1,candidate_key_2",
+        "remove": "candidate_key_3",
+        "why_missing": "brief description of expected missing papers",
+    }
 
 
 def _resolve_session_id(paths: dict[str, Path], requested_session_id: str) -> str:
@@ -552,6 +1047,7 @@ def run_retrieve_agentic(
     top_n: int = 5,
     max_cycles: int = 1,
     session_id: str = "",
+    progress_callback: ProgressCallback | None = None,
 ) -> Path:
     pdir = project_dir(project_id)
     paths = _agentic_paths(pdir)
@@ -564,6 +1060,7 @@ def run_retrieve_agentic(
     requested_cycles = _safe_int(max_cycles or agentic_cfg.get("max_cycles", 1) or 1, default=1)
     effective_max_cycles = max(1, requested_cycles)
     workflow_name = str(workflow or agentic_cfg.get("workflow", "theme_refine") or "theme_refine").strip() or "theme_refine"
+    llm_runtime = _llm_runtime(agentic_cfg if isinstance(agentic_cfg, dict) else {})
 
     resolved_prompt = str(prompt or "").strip()
     resolved_session_id = str(session_id or "").strip() or _new_session_id(resolved_prompt or workflow_name)
@@ -603,6 +1100,12 @@ def run_retrieve_agentic(
     request_payload.setdefault("limits", {})
     request_payload["limits"]["top_n"] = effective_top_n
     request_payload["limits"]["max_cycles"] = effective_max_cycles
+    request_payload["llm"] = {
+        "backend": llm_runtime["backend"],
+        "model": llm_runtime["model"],
+        "api_key_env": llm_runtime["api_key_env"],
+        "api_key_present": bool(llm_runtime["api_key_present"]),
+    }
     request_payload["updated_at"] = _utc_now()
 
     default_session = _session_contract(
@@ -643,6 +1146,13 @@ def run_retrieve_agentic(
     questions_payload["updated_at"] = _utc_now()
 
     if str(session_payload.get("status") or "").strip().lower() == "completed":
+        _emit_progress(
+            progress_callback,
+            event="agentic_session_already_completed",
+            session_id=resolved_session_id,
+            current_cycle=_safe_int(session_payload.get("current_cycle"), 0),
+            stop_reason=str(session_payload.get("stop_reason") or ""),
+        )
         write_yaml(paths["request"], request_payload)
         write_yaml(paths["session"], session_payload)
         write_yaml(paths["result"], result_payload)
@@ -661,6 +1171,18 @@ def run_retrieve_agentic(
     session_payload["status"] = "running"
     session_payload["state"] = "plan"
     session_payload["updated_at"] = _utc_now()
+    _emit_progress(
+        progress_callback,
+        event="agentic_start",
+        project_id=project_id,
+        session_id=resolved_session_id,
+        workflow=workflow_name,
+        top_n=effective_top_n,
+        max_cycles=effective_max_cycles,
+        llm_backend=llm_runtime["backend"],
+        llm_model=llm_runtime["model"],
+        llm_api_key_present=bool(llm_runtime["api_key_present"]),
+    )
     write_yaml(paths["session"], session_payload)
     write_yaml(paths["request"], request_payload)
     write_yaml(paths["questions"], questions_payload)
@@ -676,34 +1198,103 @@ def run_retrieve_agentic(
             session_payload["state"] = "completed"
             session_payload["stop_reason"] = str(session_payload.get("stop_reason") or result_payload["stop_reason"])
             session_payload["updated_at"] = _utc_now()
+            _emit_progress(
+                progress_callback,
+                event="agentic_complete",
+                session_id=resolved_session_id,
+                status="completed",
+                stop_reason=str(result_payload.get("stop_reason") or ""),
+                cycle_count=current_cycle,
+                final_candidates=len(list(result_payload.get("final_candidates") or [])),
+            )
             break
 
         cycle_index = current_cycle + 1
         previous_final = list(result_payload.get("final_candidates") or [])
         previous_keys = _final_candidate_keys(previous_final)
+        _emit_progress(
+            progress_callback,
+            event="agentic_cycle_context",
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
+            previous_candidate_count=len(previous_final),
+            previous_preview=_preview_candidates(previous_final, limit=3),
+        )
 
         session_payload["state"] = "plan"
         session_payload["updated_at"] = _utc_now()
+        _emit_progress(
+            progress_callback,
+            event="agentic_state",
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
+            state="plan",
+        )
         write_yaml(paths["session"], session_payload)
 
         plan = _build_cycle_plan(resolved_prompt, workflow_name, cycle_index, previous_final)
+        _emit_progress(
+            progress_callback,
+            event="agentic_plan_ready",
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
+            planned_query=plan["planned_query"],
+            retrieval_query=plan["retrieval_query"],
+            plan_rationale=plan["rationale"],
+            extracted_signals=plan.get("signals") or {},
+            deterministic_queries=plan.get("deterministic_queries") or [],
+            open_query_plan=plan.get("query_plan") or [],
+        )
 
         session_payload["state"] = "retrieve"
         session_payload["updated_at"] = _utc_now()
+        _emit_progress(
+            progress_callback,
+            event="agentic_state",
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
+            state="retrieve",
+        )
         write_yaml(paths["session"], session_payload)
 
         retrieval_result = _route_retrieval(
             prompt=plan["retrieval_query"],
+            plan=plan,
             project_meta=pmeta if isinstance(pmeta, dict) else {},
             agentic_cfg=agentic_cfg if isinstance(agentic_cfg, dict) else {},
             top_n=effective_top_n,
+            progress_callback=progress_callback,
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
         )
         raw_rows = list(retrieval_result.get("raw") or [])
         ranked_rows = list(retrieval_result.get("ranked") or [])
         shortlisted = ranked_rows[:effective_top_n]
+        _emit_progress(
+            progress_callback,
+            event="agentic_retrieve_done",
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
+            raw_candidates=len(raw_rows),
+            ranked_candidates=len(shortlisted),
+            router_decision=str(retrieval_result.get("router_decision") or ""),
+            fallback_triggered=bool(retrieval_result.get("fallback_triggered")),
+            insufficiency_reason=str(retrieval_result.get("insufficiency_reason") or ""),
+            tool_calls=list(retrieval_result.get("tool_calls") or []),
+            deterministic_resolved=int(retrieval_result.get("deterministic_resolved") or 0),
+            kept_candidates=int(retrieval_result.get("kept_candidates") or 0),
+            ignored_candidates=int(retrieval_result.get("ignored_candidates") or 0),
+        )
 
         session_payload["state"] = "rank"
         session_payload["updated_at"] = _utc_now()
+        _emit_progress(
+            progress_callback,
+            event="agentic_state",
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
+            state="rank",
+        )
         write_yaml(paths["session"], session_payload)
 
         candidate_rows, final_candidates, current_keys = _build_candidate_outputs(
@@ -711,9 +1302,24 @@ def run_retrieve_agentic(
             session_id=resolved_session_id,
             cycle_index=cycle_index,
         )
+        _emit_progress(
+            progress_callback,
+            event="agentic_ranked_preview",
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
+            shortlisted_count=len(final_candidates),
+            shortlisted_preview=_preview_candidates(final_candidates, limit=3),
+        )
         _write_candidates_latest(paths["candidates"], candidate_rows)
 
         session_payload["state"] = "decide"
+        _emit_progress(
+            progress_callback,
+            event="agentic_state",
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
+            state="decide",
+        )
         decision, decision_reason, stop_reason = _decision_for_cycle(
             workflow=workflow_name,
             cycle_index=cycle_index,
@@ -721,6 +1327,7 @@ def run_retrieve_agentic(
             shortlisted=shortlisted,
             previous_keys=previous_keys,
             current_keys=current_keys,
+            ignored_candidates=int(retrieval_result.get("ignored_candidates") or 0),
         )
         cycle_row = {
             "timestamp": _utc_now(),
@@ -782,12 +1389,46 @@ def run_retrieve_agentic(
         session_payload["last_decision_reason"] = decision_reason
         session_payload["stop_reason"] = stop_reason
         session_payload["updated_at"] = _utc_now()
+        _emit_progress(
+            progress_callback,
+            event="agentic_decision",
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
+            decision=decision,
+            decision_reason=decision_reason,
+            stop_reason=stop_reason,
+            candidate_delta=len(set(current_keys) - set(previous_keys)),
+        )
+        _emit_progress(
+            progress_callback,
+            event="agentic_feedback_expected",
+            session_id=resolved_session_id,
+            cycle_index=cycle_index,
+            optional=not (decision_reason == "needs_user_feedback"),
+            pending_questions=1 if decision_reason == "needs_user_feedback" else 0,
+            expected_answers=_feedback_template(),
+            command_hint=(
+                "python -m src.cli retrieve-agentic-answer "
+                f"{project_id} --session-id {resolved_session_id} "
+                "--answer keep=<candidate_keys_csv> --answer remove=<candidate_keys_csv> "
+                "--answer why_missing=<text>"
+            ),
+        )
 
         if decision == "stop":
             result_payload["status"] = "completed"
             result_payload["stop_reason"] = stop_reason
             session_payload["status"] = "completed"
             session_payload["state"] = "completed"
+            _emit_progress(
+                progress_callback,
+                event="agentic_complete",
+                session_id=resolved_session_id,
+                status="completed",
+                stop_reason=stop_reason,
+                cycle_count=cycle_index,
+                final_candidates=len(final_candidates),
+            )
             break
 
         result_payload["status"] = "running"

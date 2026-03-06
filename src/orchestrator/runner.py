@@ -41,6 +41,7 @@ def run_step(project_id: str, step: str, **kwargs):
             top_n=int(kwargs.get("top_n", 5)),
             max_cycles=int(kwargs.get("max_cycles", 1)),
             session_id=kwargs.get("session_id", ""),
+            progress_callback=kwargs.get("progress_callback"),
         )
     if step == "retrieve-agentic-start":
         return run_retrieve_agentic(
@@ -50,6 +51,7 @@ def run_step(project_id: str, step: str, **kwargs):
             top_n=int(kwargs.get("top_n", 5)),
             max_cycles=int(kwargs.get("max_cycles", 1)),
             session_id=kwargs.get("session_id", ""),
+            progress_callback=kwargs.get("progress_callback"),
         )
     if step == "retrieve-agentic-status":
         return get_agentic_status(

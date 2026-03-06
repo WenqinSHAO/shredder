@@ -65,6 +65,11 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
                         "workflow": "theme_refine",
                         "top_n": 5,
                         "max_cycles": 3,
+                        "llm": {
+                            "backend": "deepseek",
+                            "model": "deepseek-chat",
+                            "api_key_env": "DS_API_KEY",
+                        },
                         "web_fallback": {
                             "enabled": True,
                             "provider": "searxng",

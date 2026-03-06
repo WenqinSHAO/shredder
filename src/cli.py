@@ -22,6 +22,185 @@ def _parse_answers(items: list[str]) -> dict[str, str]:
     return out
 
 
+def _short_text(value: str, max_len: int = 96) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
+def _print_candidate_preview(prefix: str, preview_rows: list[dict]) -> None:
+    for row in preview_rows:
+        print(
+            f"{prefix} rank={row.get('rank')} source={row.get('source')} year={row.get('year')} "
+            f"score={float(row.get('score') or 0.0):.3f} key={row.get('candidate_key')} "
+            f"title=\"{_short_text(str(row.get('title') or ''))}\"",
+            flush=True,
+        )
+
+
+def _print_retrieve_agentic_progress(event: dict) -> None:
+    name = str(event.get("event") or "")
+    if not name:
+        return
+    prefix = "[retrieve-agentic]"
+
+    if name == "agentic_start":
+        llm_status = "ready" if event.get("llm_api_key_present") else "missing-key"
+        print(
+            f"{prefix} start session_id={event.get('session_id')} workflow={event.get('workflow')} "
+            f"top_n={event.get('top_n')} max_cycles={event.get('max_cycles')} "
+            f"llm={event.get('llm_backend')}:{event.get('llm_model')}({llm_status})",
+            flush=True,
+        )
+        return
+    if name == "agentic_session_already_completed":
+        print(
+            f"{prefix} resume no-op session_id={event.get('session_id')} "
+            f"cycle={event.get('current_cycle')} stop_reason={event.get('stop_reason')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_state":
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} state={event.get('state')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_cycle_context":
+        prev_count = int(event.get("previous_candidate_count") or 0)
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} context previous_finalists={prev_count}",
+            flush=True,
+        )
+        preview = event.get("previous_preview") or []
+        if preview:
+            _print_candidate_preview(f"{prefix} previous", preview)
+        return
+    if name == "agentic_plan_ready":
+        query = str(event.get("retrieval_query") or "")
+        q_preview = (query[:117] + "...") if len(query) > 120 else query
+        signals = event.get("extracted_signals") or {}
+        det_queries = event.get("deterministic_queries") or []
+        open_plan = event.get("open_query_plan") or []
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} planning rationale={event.get('plan_rationale')} "
+            f"query=\"{q_preview}\"",
+            flush=True,
+        )
+        print(
+            f"{prefix} planning signals doi={len(signals.get('dois') or [])} "
+            f"arxiv={len(signals.get('arxiv_ids') or [])} title_hint={int(bool(signals.get('title_hint')))}",
+            flush=True,
+        )
+        if det_queries:
+            print(f"{prefix} planning deterministic_queries={len(det_queries)}", flush=True)
+            for det in det_queries:
+                ident = det.get("doi") or det.get("arxiv_id") or det.get("title") or ""
+                print(f"{prefix} deterministic query={_short_text(str(ident), 120)}", flush=True)
+        if open_plan:
+            print(f"{prefix} planning open_queries={len(open_plan)}", flush=True)
+            for idx, item in enumerate(open_plan[:3], start=1):
+                print(f"{prefix} open_query[{idx}]={_short_text(str(item.get('query') or ''), 120)}", flush=True)
+        return
+    if name == "agentic_query_start":
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} query_step={event.get('query_index')}/{event.get('query_total')} "
+            f"query=\"{_short_text(str(event.get('query') or ''), 140)}\"",
+            flush=True,
+        )
+        return
+    if name == "agentic_query_replanned":
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} replanned_queries reason={event.get('reason')} "
+            f"seed=\"{_short_text(str(event.get('replanned_seed') or ''), 120)}\" count={event.get('query_count')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_tool_start":
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} tool_start action={event.get('tool_call')} "
+            f"query=\"{_short_text(str(event.get('query') or ''), 110)}\"",
+            flush=True,
+        )
+        return
+    if name == "agentic_tool_done":
+        error = str(event.get("error") or "").strip()
+        detail = str(event.get("detail") or "").strip()
+        error_extra = f" error={error}" if error else ""
+        detail_extra = f" detail={detail}" if detail and not error else ""
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} tool_done action={event.get('tool_call')} "
+            f"rows={event.get('rows_returned')} elapsed_ms={event.get('elapsed_ms')}{detail_extra}{error_extra}",
+            flush=True,
+        )
+        return
+    if name == "agentic_retrieve_done":
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} tool_results raw={event.get('raw_candidates')} "
+            f"ranked={event.get('ranked_candidates')} router={event.get('router_decision')} "
+            f"fallback={int(bool(event.get('fallback_triggered')))} insufficiency={event.get('insufficiency_reason') or 'none'} "
+            f"deterministic_resolved={event.get('deterministic_resolved')} "
+            f"kept={event.get('kept_candidates')} ignored={event.get('ignored_candidates')}",
+            flush=True,
+        )
+        tool_calls = event.get("tool_calls") or []
+        for tool_call in tool_calls:
+            print(f"{prefix} tool action={tool_call}", flush=True)
+        return
+    if name == "agentic_candidate_filter":
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} candidate_filter seed={event.get('candidate_seed')} "
+            f"decision={event.get('decision')} reason={event.get('reason')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_ranked_preview":
+        count = int(event.get("shortlisted_count") or 0)
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} ranking shortlisted={count}",
+            flush=True,
+        )
+        preview = event.get("shortlisted_preview") or []
+        if preview:
+            _print_candidate_preview(f"{prefix} result", preview)
+        return
+    if name == "agentic_decision":
+        stop_reason = str(event.get("stop_reason") or "")
+        stop_extra = f" stop_reason={stop_reason}" if stop_reason else ""
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} reasoning decision={event.get('decision')} "
+            f"reason={event.get('decision_reason')}{stop_extra}",
+            flush=True,
+        )
+        return
+    if name == "agentic_feedback_expected":
+        optional = bool(event.get("optional"))
+        mode = "optional" if optional else "required"
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} feedback {mode} pending_questions={event.get('pending_questions')}",
+            flush=True,
+        )
+        expected = event.get("expected_answers") or {}
+        if expected:
+            print(
+                f"{prefix} feedback_keys keep/remove/why_missing "
+                f"example_keep=\"{expected.get('keep', '')}\"",
+                flush=True,
+            )
+        command_hint = str(event.get("command_hint") or "").strip()
+        if command_hint:
+            print(f"{prefix} feedback_cmd {command_hint}", flush=True)
+        return
+    if name == "agentic_complete":
+        print(
+            f"{prefix} complete status={event.get('status')} stop_reason={event.get('stop_reason')} "
+            f"cycles={event.get('cycle_count')} finalists={event.get('final_candidates')}",
+            flush=True,
+        )
+        return
+
+
 def _print_retrieve_paper_progress(event: dict) -> None:
     name = str(event.get("event") or "")
     if not name:
@@ -232,6 +411,7 @@ def main() -> None:
                 top_n=args.top_n,
                 max_cycles=args.max_cycles,
                 session_id=args.session_id,
+                progress_callback=_print_retrieve_agentic_progress,
             )
             print(f"Agentic retrieval complete: {result}")
         elif args.cmd == "retrieve-agentic-start":
@@ -243,6 +423,7 @@ def main() -> None:
                 top_n=args.top_n,
                 max_cycles=args.max_cycles,
                 session_id=args.session_id,
+                progress_callback=_print_retrieve_agentic_progress,
             )
             print(f"Agentic retrieval start/continue complete: {result}")
         elif args.cmd == "retrieve-agentic-status":
