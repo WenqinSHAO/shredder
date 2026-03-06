@@ -6,6 +6,7 @@ Current module-level progress bars are maintained in section `2) Module Progress
 Current status (2026-03-06):
 - Deterministic paper/author metadata retrieval is stabilized for handoff (`M-Deterministic-RC1` achieved).
 - Next active focus is Agentic Meta Info Retrieval + Data Backend/RAG integration.
+- Agentic Meta retrieval board opened with Increment-1 acceptance criteria.
 - Remaining deterministic items are non-blocking hardening/wishlist unless they become concrete blockers.
 
 ## Milestones
