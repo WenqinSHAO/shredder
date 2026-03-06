@@ -24,6 +24,7 @@ def run_step(project_id: str, step: str, **kwargs):
             arxiv_url=kwargs.get("arxiv_url", ""),
             arxiv_id=kwargs.get("arxiv_id", ""),
             policy=kwargs.get("policy", ""),
+            progress_callback=kwargs.get("progress_callback"),
         )
     if step == "retrieve-open":
         return run_retrieve_open(

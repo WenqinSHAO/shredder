@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from html import unescape
 from importlib import import_module
 from importlib.util import find_spec
 from typing import Any
@@ -46,6 +48,59 @@ def _normalize_author(author: dict) -> dict:
     }
 
 
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    text = unescape(text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return " ".join(text.split())
+
+
+def _normalize_terms(values: Any, max_terms: int = 12) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        raw_items = [values]
+    elif isinstance(values, (list, tuple, set)):
+        raw_items = list(values)
+    else:
+        raw_items = [values]
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        term = _clean_text(item)
+        if not term:
+            continue
+        lowered = term.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        out.append(term)
+        if len(out) >= max_terms:
+            break
+    return out
+
+
+def _decode_abstract_inverted_index(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    tokens: list[tuple[int, str]] = []
+    for token, positions in payload.items():
+        if not isinstance(positions, list):
+            continue
+        for pos in positions:
+            if isinstance(pos, int):
+                tokens.append((pos, str(token)))
+    if not tokens:
+        return ""
+    tokens.sort(key=lambda item: item[0])
+    return " ".join(tok for _, tok in tokens)
+
+
 def _normalize_paper_row(row: dict, source: str, reason: str, score: float = 1.0) -> dict:
     authors = [_normalize_author(a) for a in (row.get("authors") or [])]
     return {
@@ -57,6 +112,9 @@ def _normalize_paper_row(row: dict, source: str, reason: str, score: float = 1.0
         "doi": normalize_doi(str(row.get("doi") or "")),
         "arxiv_id": normalize_arxiv_id(str(row.get("arxiv_id") or "")),
         "url": str(row.get("url") or "").strip(),
+        "abstract": _clean_text(row.get("abstract")),
+        "keywords": _normalize_terms(row.get("keywords") or []),
+        "categories": _normalize_terms(row.get("categories") or []),
         "authors": authors,
         "score": float(row.get("score", score)),
         "reason": reason,
@@ -155,6 +213,9 @@ class HabaneroAdapter(RetrievalAdapter):
                     "doi": message.get("DOI", doi),
                     "arxiv_id": "",
                     "url": message.get("URL", ""),
+                    "abstract": message.get("abstract", ""),
+                    "keywords": message.get("subject") or [],
+                    "categories": message.get("subject") or [],
                     "authors": [
                         {
                             "name": f"{(a.get('given') or '').strip()} {(a.get('family') or '').strip()}".strip(),
@@ -194,6 +255,9 @@ class HabaneroAdapter(RetrievalAdapter):
                         "doi": item.get("DOI", ""),
                         "arxiv_id": "",
                         "url": item.get("URL", ""),
+                        "abstract": item.get("abstract", ""),
+                        "keywords": item.get("subject") or [],
+                        "categories": item.get("subject") or [],
                         "authors": [],
                         "score": 0.4,
                     },
@@ -246,6 +310,9 @@ class ArxivAdapter(RetrievalAdapter):
                         "doi": "",
                         "arxiv_id": arxiv_id,
                         "url": str(getattr(item, "entry_id", "") or data.get("entry_id") or ""),
+                        "abstract": str(getattr(item, "summary", "") or data.get("summary") or ""),
+                        "keywords": list(getattr(item, "categories", None) or data.get("categories") or []),
+                        "categories": list(getattr(item, "categories", None) or data.get("categories") or []),
                         "authors": authors,
                     },
                     source=self.name,
@@ -284,6 +351,9 @@ class ArxivAdapter(RetrievalAdapter):
                         "doi": "",
                         "arxiv_id": arxiv_id,
                         "url": str(getattr(item, "entry_id", "") or data.get("entry_id") or ""),
+                        "abstract": str(getattr(item, "summary", "") or data.get("summary") or ""),
+                        "keywords": list(getattr(item, "categories", None) or data.get("categories") or []),
+                        "categories": list(getattr(item, "categories", None) or data.get("categories") or []),
                         "authors": [],
                         "score": 0.6,
                     },
@@ -322,6 +392,13 @@ class PyAlexAdapter(RetrievalAdapter):
             )
 
         primary_source = (work.get("primary_location") or {}).get("source") or {}
+        concepts = [str((c or {}).get("display_name") or "") for c in (work.get("concepts") or [])]
+        categories: list[str] = []
+        primary_topic = work.get("primary_topic") or {}
+        for key in ("subfield", "field", "domain"):
+            name = str((primary_topic.get(key) or {}).get("display_name") or "")
+            if name:
+                categories.append(name)
         return _normalize_paper_row(
             {
                 "source_id": str(work.get("id") or ""),
@@ -331,6 +408,9 @@ class PyAlexAdapter(RetrievalAdapter):
                 "doi": str(work.get("doi") or ""),
                 "arxiv_id": normalize_arxiv_id(str((work.get("ids") or {}).get("arxiv") or "")),
                 "url": str((work.get("primary_location") or {}).get("landing_page_url") or ""),
+                "abstract": _decode_abstract_inverted_index(work.get("abstract_inverted_index") or {}),
+                "keywords": concepts,
+                "categories": categories,
                 "authors": authors,
                 "score": score,
             },
@@ -391,6 +471,7 @@ class SemanticScholarAdapter(RetrievalAdapter):
                     "affiliations": affiliations,
                 }
             )
+        categories = [str((item or {}).get("category") or "") for item in (paper.get("s2FieldsOfStudy") or [])]
         return _normalize_paper_row(
             {
                 "source_id": str(paper.get("paperId") or ""),
@@ -400,6 +481,9 @@ class SemanticScholarAdapter(RetrievalAdapter):
                 "doi": str(ext.get("DOI") or ""),
                 "arxiv_id": str(ext.get("ArXiv") or ""),
                 "url": str(paper.get("url") or ""),
+                "abstract": str(paper.get("abstract") or ""),
+                "keywords": [str(v) for v in (paper.get("fieldsOfStudy") or [])],
+                "categories": categories,
                 "authors": authors,
                 "score": score,
             },

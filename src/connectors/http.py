@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import socket
 import time
 from dataclasses import dataclass, field
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
 
 
@@ -74,7 +75,24 @@ def normalize_arxiv_id(raw: str | None) -> str:
     if not raw:
         return ""
     value = raw.strip().lower()
-    for prefix in ("arxiv:", "https://arxiv.org/abs/"):
-        if value.startswith(prefix):
-            value = value[len(prefix):]
+    if value.startswith("arxiv:"):
+        value = value[len("arxiv:"):]
+
+    parsed = None
+    if "arxiv.org/" in value:
+        parsed = urlparse(value if "://" in value else f"https://{value}")
+        path = (parsed.path or "").strip()
+        if path.startswith("/abs/"):
+            value = path[len("/abs/"):]
+        elif path.startswith("/pdf/"):
+            value = path[len("/pdf/"):]
+        else:
+            value = path.lstrip("/")
+
+    if parsed is None:
+        value = value.split("?", 1)[0].split("#", 1)[0]
+
+    if value.endswith(".pdf"):
+        value = value[: -len(".pdf")]
+    value = re.sub(r"v\d+$", "", value)
     return value

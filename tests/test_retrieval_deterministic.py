@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from src.cli import main
 from src.retrieval.service import resolve_deterministic
@@ -107,6 +107,45 @@ class TestDeterministicResolverUnit(unittest.TestCase):
         self.assertEqual(result["status"], "resolved")
         self.assertEqual(result["paper"]["paper_id"], "arxiv:2401.12345")
 
+    def test_arxiv_http_url_with_version_normalizes_id(self):
+        result = resolve_deterministic({"arxiv_url": "http://arxiv.org/abs/2401.12345v1"}, [_ArxivAdapter()])
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["paper"]["paper_id"], "arxiv:2401.12345")
+
+    def test_merge_includes_abstract_keywords_and_categories(self):
+        class _MetaAdapter:
+            def lookup_doi(self, doi: str) -> list[dict]:
+                return [
+                    {
+                        "source": "meta",
+                        "source_id": doi,
+                        "title": "Deterministic Systems",
+                        "venue": "NSDI",
+                        "year": "2024",
+                        "doi": doi,
+                        "arxiv_id": "",
+                        "url": "https://doi.org/" + doi,
+                        "abstract": "Longer abstract content for metadata merge.",
+                        "keywords": ["deterministic", "systems"],
+                        "categories": ["distributed systems"],
+                        "authors": [],
+                        "score": 1.0,
+                        "reason": "lookup_doi",
+                    }
+                ]
+
+            def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+                return []
+
+            def search_title(self, title: str, limit: int = 5) -> list[dict]:
+                return []
+
+        result = resolve_deterministic({"doi": "10.1/xyz"}, [_MetaAdapter()])
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["paper"]["abstract"], "Longer abstract content for metadata merge.")
+        self.assertEqual(result["paper"]["keywords"], ["deterministic", "systems"])
+        self.assertEqual(result["paper"]["categories"], ["distributed systems"])
+
     def test_title_resolution_ambiguous_returns_no_write_signal(self):
         result = resolve_deterministic({"title": "Cache Systems for LLM"}, [_AmbiguousTitleAdapter()])
         self.assertEqual(result["status"], "ambiguous_requires_selection")
@@ -191,6 +230,16 @@ class TestDeterministicResolverUnit(unittest.TestCase):
         calls = result["diagnostics"]["adapter_calls"]
         self.assertEqual(calls[1]["action"], "skipped_due_fast_policy")
 
+    def test_progress_callback_emits_search_path_events(self):
+        events: list[dict] = []
+        result = resolve_deterministic({"doi": "10.1/xyz"}, [_DoiAdapter()], progress_callback=events.append)
+        self.assertEqual(result["status"], "resolved")
+        event_names = [event["event"] for event in events]
+        self.assertIn("resolve_start", event_names)
+        self.assertIn("adapter_query_start", event_names)
+        self.assertIn("adapter_query_done", event_names)
+        self.assertIn("resolve_complete", event_names)
+
 
 class TestCliDispatchUnit(unittest.TestCase):
     def test_cli_retrieve_paper_dispatches_without_project_bootstrap(self):
@@ -205,6 +254,7 @@ class TestCliDispatchUnit(unittest.TestCase):
             arxiv_url="",
             arxiv_id="",
             policy="",
+            progress_callback=ANY,
         )
 
 

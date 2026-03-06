@@ -6,6 +6,117 @@ from src.orchestrator.runner import run_step
 from src.utils.yamlx import YamlDependencyError
 
 
+def _print_retrieve_paper_progress(event: dict) -> None:
+    name = str(event.get("event") or "")
+    if not name:
+        return
+    prefix = "[retrieve-paper]"
+
+    if name == "retrieve_paper_start":
+        print(
+            f"{prefix} start query_mode={event.get('query_mode')} policy={event.get('requested_policy')}",
+            flush=True,
+        )
+        return
+    if name == "cache_lookup_start":
+        print(f"{prefix} cache lookup query_key={event.get('query_key')}", flush=True)
+        return
+    if name == "cache_lookup_hit":
+        print(f"{prefix} cache hit paper_id={event.get('paper_id')}", flush=True)
+        return
+    if name == "cache_lookup_miss":
+        print(f"{prefix} cache miss; falling back to adapters", flush=True)
+        return
+    if name == "resolve_start":
+        print(
+            f"{prefix} resolve lookup_mode={event.get('lookup_mode')} "
+            f"policy={event.get('effective_policy')} query_key={event.get('query_key')}",
+            flush=True,
+        )
+        return
+    if name == "input_warnings":
+        warnings = ",".join(event.get("warnings") or [])
+        print(f"{prefix} warnings={warnings}", flush=True)
+        return
+    if name == "adapter_query_start":
+        print(
+            f"{prefix} adapter {event.get('adapter_index')}/{event.get('adapter_total')} "
+            f"start {event.get('adapter')} mode={event.get('lookup_mode')}",
+            flush=True,
+        )
+        return
+    if name == "adapter_query_done":
+        error = str(event.get("error") or "")
+        extra = f" error={error}" if error else ""
+        print(
+            f"{prefix} adapter {event.get('adapter')} done rows={event.get('rows_returned')} "
+            f"elapsed_ms={event.get('elapsed_ms')}{extra}",
+            flush=True,
+        )
+        return
+    if name == "adapter_query_skipped":
+        print(
+            f"{prefix} adapter {event.get('adapter')} skipped reason={event.get('reason')}",
+            flush=True,
+        )
+        return
+    if name == "candidate_collection_done":
+        print(
+            f"{prefix} collected candidates={event.get('candidate_count')} "
+            f"adapter_calls={event.get('adapter_calls')}",
+            flush=True,
+        )
+        return
+    if name == "title_resolution":
+        print(
+            f"{prefix} title resolution status={event.get('status')} reason={event.get('reason')}",
+            flush=True,
+        )
+        return
+    if name == "resolve_complete":
+        print(f"{prefix} resolve complete status={event.get('status')} reason={event.get('reason')}", flush=True)
+        return
+    if name == "reconcile_start":
+        print(
+            f"{prefix} reconcile start status={event.get('status')} paper_id={event.get('paper_id') or 'n/a'} "
+            f"existing_entry={event.get('existing_entry')} source_count={event.get('source_count')}",
+            flush=True,
+        )
+        return
+    if name == "kb_persist_done":
+        print(
+            f"{prefix} persisted to KB paper_id={event.get('paper_id')} authors={event.get('author_count')}",
+            flush=True,
+        )
+        return
+    if name == "kb_persist_skipped":
+        print(
+            f"{prefix} KB persist skipped status={event.get('status')} reason={event.get('reason')}",
+            flush=True,
+        )
+        return
+    if name == "reconcile_done":
+        print(
+            f"{prefix} reconcile done paper_id={event.get('paper_id') or 'n/a'} "
+            f"query_keys={event.get('query_keys')} merged_sources={event.get('merged_sources')} "
+            f"total_papers={event.get('total_papers')}",
+            flush=True,
+        )
+        return
+    if name == "retrieve_paper_artifacts_written":
+        print(
+            f"{prefix} wrote request_log={event.get('request_path')} sources_log={event.get('sources_path')} "
+            f"result={event.get('result_path')}",
+            flush=True,
+        )
+        return
+    if name == "retrieve_paper_complete":
+        print(
+            f"{prefix} complete status={event.get('status')} reason={event.get('reason')} paper_id={event.get('paper_id')}",
+            flush=True,
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Shredder local-first research pipeline CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -61,6 +172,7 @@ def main() -> None:
                 arxiv_url=args.arxiv_url,
                 arxiv_id=args.arxiv_id,
                 policy=args.policy,
+                progress_callback=_print_retrieve_paper_progress,
             )
             print(f"Deterministic retrieval complete: {result}")
         elif args.cmd == "retrieve-open":

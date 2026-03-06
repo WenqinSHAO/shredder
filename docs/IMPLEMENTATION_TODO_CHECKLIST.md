@@ -11,7 +11,7 @@ Detailed task tables are maintained only for modules currently in active impleme
 
 | Module | Progress | Status |
 |---|---:|---|
-| Meta Info Retrieval (deterministic) | `35%` (`███░░░░░░░`) | In progress |
+| Meta Info Retrieval (deterministic) | `58%` (`██████░░░░`) | In progress |
 | Agentic Meta Info Retrieval | `15%` (`█░░░░░░░░░`) | Not started |
 | Data Backend and RAG | `20%` (`██░░░░░░░░`) | Planned |
 | Paper Context Retrieval | `5%` (`░░░░░░░░░░`) | Not started |
@@ -19,7 +19,7 @@ Detailed task tables are maintained only for modules currently in active impleme
 | Analysis Skill | `10%` (`█░░░░░░░░░`) | Not started |
 | Output Skills (report/slides/render) | `15%` (`█░░░░░░░░░`) | Early scaffold |
 | Overall UI Design | `5%` (`░░░░░░░░░░`) | Not started |
-| **Overall Program** | **`18%` (`██░░░░░░░░`)** | **In progress** |
+| **Overall Program** | **`22%` (`██░░░░░░░░`)** | **In progress** |
 
 ## 3) Active Section Task Board
 
@@ -32,13 +32,17 @@ Scope:
 
 | Task | Status | Priority | Notes | Exit Criteria |
 |---|---|---|---|---|
-| Title search resolution reliability | In progress | P0 | Current quality is inconsistent; ambiguous/no-match behavior needs tightening. | Known title benchmark set passes with expected `resolved`/`ambiguous_requires_selection`/`not_found`. |
-| CLI debug visibility | In progress | P0 | Diagnostics are in YAML, but terminal feedback still weak for common misuse. | CLI prints concise warnings (e.g., DOI looks like arXiv URL) without requiring YAML inspection. |
+| Title/arXiv resolution reliability | In progress | P0 | arXiv URL normalization hardening landed (`http/https`, `abs/pdf`, version stripping); broader query reliability still needs benchmark verification. | Known DOI/arXiv/title benchmark set passes with expected `resolved`/`ambiguous_requires_selection`/`not_found`. |
+| CLI debug visibility | Done | P0 | CLI now prints step-by-step search path, adapter timings/errors, cache hit/miss, and reconcile/persist events. | Retrieval path is inspectable from terminal without opening artifacts. |
 | Deterministic policy behavior (`consensus`, `fast`, `cache_first`) | In progress | P0 | Implemented but needs stricter behavior checks and docs alignment. | Policy-specific acceptance tests pass and behavior is deterministic across reruns. |
-| Cache-first index correctness (`one paper once`) | In progress | P0 | Single YAML index implemented; needs edge-case validation under repeated mixed queries. | Repeated project queries append `queries[]` and never duplicate canonical paper entries. |
+| Cache-first index correctness (`one paper once`) | In progress | P0 | Query history append, request/source cumulative artifacts, and index compaction are in place; mixed-query edge cases still need focused validation. | Repeated mixed queries append `queries[]`, keep one canonical paper entry, and resolve cache hits reliably across identifier forms. |
+| Metadata richness in deterministic output | In progress | P0 | Adapters now propagate `abstract`/`keywords`/`categories`; merge and DB persistence support added. Need coverage checks across connectors/corpus. | Resolved papers include non-empty informative metadata when upstream sources provide it; DB rows persist and return these fields. |
+| Deterministic YAML readability/size control | In progress | P1 | Paper/source entries are compacted; counts/truncation markers added; legacy payloads compact on load. | `deterministic_result.yaml` remains human-inspectable under repeated runs and large source candidate sets. |
 | Cross-source author canonicalization | Todo | P1 | Duplicate people still possible across heterogeneous IDs/surface names. | Canonical author merge rules reduce duplicate authors for a regression sample set. |
 | Provenance and search-trace quality | In progress | P1 | Trace exists; needs cleaner wording and stable schema for downstream tooling. | Trace/provenance schema finalized and documented with fixture examples. |
-| Regression fixture suite for deterministic retrieval | Todo | P1 | Need a pinned corpus for reproducible checks across policy modes. | Fixture pack added and used in CI/unit tests. |
+| Fresh-session deterministic retrieval smoke/regression | Todo | P0 | Need cold-start validation in a clean session/workspace to catch state-carryover assumptions. | Fresh-session checklist executed and recorded (`cache_first`, title/doi/arXiv permutations, expected cache behavior). |
+| Backfill existing index entries with richer metadata | Todo | P1 | Compaction migrates structure but does not invent missing abstracts/keywords; old entries need re-resolution pass. | One scripted/project run backfills existing papers where connectors can provide richer metadata. |
+| Regression fixture suite for deterministic retrieval | Todo | P1 | Need a pinned corpus for reproducible checks across policy modes and metadata richness expectations. | Fixture pack added and used in CI/unit tests. |
 
 ## 4) Non-Active Modules (Summary Only)
 
@@ -57,7 +61,18 @@ Scope:
 `M-Deterministic-RC1`: deterministic retrieval is reliable enough for daily use.
 
 Done when:
-- Title search behavior is predictable on benchmark queries.
-- CLI shows useful debug hints directly.
-- `cache_first` mode reuses index safely and avoids duplicates.
-- Deterministic retrieval tests are stable and reproducible.
+- DOI/arXiv/title behavior is predictable on benchmark queries.
+- CLI shows full deterministic search/reconcile path directly.
+- `cache_first` mode reuses index safely and avoids duplicates across identifier variants.
+- Deterministic artifacts are compact/readable and include rich metadata when available.
+- Deterministic retrieval tests are stable and reproducible (including fresh-session runs).
+
+## 6) Next Fresh Session Task Queue
+
+Use this queue at the start of the next session:
+
+1. Run cold-start deterministic checks for: DOI, arXiv URL (`http`, `https`, `vN`), title exact, title ambiguous.
+2. Validate cache behavior by repeating each query under `cache_first` and confirming `cache_hit=true` in `queries[]`.
+3. Confirm compact index shape (`source_count`, `sources_truncated`, compact authors) remains stable after multiple runs.
+4. Verify metadata backfill quality (`abstract`, `keywords`, `categories`) on a small pinned paper set and record connector gaps.
+5. Add/update regression fixtures from the above runs and lock expected statuses/reasons.

@@ -4,6 +4,8 @@ import csv
 import hashlib
 from difflib import SequenceMatcher
 from pathlib import Path
+from time import perf_counter
+from typing import Callable
 
 from src.connectors.http import normalize_arxiv_id, normalize_doi
 from src.retrieval.adapters import (
@@ -25,9 +27,22 @@ SOURCE_FIELDS = [
     "doi",
     "arxiv_id",
     "url",
+    "abstract",
+    "keywords",
+    "categories",
     "score",
     "reason",
 ]
+
+ProgressCallback = Callable[[dict], None]
+
+
+def _emit_progress(progress_callback: ProgressCallback | None, *, event: str, **payload) -> None:
+    if progress_callback is None:
+        return
+    body = {"event": event}
+    body.update(payload)
+    progress_callback(body)
 
 
 def normalize_title(value: str) -> str:
@@ -158,6 +173,35 @@ def _best_row(rows: list[dict]) -> dict:
     return ranked[0]
 
 
+def _merge_terms(rows: list[dict], field: str, max_terms: int = 12) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        values = row.get(field) or []
+        if isinstance(values, str):
+            values = [values]
+        for value in values:
+            term = str(value or "").strip()
+            if not term:
+                continue
+            lowered = term.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            out.append(term)
+            if len(out) >= max_terms:
+                return out
+    return out
+
+
+def _best_abstract(rows: list[dict]) -> str:
+    candidates = [str((row.get("abstract") or "")).strip() for row in rows]
+    candidates = [text for text in candidates if text]
+    if not candidates:
+        return ""
+    return sorted(candidates, key=len, reverse=True)[0]
+
+
 def merge_paper_rows(rows: list[dict]) -> dict:
     if not rows:
         return {}
@@ -171,6 +215,9 @@ def merge_paper_rows(rows: list[dict]) -> dict:
     title = best.get("title") or ""
     venue = best.get("venue") or ""
     url = best.get("url") or ""
+    abstract = _best_abstract(rows)
+    keywords = _merge_terms(rows, "keywords", max_terms=12)
+    categories = _merge_terms(rows, "categories", max_terms=12)
     paper_id = stable_paper_id(doi=doi, arxiv_id=arxiv_id, title=title, year=year)
     return {
         "paper_id": paper_id,
@@ -180,6 +227,9 @@ def merge_paper_rows(rows: list[dict]) -> dict:
         "doi": doi,
         "arxiv_id": arxiv_id,
         "url": url,
+        "abstract": abstract,
+        "keywords": keywords,
+        "categories": categories,
         "authors": _merge_authors(rows),
     }
 
@@ -220,6 +270,7 @@ def _collect_candidates(
     query: dict,
     adapters: list[RetrievalAdapter],
     policy: str = "consensus",
+    progress_callback: ProgressCallback | None = None,
 ) -> tuple[list[dict], list[dict]]:
     doi = normalize_doi(query.get("doi", ""))
     arxiv_id = normalize_arxiv_input(query.get("arxiv_url", ""), query.get("arxiv_id", ""))
@@ -229,11 +280,19 @@ def _collect_candidates(
     diagnostics: list[dict] = []
     stop_early = policy == "fast"
     have_rows = False
-    for adapter in adapters:
+    _emit_progress(
+        progress_callback,
+        event="candidate_collection_start",
+        lookup_mode=mode,
+        policy=policy,
+        adapter_count=len(adapters),
+    )
+    for index, adapter in enumerate(adapters, start=1):
+        adapter_name = getattr(adapter, "name", adapter.__class__.__name__)
         if stop_early and have_rows:
             diagnostics.append(
                 {
-                    "adapter": getattr(adapter, "name", adapter.__class__.__name__),
+                    "adapter": adapter_name,
                     "enabled": getattr(getattr(adapter, "config", None), "enabled", True),
                     "action": "skipped_due_fast_policy",
                     "dependency_modules": list(getattr(adapter, "dependency_modules", ()) or []),
@@ -247,8 +306,26 @@ def _collect_candidates(
                     "rows_returned": 0,
                 }
             )
+            _emit_progress(
+                progress_callback,
+                event="adapter_query_skipped",
+                adapter=adapter_name,
+                lookup_mode=mode,
+                adapter_index=index,
+                adapter_total=len(adapters),
+                reason="fast_policy_hit_already_found",
+            )
             continue
         rows: list[dict] = []
+        _emit_progress(
+            progress_callback,
+            event="adapter_query_start",
+            adapter=adapter_name,
+            lookup_mode=mode,
+            adapter_index=index,
+            adapter_total=len(adapters),
+        )
+        started = perf_counter()
         if doi:
             rows = adapter.lookup_doi(doi)
         elif arxiv_id:
@@ -256,10 +333,34 @@ def _collect_candidates(
         elif title:
             rows = adapter.search_title(title, limit=int(query.get("limit", 5)))
         rows = rows or []
+        elapsed_ms = int((perf_counter() - started) * 1000)
         candidates.extend(rows)
-        diagnostics.append(_adapter_diag(adapter, mode, len(rows)))
+        adapter_diag = _adapter_diag(adapter, mode, len(rows))
+        diagnostics.append(adapter_diag)
+        _emit_progress(
+            progress_callback,
+            event="adapter_query_done",
+            adapter=adapter_name,
+            lookup_mode=mode,
+            adapter_index=index,
+            adapter_total=len(adapters),
+            rows_returned=len(rows),
+            elapsed_ms=elapsed_ms,
+            enabled=adapter_diag.get("enabled", True),
+            action=adapter_diag.get("action", ""),
+            error=adapter_diag.get("error", ""),
+            missing_dependency=adapter_diag.get("missing_dependency", ""),
+        )
         if rows:
             have_rows = True
+    _emit_progress(
+        progress_callback,
+        event="candidate_collection_done",
+        lookup_mode=mode,
+        policy=policy,
+        candidate_count=len(candidates),
+        adapter_calls=len(diagnostics),
+    )
     return candidates, diagnostics
 
 
@@ -295,7 +396,11 @@ def _resolve_title(title: str, candidates: list[dict], ambiguity_delta: float = 
     return "resolved", "title_resolved", scored
 
 
-def resolve_deterministic(query: dict, adapters: list[RetrievalAdapter]) -> dict:
+def resolve_deterministic(
+    query: dict,
+    adapters: list[RetrievalAdapter],
+    progress_callback: ProgressCallback | None = None,
+) -> dict:
     normalized_query = {
         "title": str(query.get("title") or "").strip(),
         "doi": normalize_doi(str(query.get("doi") or "")),
@@ -312,14 +417,40 @@ def resolve_deterministic(query: dict, adapters: list[RetrievalAdapter]) -> dict
     else:
         effective_policy = policy
 
-    candidates, adapter_calls = _collect_candidates(normalized_query, adapters, policy=effective_policy)
+    lookup_mode = _lookup_mode(normalized_query)
+    _emit_progress(
+        progress_callback,
+        event="resolve_start",
+        lookup_mode=lookup_mode,
+        policy=policy,
+        effective_policy=effective_policy,
+        query_key=canonical_query_key(normalized_query),
+        has_title=bool(normalized_query["title"]),
+        has_doi=bool(normalized_query["doi"]),
+        has_arxiv_id=bool(normalized_query["arxiv_id"]),
+    )
+
+    input_warnings = _input_warnings(normalized_query)
+    if input_warnings:
+        _emit_progress(
+            progress_callback,
+            event="input_warnings",
+            warnings=input_warnings,
+        )
+
+    candidates, adapter_calls = _collect_candidates(
+        normalized_query,
+        adapters,
+        policy=effective_policy,
+        progress_callback=progress_callback,
+    )
     diagnostics = {
-        "lookup_mode": _lookup_mode(normalized_query),
+        "lookup_mode": lookup_mode,
         "candidate_count": len(candidates),
         "policy": policy,
         "effective_policy": effective_policy,
         "query_key": canonical_query_key(normalized_query),
-        "input_warnings": _input_warnings(normalized_query),
+        "input_warnings": input_warnings,
         "adapter_calls": adapter_calls,
     }
     search_trace = [
@@ -342,8 +473,22 @@ def resolve_deterministic(query: dict, adapters: list[RetrievalAdapter]) -> dict
 
     if normalized_query["title"] and not normalized_query["doi"] and not normalized_query["arxiv_id"]:
         status, reason, ranked = _resolve_title(normalized_query["title"], candidates, ambiguity_delta=float(query.get("ambiguity_delta", 0.05)))
+        _emit_progress(
+            progress_callback,
+            event="title_resolution",
+            status=status,
+            reason=reason,
+            candidate_count=len(ranked),
+        )
         if status != "resolved":
             search_trace.append(f"resolution_status={status} reason={reason}")
+            _emit_progress(
+                progress_callback,
+                event="resolve_complete",
+                status=status,
+                reason=reason,
+                candidate_count=len(candidates),
+            )
             return {
                 "status": status,
                 "resolution_status": status,
@@ -357,6 +502,13 @@ def resolve_deterministic(query: dict, adapters: list[RetrievalAdapter]) -> dict
             }
         merged = merge_paper_rows([ranked[0]])
         search_trace.append(f"resolution_status=resolved reason={reason}")
+        _emit_progress(
+            progress_callback,
+            event="resolve_complete",
+            status="resolved",
+            reason=reason,
+            candidate_count=len(candidates),
+        )
         return {
             "status": "resolved",
             "resolution_status": "resolved",
@@ -371,6 +523,13 @@ def resolve_deterministic(query: dict, adapters: list[RetrievalAdapter]) -> dict
 
     if not candidates:
         search_trace.append("resolution_status=not_found reason=no_candidates")
+        _emit_progress(
+            progress_callback,
+            event="resolve_complete",
+            status="not_found",
+            reason="no_candidates",
+            candidate_count=0,
+        )
         return {
             "status": "not_found",
             "resolution_status": "not_found",
@@ -385,6 +544,13 @@ def resolve_deterministic(query: dict, adapters: list[RetrievalAdapter]) -> dict
 
     merged = merge_paper_rows(candidates)
     search_trace.append("resolution_status=resolved reason=resolved_by_identifier")
+    _emit_progress(
+        progress_callback,
+        event="resolve_complete",
+        status="resolved",
+        reason="resolved_by_identifier",
+        candidate_count=len(candidates),
+    )
     return {
         "status": "resolved",
         "resolution_status": "resolved",
@@ -456,13 +622,21 @@ def run_open_retrieval(prompt: str, adapters: list[RetrievalAdapter], top_n: int
     return {"query_plan": queries, "raw": raw, "ranked": ranked, "top_n": top_n}
 
 
+def _tsv_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "|".join(str(v) for v in value if str(v).strip())
+    return str(value)
+
+
 def write_sources_tsv(path: Path, rows: list[dict]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=SOURCE_FIELDS, delimiter="\t")
         writer.writeheader()
         for row in rows:
-            writer.writerow({k: row.get(k, "") for k in SOURCE_FIELDS})
+            writer.writerow({k: _tsv_value(row.get(k, "")) for k in SOURCE_FIELDS})
     return path
 
 
@@ -473,7 +647,7 @@ def write_candidate_tsv(path: Path, rows: list[dict], include_query: bool = Fals
         writer = csv.DictWriter(f, fieldnames=fields, delimiter="\t")
         writer.writeheader()
         for row in rows:
-            writer.writerow({k: row.get(k, "") for k in fields})
+            writer.writerow({k: _tsv_value(row.get(k, "")) for k in fields})
     return path
 
 

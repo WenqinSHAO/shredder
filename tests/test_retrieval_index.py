@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,7 +28,17 @@ class _CountingAdapter:
                 "doi": doi,
                 "arxiv_id": "",
                 "url": "https://doi.org/" + doi,
-                "authors": [],
+                "abstract": "A concise abstract about deterministic systems.",
+                "keywords": ["deterministic", "systems"],
+                "categories": ["distributed systems"],
+                "authors": [
+                    {
+                        "name": "Alice Example",
+                        "orcid": "",
+                        "source_id": "a1",
+                        "affiliations": [{"name": "Example University", "ror": "", "country": "US"}],
+                    }
+                ],
                 "score": 1.0,
                 "reason": "lookup_doi",
             }
@@ -64,10 +77,39 @@ class TestRetrievalIndex(unittest.TestCase):
             self.assertEqual(len(payload["papers"]), 1)
             self.assertEqual(payload["papers"][0]["paper_id"], "doi:10.1/xyz")
             self.assertTrue(payload["papers"][0]["search_trace"])
+            self.assertEqual(payload["papers"][0]["paper"]["keywords"], ["deterministic", "systems"])
+            self.assertEqual(payload["papers"][0]["paper"]["categories"], ["distributed systems"])
+            self.assertIn("affiliation_count", payload["papers"][0]["paper"]["authors"][0])
+            self.assertNotIn("affiliations", payload["papers"][0]["paper"]["authors"][0])
+            self.assertNotIn("authors", payload["papers"][0]["sources"][0])
             self.assertEqual(len(payload["queries"]), 2)
             self.assertFalse(payload["queries"][0]["cache_hit"])
             self.assertTrue(payload["queries"][1]["cache_hit"])
             self.assertEqual(adapter.lookup_doi_calls, 1)
+
+            request_log_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_request.yaml"
+            request_log = yamlx.load(request_log_path)
+            self.assertEqual(request_log["artifact_type"], "deterministic_request_log")
+            self.assertEqual(len(request_log["history"]), 2)
+            self.assertEqual(request_log["history"][0]["query_key"], "doi:10.1/xyz")
+            self.assertEqual(request_log["history"][1]["query_key"], "doi:10.1/xyz")
+
+            sources_log_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_sources.tsv"
+            with sources_log_path.open("r", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["query_key"], "doi:10.1/xyz")
+            self.assertEqual(rows[1]["query_key"], "doi:10.1/xyz")
+
+            conn = sqlite3.connect(kb_path)
+            try:
+                db_row = conn.execute("SELECT abstract, keywords_json, categories_json FROM papers WHERE id='doi:10.1/xyz'").fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(db_row)
+            self.assertEqual(db_row[0], "A concise abstract about deterministic systems.")
+            self.assertEqual(json.loads(db_row[1]), ["deterministic", "systems"])
+            self.assertEqual(json.loads(db_row[2]), ["distributed systems"])
 
 
 if __name__ == "__main__":

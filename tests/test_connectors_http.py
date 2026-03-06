@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from src.connectors.http import RetryPolicy, get_json
+from src.connectors.http import RetryPolicy, get_json, normalize_arxiv_id
 
 
 class _Response:
@@ -81,6 +81,17 @@ class TestHttpRetries(unittest.TestCase):
                 )
 
         self.assertEqual(attempts["n"], 3)
+
+
+class TestNormalization(unittest.TestCase):
+    def test_normalize_arxiv_http_abs_with_version(self):
+        self.assertEqual(normalize_arxiv_id("http://arxiv.org/abs/1806.11202v1"), "1806.11202")
+
+    def test_normalize_arxiv_https_pdf_with_suffix(self):
+        self.assertEqual(normalize_arxiv_id("https://arxiv.org/pdf/2401.12345v2.pdf"), "2401.12345")
+
+    def test_normalize_arxiv_prefix_form(self):
+        self.assertEqual(normalize_arxiv_id("arXiv:hep-th/9901001v3"), "hep-th/9901001")
 
 
 if __name__ == "__main__":
