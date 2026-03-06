@@ -12,7 +12,7 @@ Detailed task tables are maintained only for modules currently in active impleme
 | Module | Progress | Status |
 |---|---:|---|
 | Meta Info Retrieval (deterministic) | `85%` (`████████░░`) | Stabilized |
-| Agentic Meta Info Retrieval | `20%` (`██░░░░░░░░`) | Active (board opened) |
+| Agentic Meta Info Retrieval | `35%` (`███░░░░░░░`) | Active (I1 kickoff landed) |
 | Data Backend and RAG | `20%` (`██░░░░░░░░`) | Planned |
 | Paper Context Retrieval | `5%` (`░░░░░░░░░░`) | Not started |
 | Paper Context Formatted Extraction | `10%` (`█░░░░░░░░░`) | Not started |
@@ -76,13 +76,13 @@ Execution strategy:
 
 | ID | Sub-module | Task | Status | Acceptance Criteria | Depends On |
 |---|---|---|---|---|---|
-| A1 | Session Contracts | Define `agentic_request.yaml`, `agentic_session.yaml`, `agentic_result.yaml`, `agentic_questions.yaml`, `agentic_cycles.tsv`, `agentic_candidates_latest.tsv` schemas/contracts. | Todo | Artifacts are versioned, deterministic-fielded, and loadable across resume cycles. | None |
-| A2 | Orchestrator Core | Build single-loop orchestrator state machine: `plan -> retrieve -> rank -> decide(ask/continue/stop)`. | Todo | One full cycle runs with no user interrupt path and writes all session artifacts. | A1 |
-| A3 | Progress Memory | Persist per-cycle memory: planned query, tool calls, candidate deltas, rationale, stop-check signals. | Todo | Resume from checkpoint reproduces same next step given same inputs. | A1,A2 |
+| A1 | Session Contracts | Define `agentic_request.yaml`, `agentic_session.yaml`, `agentic_result.yaml`, `agentic_questions.yaml`, `agentic_cycles.tsv`, `agentic_candidates_latest.tsv` schemas/contracts. | Done | Artifacts are versioned, deterministic-fielded, and loadable across resume cycles. | None |
+| A2 | Orchestrator Core | Build single-loop orchestrator state machine: `plan -> retrieve -> rank -> decide(ask/continue/stop)`. | Done | One full cycle runs with no user interrupt path and writes all session artifacts. | A1 |
+| A3 | Progress Memory | Persist per-cycle memory: planned query, tool calls, candidate deltas, rationale, stop-check signals. | In progress | Resume from checkpoint reproduces same next step given same inputs. | A1,A2 |
 | A4 | Tool Router | Implement scholarly-first tool routing (KB + OpenAlex/Crossref/S2/arXiv), web fallback trigger policy scaffold. | Todo | Router calls web only when scholarly retrieval is insufficient by policy. | A2 |
-| A5 | Workflow: Theme Refinement | Implement `theme_refine` workflow with iterative narrowing and candidate shortlist updates. | Todo | Broad-theme prompt converges to shortlist with >=2 cycles and explicit rationale history. | A2,A4 |
-| A6 | CLI/API Session UX | Add checkpoint-resume interfaces: start session, fetch status, submit answers, finalize. | Todo | CLI/API can pause on question and resume without losing cycle memory. | A2,A3 |
-| A7 | Tests I1 | Unit + integration coverage for state machine, artifact writing, resume idempotence, theme workflow. | Todo | CI tests cover happy path + resume path + empty-result fallback path. | A1-A6 |
+| A5 | Workflow: Theme Refinement | Implement `theme_refine` workflow with iterative narrowing and candidate shortlist updates. | In progress | Broad-theme prompt converges to shortlist with >=2 cycles and explicit rationale history. | A2,A4 |
+| A6 | CLI/API Session UX | Add checkpoint-resume interfaces: start session, fetch status, submit answers, finalize. | In progress | CLI/API can pause on question and resume without losing cycle memory. | A2,A3 |
+| A7 | Tests I1 | Unit + integration coverage for state machine, artifact writing, resume idempotence, theme workflow. | In progress | CI tests cover happy path + resume path + empty-result fallback path. | A1-A6 |
 
 #### Increment 2: Fuzzy Reference + Feedback Learning (`M-Agentic-I2`)
 
@@ -179,15 +179,76 @@ Done when:
 
 Use this queue at the start of the next session:
 
-1. Execute Increment-1 A1/A2: define session artifact contracts and implement single-loop orchestrator skeleton with full-cycle artifact writes.
-2. Execute Increment-1 A3/A4: add resume-safe progress memory and scholarly-first router with conditional web fallback scaffold.
-3. Execute Increment-1 A5/A6: ship `theme_refine` workflow and checkpoint-resume CLI/API interfaces.
-4. Execute Increment-1 A7: land unit/integration coverage (happy path, resume idempotence, empty-result fallback), then open Data Backend/RAG detailed board contracts.
-5. Lock implementation defaults for this sprint:
-   - Agentic runtime: internal single-controller state machine in repo (no external framework dependency in I1).
-   - LLM backend: DeepSeek via `DS_API_KEY` using OpenAI-compatible client adapter.
-   - Web fallback: SearXNG via `SEARXNG_URL` in scholarly-first conditional routing.
-6. Add carry-over OSS references as implementation hints:
+1. Session handoff snapshot (completed in this session):
+   - Increment-1 `A1/A2` landed:
+     - New agentic orchestrator: `src/orchestrator/agentic.py`.
+     - Single-loop state machine implemented: `plan -> retrieve -> rank -> decide`.
+     - Artifacts written per run:
+       - `agentic_request.yaml`
+       - `agentic_session.yaml`
+       - `agentic_result.yaml`
+       - `agentic_questions.yaml`
+       - `agentic_cycles.tsv`
+       - `agentic_candidates_latest.tsv`
+     - Contract versions currently set to `0.1.0`.
+   - Entry points added:
+     - Runner step: `retrieve-agentic`
+     - CLI command: `python -m src.cli retrieve-agentic <project_id> --prompt ...`
+     - API endpoint: `POST /projects/{project_id}/retrieve/agentic`
+   - Project defaults updated:
+     - `project.yaml -> retrieval.agentic` scaffold (`enabled/workflow/top_n/max_cycles`).
+
+2. Environment + validation baseline for fresh session:
+   - Use virtual environment: `/home/wenqin/.virtualenvs/shredder`.
+   - Verified command baseline:
+     - Full test suite: `48 passed, 27 subtests passed`.
+     - Command used: `/home/wenqin/.virtualenvs/shredder/bin/python -m pytest -q`
+   - Focused I1 test file added: `tests/test_retrieval_agentic_i1.py`.
+
+3. Execute Increment-1 `A3` next (resume-safe progress memory):
+   - Upgrade current single-cycle behavior into deterministic multi-cycle progression.
+   - Ensure resume idempotence:
+     - same `session_id` + unchanged inputs => deterministic next action/cycle.
+     - no accidental state reset except explicit new session.
+   - Persist and replay per-cycle memory fields already scaffolded in `agentic_cycles.tsv` and `agentic_result.yaml`.
+
+4. Execute Increment-1 `A4` next (tool router, scholarly-first):
+   - Add explicit router layer in agentic runtime:
+     - primary scholarly path: KB + OpenAlex + Crossref + Semantic Scholar + arXiv adapters.
+     - conditional web fallback path gated by insufficiency policy.
+   - Integrate `SEARXNG_URL` as configurable fallback provider scaffold.
+   - Keep policy decisions traceable in cycle ledger (reason + trigger).
+
+5. Execute Increment-1 `A5/A6` next (theme workflow + session UX):
+   - Extend `theme_refine` from bootstrap into iterative narrowing (`>=2` cycles when needed).
+   - Add checkpoint-resume UX surface:
+     - start session
+     - get session status
+     - submit clarification answers
+     - finalize session
+   - Ensure CLI/API can pause/resume without losing cycle memory.
+
+6. Execute Increment-1 `A7` next (test hardening):
+   - Expand tests to include:
+     - resume path idempotence
+     - multi-cycle convergence behavior
+     - scholarly-first success and web-fallback trigger path
+     - empty-result fallback (already covered; keep regression)
+   - Add dedicated agentic loop harness before real LLM integration:
+     - `DummyLLMClient` (fixture-driven deterministic planner/ranker/question outputs)
+     - optional `ReplayLLMClient` (captured JSON replay)
+     - env-gated backend switch: `dummy | replay | deepseek`
+     - note: direct redirection to Codex session is not a runtime API backend.
+
+7. Sprint defaults to keep fixed for I1 completion:
+   - Agentic runtime remains an internal single-controller state machine (no external framework dependency in I1).
+   - LLM backend target remains DeepSeek via `DS_API_KEY` (OpenAI-compatible adapter boundary).
+   - Web fallback target remains SearXNG via `SEARXNG_URL`.
+
+8. Workspace hygiene reminder before commit:
+   - Do not commit generated runtime files such as `kb/kb.sqlite` and `src/shredder.egg-info/`.
+
+9. Carry-over implementation references:
    - LangChain Open Deep Research: https://github.com/langchain-ai/open_deep_research
    - PaperQA2: https://github.com/Future-House/paper-qa
    - Haystack conditional fallback routing: https://haystack.deepset.ai/tutorials/36_building_fallbacks_with_conditional_routing
@@ -195,8 +256,3 @@ Use this queue at the start of the next session:
    - Crossref REST API tips: https://www.crossref.org/documentation/retrieve-metadata/rest-api/tips-for-using-the-crossref-rest-api/
    - SearXNG Search API: https://docs.searxng.org/dev/search_api.html
    - arXiv API user manual + ToU: https://info.arxiv.org/help/api/user-manual.html , https://info.arxiv.org/help/api/tou.html
-7. Add a dedicated test harness task for agentic loops (before real LLM integration):
-   - Implement `DummyLLMClient` with deterministic fixture-driven responses for planner/ranker/question decisions.
-   - Keep an optional `ReplayLLMClient` that replays captured JSON responses from prior runs.
-   - Use env-gated backend switch (`dummy`, `replay`, `deepseek`) so CI can run fully offline.
-   - Note: direct redirection to this Codex session is not supported as a runtime API backend; use dummy/replay adapters instead.

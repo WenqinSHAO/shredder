@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from src.workspace.manager import init_project
 from .steps import run_discovery, run_parsing, run_extraction, run_render
+from .agentic import run_retrieve_agentic
 from .retrieval import run_retrieve_open, run_retrieve_paper
 
 
@@ -31,5 +32,14 @@ def run_step(project_id: str, step: str, **kwargs):
             project_id,
             prompt=kwargs.get("prompt", ""),
             top_n=int(kwargs.get("top_n", 5)),
+        )
+    if step == "retrieve-agentic":
+        return run_retrieve_agentic(
+            project_id,
+            prompt=kwargs.get("prompt", ""),
+            workflow=kwargs.get("workflow", "theme_refine"),
+            top_n=int(kwargs.get("top_n", 5)),
+            max_cycles=int(kwargs.get("max_cycles", 1)),
+            session_id=kwargs.get("session_id", ""),
         )
     raise ValueError(f"Unknown step: {step}")

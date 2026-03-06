@@ -32,6 +32,14 @@ class RetrieveOpenRequest(BaseModel):
     top_n: int = 5
 
 
+class RetrieveAgenticRequest(BaseModel):
+    prompt: str
+    workflow: str = "theme_refine"
+    top_n: int = 5
+    max_cycles: int = 1
+    session_id: str = ""
+
+
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
@@ -78,6 +86,23 @@ def retrieve_paper(project_id: str, body: RetrievePaperRequest):
 def retrieve_open(project_id: str, body: RetrieveOpenRequest):
     try:
         result = run_step(project_id, "retrieve-open", prompt=body.prompt, top_n=body.top_n)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"project": project_id, "result": str(result)}
+
+
+@app.post("/projects/{project_id}/retrieve/agentic")
+def retrieve_agentic(project_id: str, body: RetrieveAgenticRequest):
+    try:
+        result = run_step(
+            project_id,
+            "retrieve-agentic",
+            prompt=body.prompt,
+            workflow=body.workflow,
+            top_n=body.top_n,
+            max_cycles=body.max_cycles,
+            session_id=body.session_id,
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"project": project_id, "result": str(result)}

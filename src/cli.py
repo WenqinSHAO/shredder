@@ -147,6 +147,14 @@ def main() -> None:
     p_retrieve_open.add_argument("--prompt", required=True)
     p_retrieve_open.add_argument("--top-n", type=int, default=5)
 
+    p_retrieve_agentic = sub.add_parser("retrieve-agentic")
+    p_retrieve_agentic.add_argument("project_id")
+    p_retrieve_agentic.add_argument("--prompt", required=True)
+    p_retrieve_agentic.add_argument("--workflow", default="theme_refine")
+    p_retrieve_agentic.add_argument("--top-n", type=int, default=5)
+    p_retrieve_agentic.add_argument("--max-cycles", type=int, default=1)
+    p_retrieve_agentic.add_argument("--session-id", default="")
+
     args = parser.parse_args()
     try:
         if args.cmd == "init":
@@ -178,6 +186,17 @@ def main() -> None:
         elif args.cmd == "retrieve-open":
             result = run_step(args.project_id, "retrieve-open", prompt=args.prompt, top_n=args.top_n)
             print(f"Open retrieval complete: {result}")
+        elif args.cmd == "retrieve-agentic":
+            result = run_step(
+                args.project_id,
+                "retrieve-agentic",
+                prompt=args.prompt,
+                workflow=args.workflow,
+                top_n=args.top_n,
+                max_cycles=args.max_cycles,
+                session_id=args.session_id,
+            )
+            print(f"Agentic retrieval complete: {result}")
     except YamlDependencyError as exc:
         raise SystemExit(f"YAML dependency error: {exc}") from exc
 
