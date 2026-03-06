@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.orchestrator.runner import run_step
+from src.retrieval.service import SOURCE_FIELDS
 from src.utils import yamlx
 
 
@@ -307,6 +308,68 @@ class _TitleCollisionMissingYearAdapter:
         ]
 
 
+class _EmptyAdapter:
+    def __init__(self):
+        self.lookup_doi_calls = 0
+        self.lookup_arxiv_calls = 0
+        self.search_title_calls = 0
+
+    def lookup_doi(self, doi: str) -> list[dict]:
+        self.lookup_doi_calls += 1
+        return []
+
+    def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+        self.lookup_arxiv_calls += 1
+        return []
+
+    def search_title(self, title: str, limit: int = 5) -> list[dict]:
+        self.search_title_calls += 1
+        return []
+
+
+class _PermutationAdapter:
+    def __init__(self):
+        self.lookup_doi_calls = 0
+        self.lookup_arxiv_calls = 0
+        self.search_title_calls = 0
+
+    def _row(self) -> dict:
+        return {
+            "source": "permutation",
+            "source_id": "perm:10.1/xyz",
+            "title": "Deterministic Systems",
+            "venue": "NSDI",
+            "year": "2024",
+            "doi": "10.1/xyz",
+            "arxiv_id": "2401.12345",
+            "url": "https://doi.org/10.1/xyz",
+            "abstract": "One canonical record reachable from multiple identifiers.",
+            "keywords": ["deterministic", "systems"],
+            "categories": ["distributed systems"],
+            "authors": [],
+            "score": 1.0,
+            "reason": "synthetic",
+        }
+
+    def lookup_doi(self, doi: str) -> list[dict]:
+        self.lookup_doi_calls += 1
+        if doi == "10.1/xyz":
+            return [self._row()]
+        return []
+
+    def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+        self.lookup_arxiv_calls += 1
+        if arxiv_id == "2401.12345":
+            return [self._row()]
+        return []
+
+    def search_title(self, title: str, limit: int = 5) -> list[dict]:
+        self.search_title_calls += 1
+        if title.strip().lower() == "deterministic systems":
+            return [self._row()]
+        return []
+
+
 class TestRetrievalIndex(unittest.TestCase):
     def test_cache_first_appends_query_history_and_keeps_unique_paper(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -571,6 +634,210 @@ class TestRetrievalIndex(unittest.TestCase):
                 conn.close()
             self.assertIn("doi:10.1/xyz", db_ids)
             self.assertIn("title:cache systems for llm:", db_ids)
+
+    def test_cache_first_not_found_keeps_index_empty_and_logs_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            adapter = _EmptyAdapter()
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[adapter]):
+                    run_step("demo", "retrieve-paper", doi="10.9/missing", policy="cache_first")
+
+            index_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_result.yaml"
+            payload = yamlx.load(index_path)
+            self.assertEqual(payload["papers"], [])
+            self.assertEqual(len(payload["queries"]), 1)
+            self.assertEqual(payload["queries"][0]["query_key"], "doi:10.9/missing")
+            self.assertEqual(payload["queries"][0]["resolution_status"], "not_found")
+            self.assertEqual(payload["queries"][0]["reason"], "no_candidates")
+            self.assertFalse(payload["queries"][0]["cache_hit"])
+
+            request_log_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_request.yaml"
+            request_log = yamlx.load(request_log_path)
+            self.assertEqual(len(request_log["history"]), 1)
+            self.assertEqual(request_log["history"][0]["query_key"], "doi:10.9/missing")
+            self.assertEqual(request_log["history"][0]["resolution_status"], "not_found")
+            self.assertEqual(request_log["history"][0]["reason"], "no_candidates")
+            self.assertFalse(request_log["history"][0]["cache_hit"])
+
+            sources_log_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_sources.tsv"
+            with sources_log_path.open("r", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertEqual(rows, [])
+            self.assertEqual(adapter.lookup_doi_calls, 1)
+
+    def test_mixed_identifier_permutations_keep_single_canonical_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            adapter = _PermutationAdapter()
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[adapter]):
+                    run_step("demo", "retrieve-paper", doi="10.1/xyz", policy="cache_first")
+                    run_step("demo", "retrieve-paper", arxiv_id="2401.12345", policy="cache_first")
+                    run_step("demo", "retrieve-paper", doi="https://doi.org/10.48550/arXiv.2401.12345", policy="cache_first")
+                    run_step("demo", "retrieve-paper", title="Deterministic Systems", policy="cache_first")
+
+            index_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_result.yaml"
+            payload = yamlx.load(index_path)
+            self.assertEqual(len(payload["papers"]), 1)
+            entry = payload["papers"][0]
+            self.assertEqual(entry["paper_id"], "doi:10.1/xyz")
+            self.assertIn("doi:10.1/xyz", entry["query_keys"])
+            self.assertIn("arxiv:2401.12345", entry["query_keys"])
+            self.assertIn("title:deterministic systems", entry["query_keys"])
+
+            query_keys = [row["query_key"] for row in payload["queries"]]
+            self.assertEqual(
+                query_keys,
+                ["doi:10.1/xyz", "arxiv:2401.12345", "arxiv:2401.12345", "title:deterministic systems"],
+            )
+            cache_hits = [bool(row["cache_hit"]) for row in payload["queries"]]
+            self.assertEqual(cache_hits, [False, True, True, True])
+
+            self.assertEqual(adapter.lookup_doi_calls, 1)
+            self.assertEqual(adapter.lookup_arxiv_calls, 0)
+            self.assertEqual(adapter.search_title_calls, 0)
+
+    def test_index_artifact_stays_compact_after_repeated_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            adapter = _CountingAdapter()
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[adapter]):
+                    for _ in range(20):
+                        run_step("demo", "retrieve-paper", doi="10.1/xyz", policy="cache_first")
+
+            index_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_result.yaml"
+            payload = yamlx.load(index_path)
+            self.assertEqual(len(payload["papers"]), 1)
+            self.assertEqual(len(payload["queries"]), 20)
+            paper_entry = payload["papers"][0]
+            self.assertNotIn("sources", paper_entry)
+            self.assertNotIn("diagnostics", paper_entry)
+            self.assertLess(index_path.stat().st_size, 18000)
+            self.assertEqual(adapter.lookup_doi_calls, 1)
+
+    def test_legacy_db_and_artifact_shapes_are_forward_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                rdir = ws / "demo" / "artifacts" / "retrieval"
+
+                yamlx.dump_to_path(
+                    rdir / "deterministic_request.yaml",
+                    {
+                        "title": "Legacy Query",
+                        "doi": "",
+                        "arxiv_url": "",
+                        "arxiv_id": "",
+                        "policy": "cache_first",
+                        "ambiguity_delta": 0.05,
+                    },
+                )
+                with (rdir / "deterministic_sources.tsv").open("w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=SOURCE_FIELDS, delimiter="\t")
+                    writer.writeheader()
+                    writer.writerow(
+                        {
+                            "source": "legacy",
+                            "source_id": "legacy-1",
+                            "title": "Legacy Row",
+                            "venue": "",
+                            "year": "",
+                            "doi": "",
+                            "arxiv_id": "",
+                            "url": "",
+                            "abstract": "",
+                            "keywords": "",
+                            "categories": "",
+                            "score": "0.0",
+                            "reason": "legacy",
+                        }
+                    )
+
+                with sqlite3.connect(kb_path) as conn:
+                    conn.executescript(
+                        """
+                        CREATE TABLE papers (
+                            id TEXT PRIMARY KEY,
+                            title TEXT,
+                            venue TEXT,
+                            year INTEGER,
+                            doi TEXT UNIQUE,
+                            abstract TEXT,
+                            pdf_url TEXT,
+                            html_url TEXT,
+                            created_at TEXT,
+                            updated_at TEXT
+                        );
+                        """
+                    )
+
+                adapter = _CountingAdapter()
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[adapter]):
+                    run_step("demo", "retrieve-paper", doi="10.1/xyz", policy="cache_first")
+
+            with sqlite3.connect(kb_path) as conn:
+                paper_columns = [str(row[1]) for row in conn.execute("PRAGMA table_info(papers)").fetchall()]
+                table_names = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            self.assertIn("arxiv_id", paper_columns)
+            self.assertIn("keywords_json", paper_columns)
+            self.assertIn("categories_json", paper_columns)
+            self.assertIn("paper_author_metadata", table_names)
+
+            request_log_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_request.yaml"
+            request_log = yamlx.load(request_log_path)
+            self.assertGreaterEqual(len(request_log["history"]), 2)
+            self.assertEqual(request_log["history"][0]["reason"], "legacy_single_snapshot")
+            self.assertEqual(request_log["history"][-1]["query_key"], "doi:10.1/xyz")
+            self.assertEqual(request_log["history"][-1]["resolution_status"], "resolved")
+
+            sources_log_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_sources.tsv"
+            with sources_log_path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                rows = list(reader)
+                fieldnames = reader.fieldnames or []
+            self.assertEqual(fieldnames[:4], ["timestamp", "query_key", "resolution_status", "paper_id"])
+            self.assertGreaterEqual(len(rows), 2)
 
 
 if __name__ == "__main__":
