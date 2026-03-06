@@ -11,7 +11,7 @@ Detailed task tables are maintained only for modules currently in active impleme
 
 | Module | Progress | Status |
 |---|---:|---|
-| Meta Info Retrieval (deterministic) | `70%` (`███████░░░`) | In progress |
+| Meta Info Retrieval (deterministic) | `85%` (`████████░░`) | In progress |
 | Agentic Meta Info Retrieval | `15%` (`█░░░░░░░░░`) | Not started |
 | Data Backend and RAG | `20%` (`██░░░░░░░░`) | Planned |
 | Paper Context Retrieval | `5%` (`░░░░░░░░░░`) | Not started |
@@ -19,7 +19,7 @@ Detailed task tables are maintained only for modules currently in active impleme
 | Analysis Skill | `10%` (`█░░░░░░░░░`) | Not started |
 | Output Skills (report/slides/render) | `15%` (`█░░░░░░░░░`) | Early scaffold |
 | Overall UI Design | `5%` (`░░░░░░░░░░`) | Not started |
-| **Overall Program** | **`22%` (`██░░░░░░░░`)** | **In progress** |
+| **Overall Program** | **`25%` (`███░░░░░░░`)** | **In progress** |
 
 ## 3) Active Section Task Board
 
@@ -35,9 +35,9 @@ Scope:
 
 | Task | Status | Priority | Notes | Exit Criteria |
 |---|---|---|---|---|
-| Identifier determinism (DOI/arXiv/title) | In progress | P0 | Core normalization + alias behavior is implemented and RC1 matrix-tested (`tests/test_retrieval_rc1_matrix.py::test_cold_start_matrix_and_cache_replay`); remaining gap is broader benchmark/corpus sweep. | Pinned benchmark set passes expected `resolved`/`ambiguous_requires_selection`/`not_found` outcomes across DOI/arXiv/title inputs. |
+| Identifier determinism (DOI/arXiv/title) | Done | P0 | Core normalization + alias behavior now has pinned benchmark fixture coverage across policies (`tests/fixtures/deterministic_benchmark_cases.json`, `tests/test_retrieval_rc1_matrix.py::test_identifier_benchmark_fixture_is_stable_across_policies`). | Pinned benchmark set passes expected `resolved`/`ambiguous_requires_selection`/`not_found` outcomes across DOI/arXiv/title inputs. |
 | Candidate identifier guardrails | Done | P0 | DOI/arXiv lookup now drops returned rows that do not match requested identifiers. | Off-target adapter rows cannot resolve canonical papers for deterministic identifier lookups. |
-| Metadata richness merge (`abstract`, `keywords`, `categories`) | In progress | P0 | Merge + DB persistence are implemented with unit + index coverage (`tests/test_retrieval_deterministic.py::test_merge_includes_abstract_keywords_and_categories`, `tests/test_retrieval_index.py::test_cache_first_appends_query_history_and_keeps_unique_paper`); remaining work is representative multi-connector corpus validation. | For known papers with upstream metadata, resolved output and DB rows preserve informative values. |
+| Metadata richness merge (`abstract`, `keywords`, `categories`) | Done | P0 | Merge + DB persistence now include multi-adapter richness/persistence coverage (`tests/test_retrieval_index.py::test_multi_adapter_metadata_richness_merges_and_persists`) in addition to resolver unit coverage. | For known papers with upstream metadata, resolved output and DB rows preserve informative values. |
 | Title ambiguity behavior | Done | P1 | Core ambiguity signaling is implemented and covered (`tests/test_retrieval_deterministic.py::test_title_resolution_ambiguous_returns_no_write_signal`, `tests/test_retrieval_rc1_matrix.py::test_cold_start_matrix_and_cache_replay`); remaining breadth moved to regression fixture-pack work. | Ambiguous title cases reliably return `ambiguous_requires_selection` with ranked candidates. |
 
 ### 3.2 Author Metadata
@@ -60,17 +60,17 @@ Scope:
 
 | Task | Status | Priority | Notes | Exit Criteria |
 |---|---|---|---|---|
-| `cache_first` policy behavior (`db -> fast -> consensus fallback`) | In progress | P0 | DB-first + fast-first fallback is implemented and now includes regression coverage for miss-`not_found` and incomplete-fast fallback (`tests/test_retrieval_index.py::test_cache_first_not_found_keeps_index_empty_and_logs_query`, `tests/test_retrieval_index.py::test_cache_first_uses_fast_then_fallback_to_consensus_for_incomplete_paper`). | Policy behavior is deterministic and reproducible for cache hit, cache miss-fast-resolved, miss-fast-incomplete, and miss-not-found paths. |
-| Index uniqueness and alias-aware query history | In progress | P0 | Query history append and alias-aware query keys are present, with new mixed-identifier permutation coverage (`tests/test_retrieval_index.py::test_mixed_identifier_permutations_keep_single_canonical_entry`). Remaining work is larger stress corpus. | Repeated mixed DOI/arXiv/title queries keep one canonical paper entry with accurate `queries[]` history and cache-hit flags. |
-| Deterministic artifact readability and size bounds | In progress | P0 | Human-facing YAML remains compact and detailed provenance stays in TSV; added repeated-run compactness guard (`tests/test_retrieval_index.py::test_index_artifact_stays_compact_after_repeated_runs`). Longitudinal realistic-project checks still pending. | `deterministic_result.yaml` remains compact and readable after repeated runs with growth bounded by paper/query counts. |
+| `cache_first` policy behavior (`db -> fast -> consensus fallback`) | Done | P0 | Full path coverage is now explicit: cache hit, miss-fast-resolved, miss-fast-incomplete->consensus, and miss-not-found (`tests/test_retrieval_index.py::test_cache_first_appends_query_history_and_keeps_unique_paper`, `tests/test_retrieval_index.py::test_cache_first_uses_fast_path_without_consensus_fallback_when_complete`, `tests/test_retrieval_index.py::test_cache_first_uses_fast_then_fallback_to_consensus_for_incomplete_paper`, `tests/test_retrieval_index.py::test_cache_first_not_found_keeps_index_empty_and_logs_query`). | Policy behavior is deterministic and reproducible for cache hit, cache miss-fast-resolved, miss-fast-incomplete, and miss-not-found paths. |
+| Index uniqueness and alias-aware query history | Done | P0 | Alias-aware history and canonical-entry uniqueness now have permutation + replay coverage (`tests/test_retrieval_index.py::test_mixed_identifier_permutations_keep_single_canonical_entry`, `tests/test_retrieval_index.py::test_cache_first_appends_query_history_and_keeps_unique_paper`). | Repeated mixed DOI/arXiv/title queries keep one canonical paper entry with accurate `queries[]` history and cache-hit flags. |
+| Deterministic artifact readability and size bounds | Done | P0 | Compactness and bounded-growth guards now cover repeated single-paper and multi-paper runs (`tests/test_retrieval_index.py::test_index_artifact_stays_compact_after_repeated_runs`, `tests/test_retrieval_index.py::test_artifact_size_growth_is_bounded_by_query_and_paper_counts`). | `deterministic_result.yaml` remains compact and readable after repeated runs with growth bounded by paper/query counts. |
 
 ### 3.5 Observability, Regression, and Ops
 
 | Task | Status | Priority | Notes | Exit Criteria |
 |---|---|---|---|---|
 | CLI retrieval trace quality | Done | P0 | Progress events expose search path, adapter outcomes, cache events, and reconcile/persist milestones. | Retrieval path can be debugged from CLI output without opening artifact files. |
-| Fresh-session deterministic smoke suite | In progress | P0 | Clean-workspace matrix coverage now exists via isolated temp-workspace suite (`tests/test_retrieval_rc1_matrix.py::test_cold_start_matrix_and_cache_replay`); expansion into fuller CI matrix is pending. | Cold-start suite recorded for DOI/arXiv alias/title + cache replay checks. |
-| Deterministic regression fixture pack | In progress | P1 | Core deterministic regressions are covered (`tests/test_retrieval_deterministic.py`, `tests/test_retrieval_index.py`, `tests/test_retrieval_rc1_matrix.py`); fixture corpus for broader metadata drift remains pending. | Fixture pack added and run in CI for deterministic policy and metadata integrity regressions. |
+| Fresh-session deterministic smoke suite | Done | P0 | Clean-workspace matrix with replay checks is covered by isolated temp-workspace suite (`tests/test_retrieval_rc1_matrix.py::test_cold_start_matrix_and_cache_replay`). | Cold-start suite recorded for DOI/arXiv alias/title + cache replay checks. |
+| Deterministic regression fixture pack | In progress | P1 | Fixture pack exists (`tests/fixtures/deterministic_benchmark_cases.json`) and is enforced by tests (`tests/test_retrieval_rc1_matrix.py::test_identifier_benchmark_fixture_is_stable_across_policies`); CI wiring/expansion remains pending. | Fixture pack added and run in CI for deterministic policy and metadata integrity regressions. |
 
 ## 4) Non-Active Modules (Summary Only)
 
@@ -100,8 +100,8 @@ Done when:
 
 Use this queue at the start of the next session:
 
-1. Run cold-start matrix for DOI/arXiv URL/arXiv DOI alias/title exact/title ambiguous under `cache_first`.
-2. Validate index/query history stability (`query_key`, `cache_hit`, canonical paper consistency) after recent DB/cache reconciliation changes.
-3. Add/refresh fixture corpus to lock policy-mode behavior across `consensus`, `fast`, and `cache_first`.
-4. Add explicit migration/compat checks for older DB files that predate `papers.arxiv_id` and `paper_author_metadata`.
-5. Review policy docs/README to reflect stricter title-equivalence behavior and expected tradeoffs.
+1. Implement cross-source author canonicalization hardening and add regression sample covering partial-ID duplicates.
+2. Implement metadata backfill pass for legacy sparse DB/index rows and add migration/backfill verification tests.
+3. Expand deterministic fixture corpus beyond benchmark core cases (metadata drift + adapter disagreement scenarios).
+4. Wire deterministic fixture pack tests into CI and record pass evidence in this board.
+5. Review policy docs/README to reflect current acceptance matrix and fixture-driven guarantees.

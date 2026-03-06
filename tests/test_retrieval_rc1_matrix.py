@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -128,6 +129,50 @@ class _MatrixAdapter:
 
 
 class TestRetrievalRC1Matrix(unittest.TestCase):
+    FIXTURE_PATH = Path(__file__).parent / "fixtures" / "deterministic_benchmark_cases.json"
+
+    def _run_single_case(
+        self,
+        *,
+        query: dict,
+        policy: str,
+        expected_query_key: str,
+        expected_status: str,
+        expected_paper_id: str,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            adapter = _MatrixAdapter()
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[adapter]):
+                    run_step("demo", "retrieve-paper", policy=policy, **query)
+
+            index_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_result.yaml"
+            index_payload = yamlx.load(index_path)
+            self.assertEqual(len(index_payload["queries"]), 1)
+            event = index_payload["queries"][0]
+            self.assertEqual(event["query_key"], expected_query_key)
+            self.assertEqual(event["resolution_status"], expected_status)
+            self.assertFalse(event["cache_hit"])
+
+            if expected_status == "resolved":
+                self.assertEqual(event["paper_id"], expected_paper_id)
+                self.assertEqual(len(index_payload["papers"]), 1)
+                self.assertEqual(index_payload["papers"][0]["paper_id"], expected_paper_id)
+            else:
+                self.assertEqual(event["paper_id"], "")
+                self.assertEqual(index_payload["papers"], [])
+
     def _run_case(
         self,
         *,
@@ -249,6 +294,19 @@ class TestRetrievalRC1Matrix(unittest.TestCase):
                     expected_paper_id=scenario["expected_paper_id"],
                     expect_replay_cache_hit=scenario["expect_replay_cache_hit"],
                 )
+
+    def test_identifier_benchmark_fixture_is_stable_across_policies(self):
+        fixture_cases = json.loads(self.FIXTURE_PATH.read_text(encoding="utf-8"))
+        for case in fixture_cases:
+            for policy in ("consensus", "fast", "cache_first"):
+                with self.subTest(case=case["name"], policy=policy):
+                    self._run_single_case(
+                        query=case["query"],
+                        policy=policy,
+                        expected_query_key=case["expected_query_key"],
+                        expected_status=case["expected_status"],
+                        expected_paper_id=case.get("expected_paper_id", ""),
+                    )
 
 
 if __name__ == "__main__":

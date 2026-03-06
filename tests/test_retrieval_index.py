@@ -370,6 +370,80 @@ class _PermutationAdapter:
         return []
 
 
+class _RichMetadataAdapter:
+    def __init__(self, source: str, abstract: str, keywords: list[str], categories: list[str]):
+        self.source = source
+        self.abstract = abstract
+        self.keywords = keywords
+        self.categories = categories
+        self.lookup_doi_calls = 0
+
+    def lookup_doi(self, doi: str) -> list[dict]:
+        self.lookup_doi_calls += 1
+        if doi != "10.1/rich":
+            return []
+        return [
+            {
+                "source": self.source,
+                "source_id": f"{self.source}:{doi}",
+                "title": "Rich Metadata Paper",
+                "venue": "OSDI",
+                "year": "2024",
+                "doi": doi,
+                "arxiv_id": "",
+                "url": f"https://doi.org/{doi}",
+                "abstract": self.abstract,
+                "keywords": list(self.keywords),
+                "categories": list(self.categories),
+                "authors": [],
+                "score": 0.9,
+                "reason": "lookup_doi",
+            }
+        ]
+
+    def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+        return []
+
+    def search_title(self, title: str, limit: int = 5) -> list[dict]:
+        return []
+
+
+class _AnyDoiAdapter:
+    def __init__(self):
+        self.lookup_doi_calls = 0
+
+    def lookup_doi(self, doi: str) -> list[dict]:
+        self.lookup_doi_calls += 1
+        normalized = str(doi).strip().lower()
+        if not normalized.startswith("10.77/"):
+            return []
+        suffix = normalized.split("/", 1)[1]
+        return [
+            {
+                "source": "any_doi",
+                "source_id": normalized,
+                "title": f"Synthetic Paper {suffix}",
+                "venue": "SyntheticConf",
+                "year": "2024",
+                "doi": normalized,
+                "arxiv_id": "",
+                "url": f"https://doi.org/{normalized}",
+                "abstract": f"Synthetic abstract for {suffix}.",
+                "keywords": [f"k-{suffix}"],
+                "categories": ["synthetic"],
+                "authors": [],
+                "score": 1.0,
+                "reason": "lookup_doi",
+            }
+        ]
+
+    def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+        return []
+
+    def search_title(self, title: str, limit: int = 5) -> list[dict]:
+        return []
+
+
 class TestRetrievalIndex(unittest.TestCase):
     def test_cache_first_appends_query_history_and_keeps_unique_paper(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -838,6 +912,117 @@ class TestRetrievalIndex(unittest.TestCase):
                 fieldnames = reader.fieldnames or []
             self.assertEqual(fieldnames[:4], ["timestamp", "query_key", "resolution_status", "paper_id"])
             self.assertGreaterEqual(len(rows), 2)
+
+    def test_cache_first_uses_fast_path_without_consensus_fallback_when_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            fast_adapter = _CountingAdapter()
+            fallback_adapter = _EmptyAdapter()
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[fast_adapter, fallback_adapter]):
+                    run_step("demo", "retrieve-paper", doi="10.1/xyz", policy="cache_first")
+
+            index_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_result.yaml"
+            payload = yamlx.load(index_path)
+            self.assertEqual(len(payload["queries"]), 1)
+            self.assertEqual(payload["queries"][0]["resolution_status"], "resolved")
+            self.assertFalse(payload["queries"][0]["cache_hit"])
+            self.assertEqual(payload["queries"][0]["paper_id"], "doi:10.1/xyz")
+            self.assertEqual(fast_adapter.lookup_doi_calls, 1)
+            self.assertEqual(fallback_adapter.lookup_doi_calls, 0)
+
+    def test_multi_adapter_metadata_richness_merges_and_persists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            adapter_a = _RichMetadataAdapter(
+                source="meta_a",
+                abstract="Short abstract.",
+                keywords=["deterministic", "retrieval"],
+                categories=["systems"],
+            )
+            adapter_b = _RichMetadataAdapter(
+                source="meta_b",
+                abstract="Longer abstract with more context for merge preference.",
+                keywords=["metadata", "retrieval"],
+                categories=["databases"],
+            )
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[adapter_a, adapter_b]):
+                    run_step("demo", "retrieve-paper", doi="10.1/rich", policy="consensus")
+
+            index_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_result.yaml"
+            payload = yamlx.load(index_path)
+            self.assertEqual(len(payload["papers"]), 1)
+            paper = payload["papers"][0]["paper"]
+            self.assertEqual(paper["paper_id"], "doi:10.1/rich")
+            self.assertEqual(paper["abstract"], "Longer abstract with more context for merge preference.")
+            self.assertEqual(set(paper["keywords"]), {"deterministic", "retrieval", "metadata"})
+            self.assertEqual(set(paper["categories"]), {"systems", "databases"})
+
+            with sqlite3.connect(kb_path) as conn:
+                row = conn.execute(
+                    "SELECT abstract, keywords_json, categories_json FROM papers WHERE id='doi:10.1/rich'"
+                ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], "Longer abstract with more context for merge preference.")
+            self.assertEqual(set(json.loads(row[1])), {"deterministic", "retrieval", "metadata"})
+            self.assertEqual(set(json.loads(row[2])), {"systems", "databases"})
+
+    def test_artifact_size_growth_is_bounded_by_query_and_paper_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            adapter = _AnyDoiAdapter()
+            doi_queries = [f"10.77/p{i}" for i in range(12)]
+            replay_queries = doi_queries + doi_queries[:8]
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[adapter]):
+                    for doi in replay_queries:
+                        run_step("demo", "retrieve-paper", doi=doi, policy="cache_first")
+
+            index_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_result.yaml"
+            payload = yamlx.load(index_path)
+            self.assertEqual(len(payload["papers"]), 12)
+            self.assertEqual(len(payload["queries"]), len(replay_queries))
+            for entry in payload["papers"]:
+                self.assertNotIn("sources", entry)
+                self.assertNotIn("diagnostics", entry)
+                self.assertGreaterEqual(int(entry.get("source_count") or 0), 1)
+
+            # Bounded-growth heuristic: compact index should stay well below 3KB per paper/query pair.
+            size_bound = 3000 * (len(payload["papers"]) + len(payload["queries"]))
+            self.assertLess(index_path.stat().st_size, size_bound)
+            # Adapter should only be called on first-time DOI queries; replays should hit DB cache.
+            self.assertEqual(adapter.lookup_doi_calls, len(doi_queries))
 
 
 if __name__ == "__main__":

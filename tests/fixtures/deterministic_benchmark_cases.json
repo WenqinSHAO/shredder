@@ -1,0 +1,65 @@
+[
+  {
+    "name": "doi_exact",
+    "query": {
+      "doi": "10.1/xyz"
+    },
+    "expected_query_key": "doi:10.1/xyz",
+    "expected_status": "resolved",
+    "expected_paper_id": "doi:10.1/xyz"
+  },
+  {
+    "name": "arxiv_url",
+    "query": {
+      "arxiv_url": "https://arxiv.org/abs/1706.03762"
+    },
+    "expected_query_key": "arxiv:1706.03762",
+    "expected_status": "resolved",
+    "expected_paper_id": "arxiv:1706.03762"
+  },
+  {
+    "name": "arxiv_id_doi_canonical",
+    "query": {
+      "arxiv_id": "2401.12345"
+    },
+    "expected_query_key": "arxiv:2401.12345",
+    "expected_status": "resolved",
+    "expected_paper_id": "doi:10.1/xyz"
+  },
+  {
+    "name": "arxiv_doi_alias",
+    "query": {
+      "doi": "https://doi.org/10.48550/arXiv.1706.03762"
+    },
+    "expected_query_key": "arxiv:1706.03762",
+    "expected_status": "resolved",
+    "expected_paper_id": "arxiv:1706.03762"
+  },
+  {
+    "name": "title_exact",
+    "query": {
+      "title": "Deterministic Systems"
+    },
+    "expected_query_key": "title:deterministic systems",
+    "expected_status": "resolved",
+    "expected_paper_id": "doi:10.2000/title-exact"
+  },
+  {
+    "name": "title_ambiguous",
+    "query": {
+      "title": "Cache Systems for LLM"
+    },
+    "expected_query_key": "title:cache systems for llm",
+    "expected_status": "ambiguous_requires_selection",
+    "expected_paper_id": ""
+  },
+  {
+    "name": "doi_not_found",
+    "query": {
+      "doi": "10.9/missing"
+    },
+    "expected_query_key": "doi:10.9/missing",
+    "expected_status": "not_found",
+    "expected_paper_id": ""
+  }
+]
