@@ -183,3 +183,20 @@ Use this queue at the start of the next session:
 2. Execute Increment-1 A3/A4: add resume-safe progress memory and scholarly-first router with conditional web fallback scaffold.
 3. Execute Increment-1 A5/A6: ship `theme_refine` workflow and checkpoint-resume CLI/API interfaces.
 4. Execute Increment-1 A7: land unit/integration coverage (happy path, resume idempotence, empty-result fallback), then open Data Backend/RAG detailed board contracts.
+5. Lock implementation defaults for this sprint:
+   - Agentic runtime: internal single-controller state machine in repo (no external framework dependency in I1).
+   - LLM backend: DeepSeek via `DS_API_KEY` using OpenAI-compatible client adapter.
+   - Web fallback: SearXNG via `SEARXNG_URL` in scholarly-first conditional routing.
+6. Add carry-over OSS references as implementation hints:
+   - LangChain Open Deep Research: https://github.com/langchain-ai/open_deep_research
+   - PaperQA2: https://github.com/Future-House/paper-qa
+   - Haystack conditional fallback routing: https://haystack.deepset.ai/tutorials/36_building_fallbacks_with_conditional_routing
+   - OpenAlex filter docs: https://docs.openalex.org/how-to-use-the-api/get-lists-of-entities/filter-entity-lists
+   - Crossref REST API tips: https://www.crossref.org/documentation/retrieve-metadata/rest-api/tips-for-using-the-crossref-rest-api/
+   - SearXNG Search API: https://docs.searxng.org/dev/search_api.html
+   - arXiv API user manual + ToU: https://info.arxiv.org/help/api/user-manual.html , https://info.arxiv.org/help/api/tou.html
+7. Add a dedicated test harness task for agentic loops (before real LLM integration):
+   - Implement `DummyLLMClient` with deterministic fixture-driven responses for planner/ranker/question decisions.
+   - Keep an optional `ReplayLLMClient` that replays captured JSON responses from prior runs.
+   - Use env-gated backend switch (`dummy`, `replay`, `deepseek`) so CI can run fully offline.
+   - Note: direct redirection to this Codex session is not supported as a runtime API backend; use dummy/replay adapters instead.
