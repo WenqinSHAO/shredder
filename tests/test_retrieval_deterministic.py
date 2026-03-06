@@ -109,8 +109,87 @@ class TestDeterministicResolverUnit(unittest.TestCase):
 
     def test_title_resolution_ambiguous_returns_no_write_signal(self):
         result = resolve_deterministic({"title": "Cache Systems for LLM"}, [_AmbiguousTitleAdapter()])
-        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(result["status"], "ambiguous_requires_selection")
+        self.assertEqual(result["resolution_status"], "ambiguous_requires_selection")
         self.assertIsNone(result["paper"])
+
+    def test_no_match_includes_diagnostics(self):
+        class _EmptyAdapter:
+            name = "empty"
+
+            def lookup_doi(self, doi: str) -> list[dict]:
+                return []
+
+            def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+                return []
+
+            def search_title(self, title: str, limit: int = 5) -> list[dict]:
+                return []
+
+        result = resolve_deterministic({"doi": "https://arxiv.org/abs/1706.03762"}, [_EmptyAdapter()])
+        self.assertEqual(result["status"], "not_found")
+        self.assertIn("diagnostics", result)
+        self.assertIn("search_trace", result)
+        self.assertEqual(result["diagnostics"]["lookup_mode"], "doi")
+        self.assertEqual(result["query_classification"], "doi")
+        self.assertIn("doi_argument_looks_like_arxiv_url", result["diagnostics"]["input_warnings"])
+        self.assertEqual(len(result["diagnostics"]["adapter_calls"]), 1)
+
+    def test_fast_policy_stops_after_first_hit(self):
+        class _HitAdapter:
+            name = "hit"
+
+            def __init__(self):
+                self.calls = 0
+
+            def lookup_doi(self, doi: str) -> list[dict]:
+                self.calls += 1
+                return [
+                    {
+                        "source": "hit",
+                        "source_id": doi,
+                        "title": "Paper",
+                        "venue": "",
+                        "year": "2024",
+                        "doi": doi,
+                        "arxiv_id": "",
+                        "url": "",
+                        "authors": [],
+                        "score": 1.0,
+                        "reason": "lookup_doi",
+                    }
+                ]
+
+            def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+                return []
+
+            def search_title(self, title: str, limit: int = 5) -> list[dict]:
+                return []
+
+        class _SkippedAdapter:
+            name = "skipped"
+
+            def __init__(self):
+                self.calls = 0
+
+            def lookup_doi(self, doi: str) -> list[dict]:
+                self.calls += 1
+                return []
+
+            def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+                return []
+
+            def search_title(self, title: str, limit: int = 5) -> list[dict]:
+                return []
+
+        first = _HitAdapter()
+        second = _SkippedAdapter()
+        result = resolve_deterministic({"doi": "10.1/xyz", "policy": "fast"}, [first, second])
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(first.calls, 1)
+        self.assertEqual(second.calls, 0)
+        calls = result["diagnostics"]["adapter_calls"]
+        self.assertEqual(calls[1]["action"], "skipped_due_fast_policy")
 
 
 class TestCliDispatchUnit(unittest.TestCase):
@@ -125,6 +204,7 @@ class TestCliDispatchUnit(unittest.TestCase):
             doi="10.1/xyz",
             arxiv_url="",
             arxiv_id="",
+            policy="",
         )
 
 

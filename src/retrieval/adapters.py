@@ -70,9 +70,13 @@ class AdapterConfig:
 
 class RetrievalAdapter:
     name = "base"
+    dependency_modules: tuple[str, ...] = ()
 
     def __init__(self, config: AdapterConfig | None = None):
         self.config = config or AdapterConfig()
+        self.last_action: str = ""
+        self.last_error: str = ""
+        self.last_dependency: str = ""
 
     def lookup_doi(self, doi: str) -> list[dict]:
         return []
@@ -89,21 +93,57 @@ class RetrievalAdapter:
     def _has_module(self, module_name: str) -> bool:
         return find_spec(module_name) is not None
 
+    def _start_call(self, action: str) -> bool:
+        self.last_action = action
+        self.last_error = ""
+        self.last_dependency = ""
+        if not self.config.enabled:
+            self.last_error = "adapter_disabled"
+            return False
+        for module_name in self.dependency_modules:
+            if not self._has_module(module_name):
+                self.last_dependency = module_name
+                self.last_error = f"module_not_installed:{module_name}"
+                return False
+        return True
+
+    def _mark_error(self, exc: Exception | str) -> None:
+        if isinstance(exc, Exception):
+            self.last_error = f"{type(exc).__name__}: {exc}"
+        else:
+            self.last_error = str(exc)
+
+    def diagnostics(self) -> dict:
+        deps = list(self.dependency_modules)
+        deps_available = {name: self._has_module(name) for name in deps}
+        return {
+            "adapter": self.name,
+            "enabled": bool(self.config.enabled),
+            "action": self.last_action,
+            "dependency_modules": deps,
+            "dependency_available": deps_available,
+            "missing_dependency": self.last_dependency,
+            "error": self.last_error,
+        }
+
 
 class HabaneroAdapter(RetrievalAdapter):
     name = "habanero"
+    dependency_modules = ("habanero",)
 
     def lookup_doi(self, doi: str) -> list[dict]:
-        if not self.config.enabled or not self._has_module("habanero"):
+        if not self._start_call("lookup_doi"):
             return []
         Crossref = import_module("habanero").Crossref
         client = Crossref()
         try:
             payload = client.works(ids=doi)
-        except Exception:
+        except Exception as exc:
+            self._mark_error(exc)
             return []
         message = _as_dict(payload).get("message") or {}
         if not message:
+            self._mark_error("empty_response")
             return []
         return [
             _normalize_paper_row(
@@ -132,13 +172,14 @@ class HabaneroAdapter(RetrievalAdapter):
         ]
 
     def search_open(self, query: str, limit: int = 20) -> list[dict]:
-        if not self.config.enabled or not self._has_module("habanero"):
+        if not self._start_call("search_open"):
             return []
         Crossref = import_module("habanero").Crossref
         client = Crossref()
         try:
             payload = client.works(query=query, limit=limit)
-        except Exception:
+        except Exception as exc:
+            self._mark_error(exc)
             return []
         items = (_as_dict(payload).get("message") or {}).get("items") or []
         out = []
@@ -166,9 +207,10 @@ class HabaneroAdapter(RetrievalAdapter):
 
 class ArxivAdapter(RetrievalAdapter):
     name = "arxiv"
+    dependency_modules = ("arxiv",)
 
     def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
-        if not self.config.enabled or not self._has_module("arxiv"):
+        if not self._start_call("lookup_arxiv"):
             return []
         arxiv = import_module("arxiv")
         try:
@@ -178,7 +220,8 @@ class ArxivAdapter(RetrievalAdapter):
                 results = list(client().results(search))
             else:
                 results = list(search.results())
-        except Exception:
+        except Exception as exc:
+            self._mark_error(exc)
             return []
 
         out: list[dict] = []
@@ -213,7 +256,7 @@ class ArxivAdapter(RetrievalAdapter):
         return out
 
     def search_title(self, title: str, limit: int = 5) -> list[dict]:
-        if not self.config.enabled or not self._has_module("arxiv"):
+        if not self._start_call("search_title"):
             return []
         arxiv = import_module("arxiv")
         try:
@@ -223,7 +266,8 @@ class ArxivAdapter(RetrievalAdapter):
                 results = list(client().results(search))
             else:
                 results = list(search.results())
-        except Exception:
+        except Exception as exc:
+            self._mark_error(exc)
             return []
 
         out: list[dict] = []
@@ -253,6 +297,7 @@ class ArxivAdapter(RetrievalAdapter):
 
 class PyAlexAdapter(RetrievalAdapter):
     name = "pyalex"
+    dependency_modules = ("pyalex",)
 
     def _map_work(self, work: dict, reason: str, score: float) -> dict:
         authors = []
@@ -295,39 +340,43 @@ class PyAlexAdapter(RetrievalAdapter):
         )
 
     def lookup_doi(self, doi: str) -> list[dict]:
-        if not self.config.enabled or not self._has_module("pyalex"):
+        if not self._start_call("lookup_doi"):
             return []
         Works = import_module("pyalex").Works
         try:
             works = Works().filter(doi=doi).get(per_page=5)
-        except Exception:
+        except Exception as exc:
+            self._mark_error(exc)
             return []
         return [self._map_work(w, reason="lookup_doi", score=1.0) for w in works or []]
 
     def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
-        if not self.config.enabled or not self._has_module("pyalex"):
+        if not self._start_call("lookup_arxiv"):
             return []
         Works = import_module("pyalex").Works
         try:
             works = Works().filter(from_publication_date="1900-01-01").search(arxiv_id).get(per_page=5)
-        except Exception:
+        except Exception as exc:
+            self._mark_error(exc)
             return []
         out = [self._map_work(w, reason="lookup_arxiv", score=0.9) for w in works or []]
         return [w for w in out if w.get("arxiv_id") == arxiv_id]
 
     def search_title(self, title: str, limit: int = 5) -> list[dict]:
-        if not self.config.enabled or not self._has_module("pyalex"):
+        if not self._start_call("search_title"):
             return []
         Works = import_module("pyalex").Works
         try:
             works = Works().search(title).get(per_page=limit)
-        except Exception:
+        except Exception as exc:
+            self._mark_error(exc)
             return []
         return [self._map_work(w, reason="search_title", score=0.7) for w in works or []]
 
 
 class SemanticScholarAdapter(RetrievalAdapter):
     name = "semanticscholar"
+    dependency_modules = ("semanticscholar",)
 
     def _map_paper(self, paper: dict, reason: str, score: float) -> dict:
         ext = paper.get("externalIds") or {}
@@ -360,38 +409,43 @@ class SemanticScholarAdapter(RetrievalAdapter):
         )
 
     def lookup_doi(self, doi: str) -> list[dict]:
-        if not self.config.enabled or not self._has_module("semanticscholar"):
+        if not self._start_call("lookup_doi"):
             return []
         client = import_module("semanticscholar").SemanticScholar()
         try:
             paper = client.get_paper(f"DOI:{doi}")
-        except Exception:
+        except Exception as exc:
+            self._mark_error(exc)
             return []
         payload = _as_dict(paper)
         if not payload:
+            self._mark_error("empty_response")
             return []
         return [self._map_paper(payload, reason="lookup_doi", score=1.0)]
 
     def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
-        if not self.config.enabled or not self._has_module("semanticscholar"):
+        if not self._start_call("lookup_arxiv"):
             return []
         client = import_module("semanticscholar").SemanticScholar()
         try:
             paper = client.get_paper(f"ARXIV:{arxiv_id}")
-        except Exception:
+        except Exception as exc:
+            self._mark_error(exc)
             return []
         payload = _as_dict(paper)
         if not payload:
+            self._mark_error("empty_response")
             return []
         return [self._map_paper(payload, reason="lookup_arxiv", score=0.95)]
 
     def search_title(self, title: str, limit: int = 5) -> list[dict]:
-        if not self.config.enabled or not self._has_module("semanticscholar"):
+        if not self._start_call("search_title"):
             return []
         client = import_module("semanticscholar").SemanticScholar()
         try:
             result = client.search_paper(title, limit=limit)
-        except Exception:
+        except Exception as exc:
+            self._mark_error(exc)
             return []
         payload = _as_dict(result)
         papers = payload.get("data") or payload.get("papers") or []

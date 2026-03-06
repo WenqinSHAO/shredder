@@ -1,7 +1,7 @@
 # Workplan: MVP -> v1
 
 Detailed execution tracking lives in `docs/IMPLEMENTATION_TODO_CHECKLIST.md`.
-Current implementation progress bars are maintained in section `0) Progress Bar` of that checklist.
+Current module-level progress bars are maintained in section `2) Module Progress Bars` of that checklist.
 
 ## Milestones
 

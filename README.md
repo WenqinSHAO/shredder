@@ -51,9 +51,14 @@ python -m src.cli run-step demo discovery
 python -m src.cli run-step demo parsing --paper-id sample --pdf examples/sample.pdf
 python -m src.cli run-step demo extraction --paper-id sample
 python -m src.cli render demo
-python -m src.cli retrieve-paper demo --doi "10.1145/3366423.3380296"
+python -m src.cli retrieve-paper demo --doi "10.1145/3366423.3380296" --policy cache_first
 python -m src.cli retrieve-open demo --prompt "memory disaggregation datacenter systems" --top-n 5
 ```
+
+Deterministic retrieval policies:
+- `cache_first` (default): reuse project retrieval index first, then query adapters
+- `fast`: stop once first adapter returns a match
+- `consensus`: query all adapters and merge
 
 Generated artifacts live under `workspace/demo/`.
 Shared KB is created at `kb/kb.sqlite`.
@@ -71,5 +76,4 @@ Endpoints:
 - `GET /projects/{project_id}/artifacts`
 - `GET /healthz`
 
-
-See `docs/CLI_SMOKE_TEST.md` for a full smoke-test command sequence.
+See `docs/IMPLEMENTATION_TODO_CHECKLIST.md` for current execution status and active task board.

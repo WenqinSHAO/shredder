@@ -133,7 +133,7 @@ class TestOpenRetrieval(unittest.TestCase):
                 rows = list(csv.DictReader(f, delimiter="\t"))
             statuses = {row["status"] for row in rows}
             self.assertIn("resolved", statuses)
-            self.assertTrue("ambiguous" in statuses or "no_match" in statuses)
+            self.assertTrue("ambiguous_requires_selection" in statuses or "not_found" in statuses)
 
             conn = sqlite3.connect(kb_path)
             try:

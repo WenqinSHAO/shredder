@@ -23,6 +23,7 @@ def run_step(project_id: str, step: str, **kwargs):
             doi=kwargs.get("doi", ""),
             arxiv_url=kwargs.get("arxiv_url", ""),
             arxiv_id=kwargs.get("arxiv_id", ""),
+            policy=kwargs.get("policy", ""),
         )
     if step == "retrieve-open":
         return run_retrieve_open(

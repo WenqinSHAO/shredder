@@ -1,174 +1,63 @@
-# Detailed Implementation TODO Checklist
+# Implementation Progress Board
 
-Last updated: 2026-03-05
+Last updated: 2026-03-06
 
-## 0) Progress Bar
+## 1) Program Overview
 
-- Overall retrieval-first program: `65%` (`███████░░░`)
-- Track A deterministic retrieval: `80%` (`████████░░`)
-- Track B open-ended retrieval: `55%` (`██████░░░░`)
-- Deferred backlog (parsing/extraction/rendering): `10%` (`█░░░░░░░░░`)
+This board is the single source of truth for delivery progress.  
+Detailed task tables are maintained only for modules currently in active implementation.
 
-## 1) Replanned Priority
+## 2) Module Progress Bars
 
-Primary objective is now retrieval reliability and completeness:
+| Module | Progress | Status |
+|---|---:|---|
+| Meta Info Retrieval (deterministic) | `35%` (`███░░░░░░░`) | In progress |
+| Agentic Meta Info Retrieval | `15%` (`█░░░░░░░░░`) | Not started |
+| Data Backend and RAG | `20%` (`██░░░░░░░░`) | Planned |
+| Paper Context Retrieval | `5%` (`░░░░░░░░░░`) | Not started |
+| Paper Context Formatted Extraction | `10%` (`█░░░░░░░░░`) | Not started |
+| Analysis Skill | `10%` (`█░░░░░░░░░`) | Not started |
+| Output Skills (report/slides/render) | `15%` (`█░░░░░░░░░`) | Early scaffold |
+| Overall UI Design | `5%` (`░░░░░░░░░░`) | Not started |
+| **Overall Program** | **`18%` (`██░░░░░░░░`)** | **In progress** |
 
-1. Deterministic retrieval first:
-   - Given a paper title or arXiv URL, retrieve canonical paper metadata plus full author metadata.
-   - Persist hardened records to shared KB with provenance.
-2. Open-ended retrieval second:
-   - Given a user prompt, generate and persist an intermediate candidate-paper list.
-   - Then pass candidates through deterministic retrieval pipeline.
+## 3) Active Section Task Board
 
-All other work (parsing/extraction/rendering) is temporarily lower priority.
+## Meta Info Retrieval (Deterministic) - Active
 
-## 2) Current State Baseline
+Scope:
+- Stable deterministic resolution for DOI/arXiv/title.
+- Merge quality aligned with DB canonical model.
+- Debuggable CLI and artifact outputs.
 
-- Discovery connectors exist: OpenAlex, Crossref, Semantic Scholar, SearxNG.
-- Dedup + canonical provenance mapping is present for discovery rows.
-- KB now hardens paper/author/org graph + provenance.
-- Deterministic and open retrieval entrypoints are implemented with retrieval artifacts.
-- Validation in current environment: `PYTHONPATH=. python3 -m unittest discover -s tests -q` passed (21 tests).
+| Task | Status | Priority | Notes | Exit Criteria |
+|---|---|---|---|---|
+| Title search resolution reliability | In progress | P0 | Current quality is inconsistent; ambiguous/no-match behavior needs tightening. | Known title benchmark set passes with expected `resolved`/`ambiguous_requires_selection`/`not_found`. |
+| CLI debug visibility | In progress | P0 | Diagnostics are in YAML, but terminal feedback still weak for common misuse. | CLI prints concise warnings (e.g., DOI looks like arXiv URL) without requiring YAML inspection. |
+| Deterministic policy behavior (`consensus`, `fast`, `cache_first`) | In progress | P0 | Implemented but needs stricter behavior checks and docs alignment. | Policy-specific acceptance tests pass and behavior is deterministic across reruns. |
+| Cache-first index correctness (`one paper once`) | In progress | P0 | Single YAML index implemented; needs edge-case validation under repeated mixed queries. | Repeated project queries append `queries[]` and never duplicate canonical paper entries. |
+| Cross-source author canonicalization | Todo | P1 | Duplicate people still possible across heterogeneous IDs/surface names. | Canonical author merge rules reduce duplicate authors for a regression sample set. |
+| Provenance and search-trace quality | In progress | P1 | Trace exists; needs cleaner wording and stable schema for downstream tooling. | Trace/provenance schema finalized and documented with fixture examples. |
+| Regression fixture suite for deterministic retrieval | Todo | P1 | Need a pinned corpus for reproducible checks across policy modes. | Fixture pack added and used in CI/unit tests. |
 
-## 3) Reuse Strategy
+## 4) Non-Active Modules (Summary Only)
 
-| Component | Decision | Current integration status |
-|---|---|---|
-| `pyalex` | Adopt | Adapter added (`src/retrieval/adapters.py`) |
-| `semanticscholar` | Adopt | Adapter added (`src/retrieval/adapters.py`) |
-| `habanero` | Adopt | Adapter added (`src/retrieval/adapters.py`) |
-| `arxiv.py` | Adopt | Adapter added (`src/retrieval/adapters.py`) |
-| `openalex-official` | Adapt patterns only | deferred (checkpoint/resume tuning) |
-| `paper-qa` | Adapt patterns only | deferred (planner sophistication) |
+| Module | Next Gate To Open Detailed Board |
+|---|---|
+| Agentic Meta Info Retrieval | Deterministic retrieval reaches release-candidate quality. |
+| Data Backend and RAG | Deterministic metadata schema and cache policy frozen. |
+| Paper Context Retrieval | Metadata layer can reliably resolve and cache canonical papers. |
+| Paper Context Formatted Extraction | Context retrieval contract is stable. |
+| Analysis Skill | Extraction artifacts have stable schema + quality controls. |
+| Output Skills | Analysis outputs are stable and versioned. |
+| Overall UI Design | Core retrieval/extraction APIs reach stable semantics. |
 
-## 4) Track A - Deterministic Retrieval (Do First)
+## 5) Immediate Next Milestone
 
-Goal: deterministic input -> deterministic paper+author KB records.
+`M-Deterministic-RC1`: deterministic retrieval is reliable enough for daily use.
 
-## A0 - Retrieval contract and CLI/API surface
-
-- [x] Define deterministic retrieval input contract:
-  - accepted inputs: exact/near-exact paper title, DOI, arXiv URL/arXiv id.
-  - normalized internal key output: canonical `paper_id` (`doi:` > `arxiv:` > stable title-year key).
-- [x] Add explicit command/API entrypoint:
-  - CLI: `retrieve-paper <project> --title/--doi/--arxiv-url/--arxiv-id`
-  - API: `POST /projects/{id}/retrieve/paper`
-- [x] Artifact contract for deterministic runs:
-  - `artifacts/retrieval/deterministic_request.yaml`
-  - `artifacts/retrieval/deterministic_result.yaml`
-  - `artifacts/retrieval/deterministic_sources.tsv`
-- Acceptance:
-  - same input resolves to same canonical paper ID across reruns.
-  - failure modes are explicit and actionable.
-
-## A1 - Deterministic paper resolution logic
-
-- [x] Implement resolver strategy with strict precedence:
-  1) DOI lookup
-  2) arXiv lookup
-  3) title-year fuzzy fallback
-- [x] Add connector-specific fetch-by-id helpers:
-  - `habanero`, `arxiv.py`, `pyalex`, `semanticscholar` adapters.
-- [x] Add conflict resolution rules for paper fields:
-  - deterministic source precedence and field-level confidence/provenance.
-- [x] Persist source snapshots in deterministic source TSV artifact.
-- Acceptance:
-  - arXiv URL input returns one canonical paper record.
-  - known title input returns one canonical paper record (or deterministic no-match).
-
-## A2 - Author metadata retrieval and normalization
-
-- [x] Extend connector normalization to capture author payloads per paper.
-- [x] Define normalized author model:
-  - `author_id` strategy (ORCID preferred; otherwise source-prefixed stable key)
-  - `name`, `aliases`, `orcid`, `source_ids`, `affiliations`, optional `email/homepage` if available.
-- [x] Define normalized org model for affiliations:
-  - `org_id` strategy (ROR preferred; fallback stable source key), `name`, `country`.
-- [x] Add deterministic merge policy for author identities across connectors.
-- Acceptance:
-  - deterministic retrieval of one paper stores paper + all available authors + affiliations.
-  - rerun is idempotent (no duplicate author/org rows).
-
-## A3 - KB hardening for paper-author graph
-
-- [x] Add/confirm KB tables:
-  - `authors`, `orgs`, `paper_authors`, `author_orgs`, `provenance`.
-- [x] Implement upserts:
-  - `upsert_author`, `upsert_org`, `upsert_paper_author`, `upsert_author_org`.
-- [x] Ensure referential integrity via resolver/persistence path + tests.
-  - every `paper_authors.paper_id` exists in `papers`
-  - every `paper_authors.author_id` exists in `authors`
-  - provenance `entity_id` always references existing entities.
-- [x] Add query helpers:
-  - `get_paper_with_authors(paper_id)`
-  - `get_author_profile(author_id)`
-- Acceptance:
-  - one deterministic retrieval call can fully populate and query paper+author graph from KB.
-
-## A4 - Deterministic reliability and tests
-
-- [ ] Wire configurable retry policy through all connectors.
-- [x] Add deterministic integration tests:
-  - title input -> canonical paper + authors persisted.
-  - arXiv URL input -> canonical paper + authors persisted.
-  - rerun idempotency and stable IDs.
-  - provenance integrity across papers/authors/orgs.
-- [x] Add fixtures/mocks to keep tests offline and reproducible.
-- Acceptance:
-  - deterministic test suite passes reliably without network.
-
-## 5) Track B - Open-Ended Retrieval (After Track A)
-
-Goal: prompt -> candidate list artifact -> deterministic ingestion.
-
-## B0 - Intermediate candidate-list artifact
-
-- [x] Add open-ended retrieval step that produces:
-  - `artifacts/retrieval/candidates_raw.tsv`
-  - `artifacts/retrieval/candidates_ranked.tsv`
-  - `artifacts/retrieval/handoff.tsv`
-  - `artifacts/retrieval/candidates_summary.yaml`
-- [x] Define candidate fields:
-  - `query_used`, `source`, `source_id`, `title`, `year`, `doi`, `arxiv_id`, `url`, `score`, `reason`.
-- Acceptance:
-  - open-ended run always outputs explicit candidate artifacts, even when empty.
-
-## B1 - Query planning heuristics (LLM-assisted, deterministic envelope)
-
-- [x] Add baseline query planner (heuristic templates) that converts prompt into query set.
-- [x] Planner outputs structured plan:
-  - connector target, query string, year/venue constraints, expected recall intent.
-- [ ] Keep planner bounded by deterministic guardrails:
-  - max query count, explicit cost/time limits, strict output schema.
-- Acceptance:
-  - same prompt + same config yields reproducible query plan.
-
-## B2 - Multi-source retrieval and ranking
-
-- [ ] Execute planned queries across scholarly APIs and optional web search fallback.
-- [ ] Dedup and rank candidates with transparent scoring policy.
-- [ ] Keep all raw evidence for explainability.
-- Acceptance:
-  - ranked candidate list is reproducible and inspectable.
-
-## B3 - Handoff to deterministic ingestion
-
-- [x] Select top-N candidates (configurable) for deterministic retrieval ingestion.
-- [x] Persist handoff map:
-  - candidate row -> canonical paper_id / no-match reason.
-- [x] Enforce strict rule: open-ended path does not directly write uncertain entities to KB.
-
-## 6) Deferred Backlog (After Retrieval Tracks)
-
-- [ ] Parsing contract upgrade (structured sections, validators).
-- [ ] Extraction contract hardening (confidence/evidence/status verifier).
-- [ ] Analysis skills expansion + richer render outputs.
-- [ ] Dev UX hardening (`pytest` tooling, Makefile, release docs).
-
-## 7) Recommended Next Execution Order
-
-1. Wire retrieval retry policy and adapter-level backoff config.
-2. Improve title disambiguation and confidence scoring.
-3. Add richer query planner (LLM optional) with deterministic schema validation.
-4. Add checkpoint/resume ingestion patterns inspired by `openalex-official`.
-5. Expand coverage and docs for productionization.
+Done when:
+- Title search behavior is predictable on benchmark queries.
+- CLI shows useful debug hints directly.
+- `cache_first` mode reuses index safely and avoids duplicates.
+- Deterministic retrieval tests are stable and reproducible.

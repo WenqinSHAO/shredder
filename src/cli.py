@@ -29,6 +29,7 @@ def main() -> None:
     p_retrieve_paper.add_argument("--doi", default="")
     p_retrieve_paper.add_argument("--arxiv-url", default="")
     p_retrieve_paper.add_argument("--arxiv-id", default="")
+    p_retrieve_paper.add_argument("--policy", default="")
 
     p_retrieve_open = sub.add_parser("retrieve-open")
     p_retrieve_open.add_argument("project_id")
@@ -59,6 +60,7 @@ def main() -> None:
                 doi=args.doi,
                 arxiv_url=args.arxiv_url,
                 arxiv_id=args.arxiv_id,
+                policy=args.policy,
             )
             print(f"Deterministic retrieval complete: {result}")
         elif args.cmd == "retrieve-open":

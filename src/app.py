@@ -24,6 +24,7 @@ class RetrievePaperRequest(BaseModel):
     doi: str | None = None
     arxiv_url: str | None = None
     arxiv_id: str | None = None
+    policy: str | None = None
 
 
 class RetrieveOpenRequest(BaseModel):
@@ -66,6 +67,7 @@ def retrieve_paper(project_id: str, body: RetrievePaperRequest):
             doi=body.doi or "",
             arxiv_url=body.arxiv_url or "",
             arxiv_id=body.arxiv_id or "",
+            policy=body.policy or "",
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

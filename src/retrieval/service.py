@@ -40,6 +40,19 @@ def normalize_arxiv_input(arxiv_url: str = "", arxiv_id: str = "") -> str:
     return normalize_arxiv_id(arxiv_url)
 
 
+def canonical_query_key(normalized_query: dict) -> str:
+    doi = normalize_doi(normalized_query.get("doi", ""))
+    if doi:
+        return f"doi:{doi}"
+    arxiv_id = normalize_arxiv_input(normalized_query.get("arxiv_url", ""), normalized_query.get("arxiv_id", ""))
+    if arxiv_id:
+        return f"arxiv:{arxiv_id}"
+    title = normalize_title(str(normalized_query.get("title") or ""))
+    if title:
+        return f"title:{title}"
+    return "empty"
+
+
 def stable_paper_id(doi: str, arxiv_id: str, title: str, year: str) -> str:
     if doi:
         return f"doi:{doi}"
@@ -171,26 +184,101 @@ def merge_paper_rows(rows: list[dict]) -> dict:
     }
 
 
-def _collect_candidates(query: dict, adapters: list[RetrievalAdapter]) -> list[dict]:
+def _lookup_mode(query: dict) -> str:
     doi = normalize_doi(query.get("doi", ""))
     arxiv_id = normalize_arxiv_input(query.get("arxiv_url", ""), query.get("arxiv_id", ""))
     title = str(query.get("title") or "")
+    if doi:
+        return "doi"
+    if arxiv_id:
+        return "arxiv"
+    if title:
+        return "title"
+    return "none"
+
+
+def _adapter_diag(adapter: RetrievalAdapter, mode: str, rows_returned: int) -> dict:
+    if hasattr(adapter, "diagnostics"):
+        diag = adapter.diagnostics()
+    else:
+        diag = {
+            "adapter": getattr(adapter, "name", adapter.__class__.__name__),
+            "enabled": True,
+            "action": mode,
+            "dependency_modules": [],
+            "dependency_available": {},
+            "missing_dependency": "",
+            "error": "",
+        }
+    if not diag.get("action"):
+        diag["action"] = "not_attempted"
+    diag.update({"lookup_mode": mode, "rows_returned": rows_returned})
+    return diag
+
+
+def _collect_candidates(
+    query: dict,
+    adapters: list[RetrievalAdapter],
+    policy: str = "consensus",
+) -> tuple[list[dict], list[dict]]:
+    doi = normalize_doi(query.get("doi", ""))
+    arxiv_id = normalize_arxiv_input(query.get("arxiv_url", ""), query.get("arxiv_id", ""))
+    title = str(query.get("title") or "")
+    mode = _lookup_mode(query)
     candidates: list[dict] = []
+    diagnostics: list[dict] = []
+    stop_early = policy == "fast"
+    have_rows = False
     for adapter in adapters:
+        if stop_early and have_rows:
+            diagnostics.append(
+                {
+                    "adapter": getattr(adapter, "name", adapter.__class__.__name__),
+                    "enabled": getattr(getattr(adapter, "config", None), "enabled", True),
+                    "action": "skipped_due_fast_policy",
+                    "dependency_modules": list(getattr(adapter, "dependency_modules", ()) or []),
+                    "dependency_available": {
+                        dep: adapter._has_module(dep) if hasattr(adapter, "_has_module") else True
+                        for dep in (getattr(adapter, "dependency_modules", ()) or [])
+                    },
+                    "missing_dependency": "",
+                    "error": "",
+                    "lookup_mode": mode,
+                    "rows_returned": 0,
+                }
+            )
+            continue
+        rows: list[dict] = []
         if doi:
-            candidates.extend(adapter.lookup_doi(doi))
-            continue
-        if arxiv_id:
-            candidates.extend(adapter.lookup_arxiv(arxiv_id))
-            continue
-        if title:
-            candidates.extend(adapter.search_title(title, limit=int(query.get("limit", 5))))
-    return candidates
+            rows = adapter.lookup_doi(doi)
+        elif arxiv_id:
+            rows = adapter.lookup_arxiv(arxiv_id)
+        elif title:
+            rows = adapter.search_title(title, limit=int(query.get("limit", 5)))
+        rows = rows or []
+        candidates.extend(rows)
+        diagnostics.append(_adapter_diag(adapter, mode, len(rows)))
+        if rows:
+            have_rows = True
+    return candidates, diagnostics
+
+
+def _input_warnings(normalized_query: dict) -> list[str]:
+    warnings: list[str] = []
+    doi = str(normalized_query.get("doi") or "").lower()
+    arxiv_url = str(normalized_query.get("arxiv_url") or "").lower()
+    if doi and "arxiv.org/" in doi:
+        warnings.append("doi_argument_looks_like_arxiv_url")
+    if arxiv_url and "doi.org/" in arxiv_url:
+        warnings.append("arxiv_url_argument_looks_like_doi_url")
+    if doi and not doi.startswith("10."):
+        warnings.append("doi_argument_not_normalized")
+    return warnings
 
 
 def _resolve_title(title: str, candidates: list[dict], ambiguity_delta: float = 0.05) -> tuple[str, str, list[dict]]:
     if not candidates:
-        return "no_match", "no_candidates", []
+        return "not_found", "no_candidates", []
     title_norm = normalize_title(title)
     scored = []
     for row in candidates:
@@ -203,7 +291,7 @@ def _resolve_title(title: str, candidates: list[dict], ambiguity_delta: float = 
     scored.sort(key=lambda r: (r["_total"], r["_sim"], len(r.get("title", ""))), reverse=True)
     top = scored[0]
     if len(scored) > 1 and abs(top["_total"] - scored[1]["_total"]) <= ambiguity_delta:
-        return "ambiguous", "multiple_title_matches", scored
+        return "ambiguous_requires_selection", "multiple_title_matches", scored
     return "resolved", "title_resolved", scored
 
 
@@ -215,20 +303,99 @@ def resolve_deterministic(query: dict, adapters: list[RetrievalAdapter]) -> dict
         "arxiv_id": normalize_arxiv_input(str(query.get("arxiv_url") or ""), str(query.get("arxiv_id") or "")),
         "limit": int(query.get("limit", 5)),
     }
-    candidates = _collect_candidates(normalized_query, adapters)
+    policy = str(query.get("policy") or "consensus").strip().lower()
+    if policy not in {"consensus", "fast", "cache_first"}:
+        policy = "consensus"
+    if policy == "cache_first":
+        # Cache behavior is orchestrator-controlled; fallback to consensus retrieval when cache miss occurs.
+        effective_policy = "consensus"
+    else:
+        effective_policy = policy
+
+    candidates, adapter_calls = _collect_candidates(normalized_query, adapters, policy=effective_policy)
+    diagnostics = {
+        "lookup_mode": _lookup_mode(normalized_query),
+        "candidate_count": len(candidates),
+        "policy": policy,
+        "effective_policy": effective_policy,
+        "query_key": canonical_query_key(normalized_query),
+        "input_warnings": _input_warnings(normalized_query),
+        "adapter_calls": adapter_calls,
+    }
+    search_trace = [
+        f"query_classification={diagnostics['lookup_mode']}",
+        (
+            "normalized_input "
+            f"doi={normalized_query['doi'] or 'n/a'} "
+            f"arxiv_id={normalized_query['arxiv_id'] or 'n/a'} "
+            f"title_present={bool(normalized_query['title'])}"
+        ),
+    ]
+    if diagnostics["input_warnings"]:
+        search_trace.append("input_warnings=" + ",".join(diagnostics["input_warnings"]))
+    for call in adapter_calls:
+        search_trace.append(
+            "adapter="
+            f"{call.get('adapter')} action={call.get('action')} enabled={call.get('enabled')} "
+            f"rows={call.get('rows_returned')} error={call.get('error') or 'none'}"
+        )
 
     if normalized_query["title"] and not normalized_query["doi"] and not normalized_query["arxiv_id"]:
         status, reason, ranked = _resolve_title(normalized_query["title"], candidates, ambiguity_delta=float(query.get("ambiguity_delta", 0.05)))
         if status != "resolved":
-            return {"status": status, "reason": reason, "query": normalized_query, "paper": None, "sources": ranked}
+            search_trace.append(f"resolution_status={status} reason={reason}")
+            return {
+                "status": status,
+                "resolution_status": status,
+                "query_classification": diagnostics["lookup_mode"],
+                "reason": reason,
+                "query": normalized_query,
+                "paper": None,
+                "sources": ranked,
+                "diagnostics": diagnostics,
+                "search_trace": search_trace,
+            }
         merged = merge_paper_rows([ranked[0]])
-        return {"status": "resolved", "reason": reason, "query": normalized_query, "paper": merged, "sources": ranked}
+        search_trace.append(f"resolution_status=resolved reason={reason}")
+        return {
+            "status": "resolved",
+            "resolution_status": "resolved",
+            "query_classification": diagnostics["lookup_mode"],
+            "reason": reason,
+            "query": normalized_query,
+            "paper": merged,
+            "sources": ranked,
+            "diagnostics": diagnostics,
+            "search_trace": search_trace,
+        }
 
     if not candidates:
-        return {"status": "no_match", "reason": "no_candidates", "query": normalized_query, "paper": None, "sources": []}
+        search_trace.append("resolution_status=not_found reason=no_candidates")
+        return {
+            "status": "not_found",
+            "resolution_status": "not_found",
+            "query_classification": diagnostics["lookup_mode"],
+            "reason": "no_candidates",
+            "query": normalized_query,
+            "paper": None,
+            "sources": [],
+            "diagnostics": diagnostics,
+            "search_trace": search_trace,
+        }
 
     merged = merge_paper_rows(candidates)
-    return {"status": "resolved", "reason": "resolved_by_identifier", "query": normalized_query, "paper": merged, "sources": candidates}
+    search_trace.append("resolution_status=resolved reason=resolved_by_identifier")
+    return {
+        "status": "resolved",
+        "resolution_status": "resolved",
+        "query_classification": diagnostics["lookup_mode"],
+        "reason": "resolved_by_identifier",
+        "query": normalized_query,
+        "paper": merged,
+        "sources": candidates,
+        "diagnostics": diagnostics,
+        "search_trace": search_trace,
+    }
 
 
 def _candidate_dedup_key(row: dict) -> str:
@@ -325,4 +492,3 @@ def write_handoff_tsv(path: Path, rows: list[dict]) -> Path:
         for row in rows:
             writer.writerow({k: row.get(k, "") for k in fields})
     return path
-
