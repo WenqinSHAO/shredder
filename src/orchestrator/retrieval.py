@@ -8,16 +8,21 @@ from typing import Callable
 from src.connectors.http import normalize_arxiv_id, normalize_doi
 from src.kb import (
     add_provenance,
+    count_papers_for_author,
     delete_paper,
+    find_paper_ids_by_arxiv,
     find_paper_ids_by_doi,
     get_paper_with_authors,
     init_kb,
+    list_paper_author_ids,
+    replace_author_orgs,
+    replace_paper_author_metadata,
+    replace_paper_authors,
     search_papers,
     upsert_author,
     upsert_author_org,
     upsert_org,
     upsert_paper,
-    upsert_paper_author,
 )
 from src.retrieval.service import (
     SOURCE_FIELDS,
@@ -361,6 +366,10 @@ def _normalize_year(value: str | int | None) -> str:
     return text if text.isdigit() else ""
 
 
+def _normalize_venue(value: str | None) -> str:
+    return normalize_title(str(value or ""))
+
+
 def _papers_equivalent(a: dict, b: dict) -> bool:
     a_doi = normalize_doi(str(a.get("doi") or ""))
     b_doi = normalize_doi(str(b.get("doi") or ""))
@@ -381,7 +390,15 @@ def _papers_equivalent(a: dict, b: dict) -> bool:
         return False
     a_year = _normalize_year(a.get("year"))
     b_year = _normalize_year(b.get("year"))
-    if a_year and b_year and a_year != b_year:
+    # Title-only equivalence is intentionally conservative to avoid collapsing
+    # distinct papers that share a common/templated title.
+    if not a_year or not b_year:
+        return False
+    if a_year != b_year:
+        return False
+    a_venue = _normalize_venue(a.get("venue"))
+    b_venue = _normalize_venue(b.get("venue"))
+    if a_venue and b_venue and a_venue != b_venue:
         return False
     return True
 
@@ -445,7 +462,9 @@ def _db_payload_to_paper(payload: dict) -> dict:
     paper_row = payload.get("paper") or {}
     paper_id = str(paper_row.get("id") or "")
     doi = normalize_doi(str(paper_row.get("doi") or ""))
-    arxiv_id = normalize_arxiv_id(paper_id[len("arxiv:") :]) if paper_id.lower().startswith("arxiv:") else ""
+    arxiv_id = normalize_arxiv_id(str(paper_row.get("arxiv_id") or ""))
+    if not arxiv_id and paper_id.lower().startswith("arxiv:"):
+        arxiv_id = normalize_arxiv_id(paper_id[len("arxiv:") :])
     if not arxiv_id:
         arxiv_id = arxiv_id_from_doi_alias(doi)
     author_rows = list(payload.get("authors") or [])
@@ -461,8 +480,8 @@ def _db_payload_to_paper(payload: dict) -> dict:
             "author_id": str(row.get("id") or ""),
             "name": str(row.get("name") or ""),
             "orcid": str(row.get("orcid") or ""),
-            "source_ids": [],
-            "affiliations": [],
+            "source_ids": list(row.get("source_ids") or []),
+            "affiliations": list(row.get("affiliations") or []),
         }
         for row in author_rows
         if str(row.get("id") or "").strip()
@@ -494,6 +513,7 @@ def _load_cached_paper_from_db(query: dict) -> dict | None:
     candidate_ids: list[str] = []
     if arxiv_id:
         candidate_ids.append(f"arxiv:{arxiv_id}")
+        candidate_ids.extend(find_paper_ids_by_arxiv(arxiv_id))
         candidate_ids.extend(find_paper_ids_by_doi(f"10.48550/arxiv.{arxiv_id}"))
     if doi:
         candidate_ids.append(f"doi:{doi}")
@@ -715,6 +735,7 @@ def _persist_resolved(result: dict) -> None:
             "venue": paper.get("venue"),
             "year": int(paper["year"]) if str(paper.get("year", "")).isdigit() else None,
             "doi": paper.get("doi") or None,
+            "arxiv_id": paper.get("arxiv_id") or None,
             "abstract": paper.get("abstract") or None,
             "keywords": list(paper.get("keywords") or []),
             "categories": list(paper.get("categories") or []),
@@ -729,28 +750,55 @@ def _persist_resolved(result: dict) -> None:
         raw_ref={"status": result.get("status"), "reason": result.get("reason")},
     )
 
-    for pos, author in enumerate(paper.get("authors") or []):
-        author_id = author["author_id"]
+    paper_id = paper["paper_id"]
+    existing_author_ids = set(list_paper_author_ids(paper_id))
+    current_authors = list(paper.get("authors") or [])
+    current_positions: list[tuple[str, int | None]] = []
+    current_author_ids: set[str] = set()
+    author_org_edges: dict[str, list[tuple[str, str]]] = {}
+    author_metadata_rows: list[dict] = []
+    for pos, author in enumerate(current_authors):
+        author_id = str(author.get("author_id") or "")
+        if not author_id:
+            continue
+        current_positions.append((author_id, pos))
+        current_author_ids.add(author_id)
+        author_metadata_rows.append(
+            {
+                "author_id": author_id,
+                "source_ids": list(author.get("source_ids") or []),
+                "affiliations": list(author.get("affiliations") or []),
+            }
+        )
+    replace_paper_authors(paper_id, current_positions)
+    replace_paper_author_metadata(paper_id, author_metadata_rows)
+
+    for pos, author in enumerate(current_authors):
+        author_id = str(author.get("author_id") or "")
+        if not author_id:
+            continue
         upsert_author({"id": author_id, "name": author.get("name"), "orcid": author.get("orcid") or None})
-        upsert_paper_author(paper["paper_id"], author_id, position=pos)
         add_provenance(
             entity_id=author_id,
             entity_type="author",
             source="resolver",
             source_key=author.get("orcid") or "|".join(author.get("source_ids") or []) or author_id,
-            raw_ref={"paper_id": paper["paper_id"]},
+            raw_ref={"paper_id": paper_id},
         )
         add_provenance(
-            entity_id=f"{paper['paper_id']}::{author_id}",
+            entity_id=f"{paper_id}::{author_id}",
             entity_type="paper_author",
             source="resolver",
             source_key=str(pos),
             raw_ref={},
         )
+        org_edges: list[tuple[str, str]] = []
         for aff in author.get("affiliations") or []:
-            org_id = aff["org_id"]
+            org_id = str(aff.get("org_id") or "")
+            if not org_id:
+                continue
             upsert_org({"id": org_id, "name": aff.get("name"), "ror": aff.get("ror") or None, "country": aff.get("country") or None})
-            upsert_author_org(author_id, org_id)
+            org_edges.append((org_id, ""))
             add_provenance(
                 entity_id=org_id,
                 entity_type="org",
@@ -765,11 +813,24 @@ def _persist_resolved(result: dict) -> None:
                 source_key=aff.get("ror") or aff.get("name") or "",
                 raw_ref={},
             )
+        author_org_edges[author_id] = org_edges
+
+    for author_id in current_author_ids:
+        if count_papers_for_author(author_id) <= 1:
+            replace_author_orgs(author_id, author_org_edges.get(author_id, []))
+            continue
+        for org_id, role in author_org_edges.get(author_id, []):
+            upsert_author_org(author_id, org_id, role=role)
+
+    stale_author_ids = existing_author_ids - current_author_ids
+    for author_id in stale_author_ids:
+        if count_papers_for_author(author_id) == 0:
+            replace_author_orgs(author_id, [])
 
     for source_row in result.get("sources") or []:
         if source_row.get("source"):
             add_provenance(
-                entity_id=paper["paper_id"],
+                entity_id=paper_id,
                 entity_type="paper",
                 source=source_row.get("source", "unknown"),
                 source_key=source_row.get("source_id") or source_row.get("doi") or source_row.get("arxiv_id") or "",

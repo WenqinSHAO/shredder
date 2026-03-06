@@ -62,15 +62,15 @@ Suggested implementation order:
 | Task | Status | Priority | Notes | Exit Criteria |
 |---|---|---|---|---|
 | Cross-source author canonicalization | Todo | P1 | Duplicate people remain possible across adapters when IDs/ORCID are partial or inconsistent. | Regression sample shows reduced duplicate-author incidence with documented merge rules. |
-| Author relation reconciliation on updates | Todo | P0 | Issue `DET-META-002`: current persistence path upserts links but does not remove obsolete `paper_authors`/`author_orgs` edges when author list changes. | Re-running retrieval with changed author roster yields DB links exactly matching latest canonical paper metadata. |
-| Cache-hit author fidelity (`source_ids`, affiliations) | Todo | P0 | Issue `DET-META-003`: DB cache reconstruction currently returns authors without source IDs/affiliation details, causing metadata degradation on cache-hit runs. | Cache-hit results preserve author/source affiliation fidelity equivalent to latest resolved canonical paper representation. |
+| Author relation reconciliation on updates | Done | P0 | Issue `DET-META-002` implemented: persistence now reconciles `paper_authors` per paper run and cleans stale `author_orgs` for orphaned/solo-paper authors, with regression coverage for author-list shrink. | Re-running retrieval with changed author roster yields DB links exactly matching latest canonical paper metadata. |
+| Cache-hit author fidelity (`source_ids`, affiliations) | Done | P0 | Issue `DET-META-003` implemented: added per-paper author metadata snapshots (`source_ids` + `affiliations`) and cache-hit hydration now restores these fields instead of empty defaults, with regression coverage. | Cache-hit results preserve author/source affiliation fidelity equivalent to latest resolved canonical paper representation. |
 
 ### 3.3 DB Schema Hardening and Persistence
 
 | Task | Status | Priority | Notes | Exit Criteria |
 |---|---|---|---|---|
-| Cache addressability for arXiv queries when canonical paper ID is DOI | Todo | P0 | Issue `DET-META-001`: if arXiv lookup resolves to `paper_id=doi:*` with non-arXiv DOI, DB-first cache lookup by arXiv ID misses. | Repeated arXiv query under `cache_first` yields `cache_hit=true` even when canonical paper ID is DOI-based. |
-| Canonical paper equivalence guardrails | In progress | P1 | Issue `DET-META-004`: equivalent-paper merge allows title-based equivalence when one side lacks year; needs tighter safety checks to avoid false merges. | Mixed-title/year fixture set shows no incorrect merges while true duplicates still reconcile. |
+| Cache addressability for arXiv queries when canonical paper ID is DOI | Done | P0 | Issue `DET-META-001` implemented: persisted `papers.arxiv_id`, added DB lookup by arXiv ID, and added regression coverage for DOI-canonical/arXiv-query cache hits. | Repeated arXiv query under `cache_first` yields `cache_hit=true` even when canonical paper ID is DOI-based. |
+| Canonical paper equivalence guardrails | Done | P1 | Issue `DET-META-004` implemented: title-based equivalence is now conservative (requires both years and rejects venue conflicts), with regression coverage for same-title/missing-year non-merge. | Mixed-title/year fixture set shows no incorrect merges while true duplicates still reconcile. |
 | Metadata backfill for legacy index/DB entries | Todo | P1 | Compaction/migration keeps structure but does not enrich old sparse rows automatically. | One scripted backfill pass enriches existing canonical rows where source metadata is available. |
 
 ### 3.4 Cache Strategy and Index Artifacts
@@ -117,8 +117,8 @@ Done when:
 
 Use this queue at the start of the next session:
 
-1. `DET-META-001`: add failing regression for arXiv query cache miss when canonical paper ID is DOI-based, then implement fix.
-2. `DET-META-002`: add failing regression for stale `paper_authors` rows after author-list shrink, then implement cleanup logic.
-3. `DET-META-003`: add failing regression for cache-hit metadata degradation (`source_ids`, affiliation counts/details), then implement DB hydration improvements.
-4. `DET-META-004`: add fixture for title-based false merge risk and tighten equivalence guardrails.
-5. Run cold-start matrix for DOI/arXiv URL/arXiv DOI alias/title exact/title ambiguous under `cache_first`.
+1. Run cold-start matrix for DOI/arXiv URL/arXiv DOI alias/title exact/title ambiguous under `cache_first`.
+2. Validate index/query history stability (`query_key`, `cache_hit`, canonical paper consistency) after recent DB/cache reconciliation changes.
+3. Add/refresh fixture corpus to lock policy-mode behavior across `consensus`, `fast`, and `cache_first`.
+4. Add explicit migration/compat checks for older DB files that predate `papers.arxiv_id` and `paper_author_metadata`.
+5. Review policy docs/README to reflect stricter title-equivalence behavior and expected tradeoffs.

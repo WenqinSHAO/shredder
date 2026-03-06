@@ -102,6 +102,40 @@ class _ArxivAliasAdapter:
         return []
 
 
+class _ArxivCanonicalDoiAdapter:
+    def __init__(self):
+        self.lookup_arxiv_calls = 0
+        self.lookup_doi_calls = 0
+
+    def lookup_doi(self, doi: str) -> list[dict]:
+        self.lookup_doi_calls += 1
+        return []
+
+    def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+        self.lookup_arxiv_calls += 1
+        return [
+            {
+                "source": "pyalex",
+                "source_id": "https://openalex.org/W123",
+                "title": "Canonical DOI Identity for arXiv Query",
+                "venue": "SystemsConf",
+                "year": "2024",
+                "doi": "10.1000/canonical-doi",
+                "arxiv_id": arxiv_id,
+                "url": "https://doi.org/10.1000/canonical-doi",
+                "abstract": "Paper returned from arXiv lookup but canonically identified by DOI.",
+                "keywords": ["systems"],
+                "categories": ["computer science"],
+                "authors": [],
+                "score": 1.0,
+                "reason": "lookup_arxiv",
+            }
+        ]
+
+    def search_title(self, title: str, limit: int = 5) -> list[dict]:
+        return []
+
+
 class _FastIncompleteAdapter:
     def __init__(self):
         self.lookup_doi_calls = 0
@@ -122,6 +156,62 @@ class _FastIncompleteAdapter:
                 "keywords": [],
                 "categories": [],
                 "authors": [],
+                "score": 1.0,
+                "reason": "lookup_doi",
+            }
+        ]
+
+    def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+        return []
+
+    def search_title(self, title: str, limit: int = 5) -> list[dict]:
+        return []
+
+
+class _ShrinkingAuthorGraphAdapter:
+    def __init__(self):
+        self.lookup_doi_calls = 0
+
+    def lookup_doi(self, doi: str) -> list[dict]:
+        self.lookup_doi_calls += 1
+        if self.lookup_doi_calls == 1:
+            authors = [
+                {
+                    "name": "Alice Example",
+                    "orcid": "",
+                    "source_id": "alice",
+                    "affiliations": [{"name": "Org A", "ror": "", "country": "US"}],
+                },
+                {
+                    "name": "Bob Example",
+                    "orcid": "",
+                    "source_id": "bob",
+                    "affiliations": [{"name": "Org B", "ror": "", "country": "US"}],
+                },
+            ]
+        else:
+            authors = [
+                {
+                    "name": "Alice Example",
+                    "orcid": "",
+                    "source_id": "alice",
+                    "affiliations": [{"name": "Org C", "ror": "", "country": "US"}],
+                }
+            ]
+        return [
+            {
+                "source": "author_reconcile",
+                "source_id": doi,
+                "title": "Deterministic Systems",
+                "venue": "NSDI",
+                "year": "2024",
+                "doi": doi,
+                "arxiv_id": "",
+                "url": "https://doi.org/" + doi,
+                "abstract": "Author graph changes across retrieval runs.",
+                "keywords": ["deterministic", "systems"],
+                "categories": ["distributed systems"],
+                "authors": authors,
                 "score": 1.0,
                 "reason": "lookup_doi",
             }
@@ -166,6 +256,57 @@ class _ConsensusEnricherAdapter:
         return []
 
 
+class _TitleCollisionMissingYearAdapter:
+    def __init__(self):
+        self.lookup_doi_calls = 0
+        self.search_title_calls = 0
+
+    def lookup_doi(self, doi: str) -> list[dict]:
+        self.lookup_doi_calls += 1
+        return [
+            {
+                "source": "title_collision",
+                "source_id": doi,
+                "title": "Cache Systems for LLM",
+                "venue": "NSDI",
+                "year": "2024",
+                "doi": doi,
+                "arxiv_id": "",
+                "url": "https://doi.org/" + doi,
+                "abstract": "DOI-backed canonical paper.",
+                "keywords": ["cache"],
+                "categories": ["systems"],
+                "authors": [],
+                "score": 1.0,
+                "reason": "lookup_doi",
+            }
+        ]
+
+    def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+        return []
+
+    def search_title(self, title: str, limit: int = 5) -> list[dict]:
+        self.search_title_calls += 1
+        return [
+            {
+                "source": "title_collision",
+                "source_id": "title-only",
+                "title": "Cache Systems for LLM",
+                "venue": "",
+                "year": "",
+                "doi": "",
+                "arxiv_id": "",
+                "url": "",
+                "abstract": "Title-only record with missing year/identifier.",
+                "keywords": [],
+                "categories": [],
+                "authors": [],
+                "score": 0.9,
+                "reason": "search_title",
+            }
+        ]
+
+
 class TestRetrievalIndex(unittest.TestCase):
     def test_cache_first_appends_query_history_and_keeps_unique_paper(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -195,6 +336,8 @@ class TestRetrievalIndex(unittest.TestCase):
             self.assertEqual(payload["papers"][0]["paper"]["keywords"], ["deterministic", "systems"])
             self.assertEqual(payload["papers"][0]["paper"]["categories"], ["distributed systems"])
             self.assertIn("affiliation_count", payload["papers"][0]["paper"]["authors"][0])
+            self.assertEqual(payload["papers"][0]["paper"]["authors"][0]["affiliation_count"], 1)
+            self.assertEqual(payload["papers"][0]["paper"]["authors"][0]["source_ids"], ["a1"])
             self.assertNotIn("affiliations", payload["papers"][0]["paper"]["authors"][0])
             self.assertNotIn("sources", payload["papers"][0])
             self.assertNotIn("diagnostics", payload["papers"][0])
@@ -222,12 +365,24 @@ class TestRetrievalIndex(unittest.TestCase):
             conn = sqlite3.connect(kb_path)
             try:
                 db_row = conn.execute("SELECT abstract, keywords_json, categories_json FROM papers WHERE id='doi:10.1/xyz'").fetchone()
+                author_meta_row = conn.execute(
+                    """
+                    SELECT source_ids_json, affiliations_json
+                    FROM paper_author_metadata
+                    WHERE paper_id='doi:10.1/xyz' AND author_id='habanero:a1'
+                    """
+                ).fetchone()
             finally:
                 conn.close()
             self.assertIsNotNone(db_row)
             self.assertEqual(db_row[0], "A concise abstract about deterministic systems.")
             self.assertEqual(json.loads(db_row[1]), ["deterministic", "systems"])
             self.assertEqual(json.loads(db_row[2]), ["distributed systems"])
+            self.assertIsNotNone(author_meta_row)
+            self.assertEqual(json.loads(author_meta_row[0]), ["a1"])
+            affiliations = json.loads(author_meta_row[1])
+            self.assertEqual(len(affiliations), 1)
+            self.assertEqual(affiliations[0]["name"], "Example University")
 
     def test_arxiv_doi_alias_hits_same_cached_entry_and_keeps_db_consistent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -267,6 +422,45 @@ class TestRetrievalIndex(unittest.TestCase):
                 conn.close()
             self.assertEqual([row[0] for row in rows], ["arxiv:1706.03762"])
 
+    def test_arxiv_query_cache_hit_when_canonical_id_is_doi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            adapter = _ArxivCanonicalDoiAdapter()
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[adapter]):
+                    run_step("demo", "retrieve-paper", arxiv_id="2401.12345", policy="cache_first")
+                    run_step("demo", "retrieve-paper", arxiv_id="2401.12345", policy="cache_first")
+
+            index_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_result.yaml"
+            payload = yamlx.load(index_path)
+            self.assertEqual(len(payload["papers"]), 1)
+            self.assertEqual(payload["papers"][0]["paper_id"], "doi:10.1000/canonical-doi")
+            self.assertEqual(payload["queries"][0]["query_key"], "arxiv:2401.12345")
+            self.assertEqual(payload["queries"][1]["query_key"], "arxiv:2401.12345")
+            self.assertFalse(payload["queries"][0]["cache_hit"])
+            self.assertTrue(payload["queries"][1]["cache_hit"])
+            self.assertEqual(adapter.lookup_arxiv_calls, 1)
+            self.assertEqual(adapter.lookup_doi_calls, 0)
+
+            conn = sqlite3.connect(kb_path)
+            try:
+                row = conn.execute("SELECT id, arxiv_id FROM papers WHERE id='doi:10.1000/canonical-doi'").fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], "doi:10.1000/canonical-doi")
+            self.assertEqual(row[1], "2401.12345")
+
     def test_cache_first_uses_fast_then_fallback_to_consensus_for_incomplete_paper(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -304,6 +498,79 @@ class TestRetrievalIndex(unittest.TestCase):
                 conn.close()
             self.assertEqual(db_row[0], 2024)
             self.assertEqual(db_row[1], "Enriched abstract from consensus fallback.")
+
+    def test_retrieval_reconciles_stale_paper_author_and_author_org_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            adapter = _ShrinkingAuthorGraphAdapter()
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[adapter]):
+                    run_step("demo", "retrieve-paper", doi="10.1/xyz", policy="consensus")
+                    run_step("demo", "retrieve-paper", doi="10.1/xyz", policy="consensus")
+
+            conn = sqlite3.connect(kb_path)
+            try:
+                paper_authors = conn.execute(
+                    "SELECT author_id, position FROM paper_authors WHERE paper_id='doi:10.1/xyz' ORDER BY position ASC"
+                ).fetchall()
+                author_orgs = conn.execute("SELECT author_id, org_id FROM author_orgs ORDER BY author_id ASC, org_id ASC").fetchall()
+                org_rows = conn.execute("SELECT id, name FROM orgs ORDER BY id ASC").fetchall()
+            finally:
+                conn.close()
+
+            self.assertEqual(adapter.lookup_doi_calls, 2)
+            self.assertEqual(paper_authors, [("author_reconcile:alice", 0)])
+            self.assertEqual(len(author_orgs), 1)
+            self.assertEqual(author_orgs[0][0], "author_reconcile:alice")
+            org_name_by_id = {org_id: name for org_id, name in org_rows}
+            linked_org_id = author_orgs[0][1]
+            self.assertEqual(org_name_by_id.get(linked_org_id), "Org C")
+
+    def test_title_only_missing_year_does_not_merge_into_existing_doi_paper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = root / "workspace"
+            kb_dir = root / "kb"
+            kb_path = kb_dir / "kb.sqlite"
+            ws.mkdir(parents=True, exist_ok=True)
+            kb_dir.mkdir(parents=True, exist_ok=True)
+
+            adapter = _TitleCollisionMissingYearAdapter()
+
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws), patch("src.kb.store.KB_DIR", kb_dir), patch(
+                "src.kb.store.KB_PATH", kb_path
+            ):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.retrieval.build_adapters", return_value=[adapter]):
+                    run_step("demo", "retrieve-paper", doi="10.1/xyz", policy="consensus")
+                    run_step("demo", "retrieve-paper", title="Cache Systems for LLM", policy="consensus")
+
+            index_path = ws / "demo" / "artifacts" / "retrieval" / "deterministic_result.yaml"
+            payload = yamlx.load(index_path)
+            self.assertEqual(len(payload["papers"]), 2)
+            paper_ids = {entry["paper_id"] for entry in payload["papers"]}
+            self.assertIn("doi:10.1/xyz", paper_ids)
+            self.assertIn("title:cache systems for llm:", paper_ids)
+            self.assertEqual(payload["queries"][0]["paper_id"], "doi:10.1/xyz")
+            self.assertEqual(payload["queries"][1]["paper_id"], "title:cache systems for llm:")
+
+            conn = sqlite3.connect(kb_path)
+            try:
+                db_ids = [row[0] for row in conn.execute("SELECT id FROM papers ORDER BY id ASC").fetchall()]
+            finally:
+                conn.close()
+            self.assertIn("doi:10.1/xyz", db_ids)
+            self.assertIn("title:cache systems for llm:", db_ids)
 
 
 if __name__ == "__main__":
