@@ -5,9 +5,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from src.connectors.http import normalize_arxiv_id, normalize_doi
 from src.kb import (
     add_provenance,
+    delete_paper,
+    find_paper_ids_by_doi,
+    get_paper_with_authors,
     init_kb,
+    search_papers,
     upsert_author,
     upsert_author_org,
     upsert_org,
@@ -17,6 +22,7 @@ from src.kb import (
 from src.retrieval.service import (
     SOURCE_FIELDS,
     _candidate_dedup_key,
+    arxiv_id_from_doi_alias,
     build_adapters,
     canonical_query_key,
     normalize_title,
@@ -57,12 +63,122 @@ def _deterministic_index_path(pdir: Path) -> Path:
 def _empty_index(policy_default: str = "cache_first") -> dict:
     return {
         "artifact_type": "deterministic_retrieval_index",
-        "schema_version": "0.2.0",
+        "schema_version": "0.3.0",
         "updated_at": _utc_now(),
         "policy_default": policy_default,
         "papers": [],
         "queries": [],
     }
+
+
+def _normalize_query_key_aliases(keys: list[str]) -> list[str]:
+    normalized: set[str] = set()
+    for key in keys:
+        text = str(key or "").strip().lower()
+        if not text:
+            continue
+        if text.startswith("doi:"):
+            alias_arxiv = arxiv_id_from_doi_alias(text[len("doi:") :])
+            if alias_arxiv:
+                normalized.add(f"arxiv:{alias_arxiv}")
+        normalized.add(text)
+    return sorted(normalized)
+
+
+def _entry_arxiv_query_ids(entry: dict) -> set[str]:
+    out: set[str] = set()
+    for key in entry.get("query_keys") or []:
+        text = str(key or "").strip().lower()
+        if text.startswith("arxiv:") and text[len("arxiv:") :]:
+            out.add(text[len("arxiv:") :])
+    return out
+
+
+def _choose_preferred_paper(existing: dict, incoming: dict, *, arxiv_query_ids: set[str]) -> dict:
+    existing_arxiv = normalize_arxiv_id(str(existing.get("arxiv_id") or ""))
+    incoming_arxiv = normalize_arxiv_id(str(incoming.get("arxiv_id") or ""))
+    if arxiv_query_ids:
+        existing_match = existing_arxiv in arxiv_query_ids
+        incoming_match = incoming_arxiv in arxiv_query_ids
+        if existing_match and not incoming_match:
+            return existing
+        if incoming_match and not existing_match:
+            return incoming
+
+    existing_score = (
+        1 if existing_arxiv else 0,
+        1 if normalize_doi(str(existing.get("doi") or "")) else 0,
+        len(str(existing.get("abstract") or "")),
+        int(existing.get("author_count") or len(existing.get("authors") or [])),
+    )
+    incoming_score = (
+        1 if incoming_arxiv else 0,
+        1 if normalize_doi(str(incoming.get("doi") or "")) else 0,
+        len(str(incoming.get("abstract") or "")),
+        int(incoming.get("author_count") or len(incoming.get("authors") or [])),
+    )
+    return existing if existing_score >= incoming_score else incoming
+
+
+def _merge_overlapping_entries(entries: list[dict]) -> tuple[list[dict], list[str]]:
+    out: list[dict] = []
+    removed_ids: list[str] = []
+    for entry in entries:
+        incoming = dict(entry)
+        incoming["query_keys"] = _normalize_query_key_aliases(list(incoming.get("query_keys") or []))
+        incoming_keys = set(incoming["query_keys"])
+        if not incoming_keys:
+            out.append(incoming)
+            continue
+
+        merged = False
+        for idx, existing in enumerate(out):
+            existing_keys = set(existing.get("query_keys") or [])
+            if not (existing_keys & incoming_keys):
+                continue
+            arxiv_query_ids = _entry_arxiv_query_ids(existing) | _entry_arxiv_query_ids(incoming)
+            chosen_paper = _choose_preferred_paper(existing.get("paper") or {}, incoming.get("paper") or {}, arxiv_query_ids=arxiv_query_ids)
+            dropped_paper_id = (incoming.get("paper") or {}).get("paper_id")
+            if chosen_paper == (incoming.get("paper") or {}):
+                dropped_paper_id = (existing.get("paper") or {}).get("paper_id")
+            chosen_paper_id = str(chosen_paper.get("paper_id") or "")
+
+            existing["paper"] = chosen_paper
+            existing["paper_id"] = chosen_paper.get("paper_id", existing.get("paper_id", ""))
+            existing["query_keys"] = sorted(existing_keys | incoming_keys)
+            existing["source_count"] = max(int(existing.get("source_count") or 0), int(incoming.get("source_count") or 0))
+            existing["sources_truncated"] = int(existing["source_count"])
+            trace = list(existing.get("search_trace") or [])
+            for line in incoming.get("search_trace") or []:
+                if line not in trace:
+                    trace.append(line)
+            existing["search_trace"] = trace
+            existing["first_seen_at"] = min(
+                str(existing.get("first_seen_at") or ""),
+                str(incoming.get("first_seen_at") or ""),
+            ) or str(existing.get("first_seen_at") or incoming.get("first_seen_at") or "")
+            existing["last_seen_at"] = max(
+                str(existing.get("last_seen_at") or ""),
+                str(incoming.get("last_seen_at") or ""),
+            ) or str(existing.get("last_seen_at") or incoming.get("last_seen_at") or "")
+            existing["policy_last_used"] = incoming.get("policy_last_used") or existing.get("policy_last_used")
+            out[idx] = existing
+            if dropped_paper_id and str(dropped_paper_id) != chosen_paper_id:
+                removed_ids.append(str(dropped_paper_id))
+            merged = True
+            break
+
+        if not merged:
+            out.append(incoming)
+    # Keep insertion order stable while deduping removed ids.
+    seen_removed: set[str] = set()
+    ordered_removed: list[str] = []
+    for paper_id in removed_ids:
+        if paper_id in seen_removed:
+            continue
+        seen_removed.add(paper_id)
+        ordered_removed.append(paper_id)
+    return out, ordered_removed
 
 
 def _load_index(pdir: Path, policy_default: str) -> dict:
@@ -72,12 +188,17 @@ def _load_index(pdir: Path, policy_default: str) -> dict:
     payload = load(path)
     if not isinstance(payload, dict) or "papers" not in payload or "queries" not in payload:
         return _empty_index(policy_default)
-    return _compact_index_payload(payload)
+    compacted = _compact_index_payload(payload)
+    merged_entries, removed_ids = _merge_overlapping_entries(list(compacted.get("papers") or []))
+    compacted["papers"] = merged_entries
+    compacted["_removed_paper_ids"] = removed_ids
+    return compacted
 
 
 def _save_index(pdir: Path, index_payload: dict) -> Path:
     out = _deterministic_index_path(pdir)
     out.parent.mkdir(parents=True, exist_ok=True)
+    index_payload.pop("_removed_paper_ids", None)
     index_payload["updated_at"] = _utc_now()
     dump_to_path(out, index_payload)
     return out
@@ -218,14 +339,59 @@ def _paper_keys(paper: dict) -> set[str]:
     keys: set[str] = set()
     if paper.get("paper_id"):
         keys.add(str(paper["paper_id"]))
-    if paper.get("doi"):
-        keys.add(f"doi:{paper['doi']}")
-    if paper.get("arxiv_id"):
-        keys.add(f"arxiv:{paper['arxiv_id']}")
+    doi = normalize_doi(str(paper.get("doi") or ""))
+    if doi:
+        keys.add(f"doi:{doi}")
+    arxiv_id = normalize_arxiv_id(str(paper.get("arxiv_id") or ""))
+    if arxiv_id:
+        keys.add(f"arxiv:{arxiv_id}")
+        keys.add(f"doi:10.48550/arxiv.{arxiv_id}")
+    doi_alias_arxiv = arxiv_id_from_doi_alias(doi)
+    if doi_alias_arxiv:
+        keys.add(f"arxiv:{doi_alias_arxiv}")
+        keys.add(f"doi:10.48550/arxiv.{doi_alias_arxiv}")
     title = normalize_title(str(paper.get("title") or ""))
     if title:
         keys.add(f"title:{title}")
     return keys
+
+
+def _normalize_year(value: str | int | None) -> str:
+    text = str(value or "").strip()
+    return text if text.isdigit() else ""
+
+
+def _papers_equivalent(a: dict, b: dict) -> bool:
+    a_doi = normalize_doi(str(a.get("doi") or ""))
+    b_doi = normalize_doi(str(b.get("doi") or ""))
+    a_arxiv = normalize_arxiv_id(str(a.get("arxiv_id") or ""))
+    b_arxiv = normalize_arxiv_id(str(b.get("arxiv_id") or ""))
+    if a_doi and b_doi and a_doi == b_doi:
+        return True
+    if a_arxiv and b_arxiv and a_arxiv == b_arxiv:
+        return True
+    if a_arxiv and arxiv_id_from_doi_alias(b_doi) == a_arxiv:
+        return True
+    if b_arxiv and arxiv_id_from_doi_alias(a_doi) == b_arxiv:
+        return True
+
+    a_title = normalize_title(str(a.get("title") or ""))
+    b_title = normalize_title(str(b.get("title") or ""))
+    if not a_title or a_title != b_title:
+        return False
+    a_year = _normalize_year(a.get("year"))
+    b_year = _normalize_year(b.get("year"))
+    if a_year and b_year and a_year != b_year:
+        return False
+    return True
+
+
+def _find_equivalent_paper_entry(papers: list[dict], paper: dict) -> dict | None:
+    for entry in papers:
+        candidate = entry.get("paper") or {}
+        if _papers_equivalent(candidate, paper):
+            return entry
+    return None
 
 
 def _find_cached_paper(index_payload: dict, query_key: str, query: dict) -> dict | None:
@@ -235,26 +401,167 @@ def _find_cached_paper(index_payload: dict, query_key: str, query: dict) -> dict
         keys |= _paper_keys(paper)
         if query_key in keys:
             return entry
-        doi = (query.get("doi") or "").strip().lower()
-        if doi and (paper.get("doi") or "").strip().lower() == doi:
+        doi = normalize_doi(str(query.get("doi") or ""))
+        paper_doi = normalize_doi(str(paper.get("doi") or ""))
+        if doi and paper_doi == doi:
             return entry
-        arxiv_id = (query.get("arxiv_id") or "").strip().lower()
-        if arxiv_id and (paper.get("arxiv_id") or "").strip().lower() == arxiv_id:
+        arxiv_id = normalize_arxiv_id(str(query.get("arxiv_id") or ""))
+        if not arxiv_id:
+            arxiv_id = normalize_arxiv_id(str(query.get("arxiv_url") or ""))
+        if not arxiv_id:
+            arxiv_id = arxiv_id_from_doi_alias(doi)
+        paper_arxiv = normalize_arxiv_id(str(paper.get("arxiv_id") or ""))
+        if arxiv_id and (paper_arxiv == arxiv_id or arxiv_id_from_doi_alias(paper_doi) == arxiv_id):
             return entry
     return None
 
 
-def _merge_sources(existing: list[dict], incoming: list[dict]) -> list[dict]:
-    by_key: dict[str, dict] = {}
-    for row in existing + incoming:
-        source = (row.get("source") or "unknown").strip().lower()
-        source_id = str(row.get("source_id") or "").strip()
-        key = f"{source}:{source_id}" if source_id else f"{source}:{row.get('doi','')}:{row.get('arxiv_id','')}:{row.get('title','')}"
-        by_key[key] = row
+def _source_cache_key(row: dict) -> str:
+    source = (row.get("source") or "unknown").strip().lower()
+    source_id = str(row.get("source_id") or "").strip()
+    if source_id:
+        return f"{source}:{source_id}"
+    doi = str(row.get("doi") or "").strip().lower()
+    if doi:
+        return f"{source}:doi:{doi}"
+    arxiv_id = str(row.get("arxiv_id") or "").strip().lower()
+    if arxiv_id:
+        return f"{source}:arxiv:{arxiv_id}"
+    title = normalize_title(str(row.get("title") or ""))
+    year = str(row.get("year") or "")
+    return f"{source}:title:{title}:{year}"
+
+
+def _decode_pipe_list(value: str | list) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return [item.strip() for item in text.split("|") if item.strip()]
+
+
+def _db_payload_to_paper(payload: dict) -> dict:
+    paper_row = payload.get("paper") or {}
+    paper_id = str(paper_row.get("id") or "")
+    doi = normalize_doi(str(paper_row.get("doi") or ""))
+    arxiv_id = normalize_arxiv_id(paper_id[len("arxiv:") :]) if paper_id.lower().startswith("arxiv:") else ""
+    if not arxiv_id:
+        arxiv_id = arxiv_id_from_doi_alias(doi)
+    author_rows = list(payload.get("authors") or [])
+    author_rows.sort(
+        key=lambda row: (
+            row.get("position") is None,
+            int(row.get("position") or 10**9),
+            str(row.get("name") or ""),
+        )
+    )
+    authors = [
+        {
+            "author_id": str(row.get("id") or ""),
+            "name": str(row.get("name") or ""),
+            "orcid": str(row.get("orcid") or ""),
+            "source_ids": [],
+            "affiliations": [],
+        }
+        for row in author_rows
+        if str(row.get("id") or "").strip()
+    ]
+    return {
+        "paper_id": paper_id,
+        "title": str(paper_row.get("title") or ""),
+        "venue": str(paper_row.get("venue") or ""),
+        "year": str(paper_row.get("year") or ""),
+        "doi": doi,
+        "arxiv_id": arxiv_id,
+        "url": str(paper_row.get("html_url") or ""),
+        "abstract": str(paper_row.get("abstract") or ""),
+        "keywords": list(paper_row.get("keywords") or []),
+        "categories": list(paper_row.get("categories") or []),
+        "authors": authors,
+    }
+
+
+def _load_cached_paper_from_db(query: dict) -> dict | None:
+    init_kb()
+    doi = normalize_doi(str(query.get("doi") or ""))
+    arxiv_id = normalize_arxiv_id(str(query.get("arxiv_id") or ""))
+    if not arxiv_id:
+        arxiv_id = normalize_arxiv_id(str(query.get("arxiv_url") or ""))
+    if not arxiv_id:
+        arxiv_id = arxiv_id_from_doi_alias(doi)
+
+    candidate_ids: list[str] = []
+    if arxiv_id:
+        candidate_ids.append(f"arxiv:{arxiv_id}")
+        candidate_ids.extend(find_paper_ids_by_doi(f"10.48550/arxiv.{arxiv_id}"))
+    if doi:
+        candidate_ids.append(f"doi:{doi}")
+        candidate_ids.extend(find_paper_ids_by_doi(doi))
+
+    title_raw = str(query.get("title") or "").strip()
+    title_norm = normalize_title(title_raw)
+    if title_norm:
+        exact_title_rows = [row for row in search_papers(title_raw) if normalize_title(str(row.get("title") or "")) == title_norm]
+        if len(exact_title_rows) == 1:
+            candidate_ids.append(str(exact_title_rows[0].get("id") or ""))
+
+    seen: set[str] = set()
+    ordered_ids: list[str] = []
+    for paper_id in candidate_ids:
+        pid = str(paper_id or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        ordered_ids.append(pid)
+
+    for paper_id in ordered_ids:
+        payload = get_paper_with_authors(paper_id)
+        if payload.get("paper"):
+            return _db_payload_to_paper(payload)
+    return None
+
+
+def _is_paper_complete_for_db_hardening(paper: dict) -> bool:
+    if not paper:
+        return False
+    has_title = bool(str(paper.get("title") or "").strip())
+    has_identifier = bool(normalize_doi(str(paper.get("doi") or "")) or normalize_arxiv_id(str(paper.get("arxiv_id") or "")))
+    has_year_or_venue = bool(_normalize_year(paper.get("year")) or str(paper.get("venue") or "").strip())
+    has_semantics = bool(str(paper.get("abstract") or "").strip() or list(paper.get("keywords") or []) or list(paper.get("categories") or []))
+    has_attribution = bool(list(paper.get("authors") or []))
+    return has_title and has_identifier and has_year_or_venue and (has_semantics or has_attribution)
+
+
+def _load_cached_sources_for_paper(rdir: Path, *, paper_id: str, query_key: str) -> list[dict]:
+    if not paper_id:
+        return []
+    history_path = rdir / "deterministic_sources.tsv"
+    rows = _load_sources_history(history_path)
+    if not rows:
+        return []
+
+    by_paper = [row for row in rows if str(row.get("paper_id") or "") == paper_id]
+    if not by_paper:
+        return []
+
+    by_query = [row for row in by_paper if str(row.get("query_key") or "") == query_key]
+    selected = by_query or by_paper
+
+    deduped: dict[str, dict] = {}
+    for row in reversed(selected):
+        cache_key = _source_cache_key(row)
+        if cache_key in deduped:
+            continue
+        restored = {field: row.get(field, "") for field in SOURCE_FIELDS}
+        restored["keywords"] = _decode_pipe_list(restored.get("keywords", ""))
+        restored["categories"] = _decode_pipe_list(restored.get("categories", ""))
+        deduped[cache_key] = restored
+
     return sorted(
-        by_key.values(),
+        deduped.values(),
         key=lambda r: (
-            float(r.get("score", 0.0)),
+            float(r.get("score", 0.0) or 0.0),
             str(r.get("source") or ""),
             str(r.get("source_id") or ""),
         ),
@@ -307,46 +614,25 @@ def _compact_paper_for_index(paper: dict) -> dict:
     }
 
 
-def _compact_source_row_for_index(row: dict) -> dict:
-    return {
-        "source": row.get("source", ""),
-        "source_id": row.get("source_id", ""),
-        "title": row.get("title", ""),
-        "venue": row.get("venue", ""),
-        "year": row.get("year", ""),
-        "doi": row.get("doi", ""),
-        "arxiv_id": row.get("arxiv_id", ""),
-        "url": row.get("url", ""),
-        "abstract": _truncate_text(str(row.get("abstract") or ""), 800),
-        "keywords": list(row.get("keywords") or []),
-        "categories": list(row.get("categories") or []),
-        "score": row.get("score", 0.0),
-        "reason": row.get("reason", ""),
-    }
-
-
-def _compact_sources_for_index(rows: list[dict], max_rows: int = 8) -> tuple[list[dict], int]:
-    compacted = [_compact_source_row_for_index(row) for row in rows]
-    total = len(compacted)
-    return compacted[:max_rows], max(0, total - max_rows)
-
-
 def _compact_index_payload(index_payload: dict) -> dict:
+    index_payload["artifact_type"] = "deterministic_retrieval_index"
+    index_payload["schema_version"] = "0.3.0"
     papers = index_payload.get("papers") or []
     compacted: list[dict] = []
     for entry in papers:
         paper = entry.get("paper") or {}
-        original_count = int(entry.get("source_count") or len(entry.get("sources") or []))
-        compact_sources, sources_truncated = _compact_sources_for_index(entry.get("sources") or [])
-        source_count = max(original_count, len(entry.get("sources") or []))
-        sources_truncated = max(sources_truncated, source_count - len(compact_sources))
+        source_count = max(
+            int(entry.get("source_count") or 0),
+            len(entry.get("sources") or []),
+        )
+        compact_entry = {k: v for k, v in entry.items() if k not in {"sources", "diagnostics"}}
         compacted.append(
             {
-                **entry,
+                **compact_entry,
                 "paper": _compact_paper_for_index(paper),
                 "source_count": source_count,
-                "sources_truncated": sources_truncated,
-                "sources": compact_sources,
+                # Human-facing YAML omits source rows; full provenance lives in deterministic_sources.tsv.
+                "sources_truncated": source_count,
             }
         )
     index_payload["papers"] = compacted
@@ -378,17 +664,18 @@ def _upsert_paper_entry(index_payload: dict, *, query_key: str, result: dict, po
     papers = index_payload.setdefault("papers", [])
     existing = next((p for p in papers if (p.get("paper") or {}).get("paper_id") == paper_id), None)
     if existing is None:
-        compact_sources, sources_truncated = _compact_sources_for_index(result.get("sources") or [])
+        existing = _find_equivalent_paper_entry(papers, paper)
+    if existing is None:
+        source_count = len(result.get("sources") or [])
         papers.append(
             {
                 "paper_id": paper_id,
                 "paper": paper,
                 "query_keys": sorted({query_key}),
                 "search_trace": result.get("search_trace", []),
-                "source_count": len(result.get("sources") or []),
-                "sources_truncated": sources_truncated,
-                "sources": compact_sources,
-                "diagnostics": result.get("diagnostics", {}),
+                "source_count": source_count,
+                # Human-facing YAML omits source rows; full provenance lives in deterministic_sources.tsv.
+                "sources_truncated": source_count,
                 "policy_last_used": policy,
                 "first_seen_at": _utc_now(),
                 "last_seen_at": _utc_now(),
@@ -396,19 +683,21 @@ def _upsert_paper_entry(index_payload: dict, *, query_key: str, result: dict, po
         )
         return
 
+    if paper_id != (existing.get("paper") or {}).get("paper_id"):
+        paper["paper_id"] = (existing.get("paper") or {}).get("paper_id") or paper_id
     existing["paper"] = paper
     keys = set(existing.get("query_keys") or [])
     keys.add(query_key)
     keys |= _paper_keys(paper)
     existing["query_keys"] = sorted(keys)
     existing["search_trace"] = result.get("search_trace", [])
-    merged_sources = _merge_sources(
-        existing.get("sources") or [],
-        [_compact_source_row_for_index(r) for r in (result.get("sources") or [])],
+    existing["source_count"] = max(
+        int(existing.get("source_count") or len(existing.get("sources") or [])),
+        len(result.get("sources") or []),
     )
-    existing["source_count"] = len(merged_sources)
-    existing["sources"], existing["sources_truncated"] = _compact_sources_for_index(merged_sources)
-    existing["diagnostics"] = result.get("diagnostics", {})
+    existing["sources_truncated"] = int(existing["source_count"])
+    existing.pop("sources", None)
+    existing.pop("diagnostics", None)
     existing["policy_last_used"] = policy
     existing["last_seen_at"] = _utc_now()
 
@@ -525,31 +814,47 @@ def run_retrieve_paper(
         "policy": requested_policy,
         "ambiguity_delta": float(deterministic_cfg.get("ambiguity_delta", 0.05)),
     }
+    rdir = _retrieval_dir(pdir)
     index_payload = _load_index(pdir, policy_default=configured_policy)
+    removed_paper_ids = list(index_payload.pop("_removed_paper_ids", []) or [])
+    if removed_paper_ids:
+        kept_ids = {str((entry.get("paper") or {}).get("paper_id") or "") for entry in (index_payload.get("papers") or [])}
+        init_kb()
+        deleted = 0
+        for paper_id in removed_paper_ids:
+            if not paper_id or paper_id in kept_ids:
+                continue
+            delete_paper(str(paper_id))
+            deleted += 1
+        if deleted:
+            _emit_progress(progress_callback, event="index_cleanup_db_deleted", deleted_papers=deleted)
     query_key = canonical_query_key(request_payload)
     cache_hit = False
     if requested_policy == "cache_first":
-        _emit_progress(progress_callback, event="cache_lookup_start", query_key=query_key)
-        cached = _find_cached_paper(index_payload, query_key, request_payload)
-        if cached:
+        _emit_progress(progress_callback, event="cache_lookup_start", query_key=query_key, cache_layer="db")
+        cached_paper = _load_cached_paper_from_db(request_payload)
+        if cached_paper:
             cache_hit = True
+            cached_paper_id = str(cached_paper.get("paper_id") or "")
+            cached_sources = _load_cached_sources_for_paper(rdir, paper_id=cached_paper_id, query_key=query_key)
             _emit_progress(
                 progress_callback,
                 event="cache_lookup_hit",
                 query_key=query_key,
-                paper_id=cached.get("paper_id"),
+                paper_id=cached_paper_id,
+                cache_layer="db",
             )
             result = {
                 "status": "resolved",
                 "resolution_status": "resolved",
                 "query_classification": "cache_first",
-                "reason": "cache_hit",
+                "reason": "cache_hit_db",
                 "query": request_payload,
-                "paper": cached.get("paper"),
-                "sources": cached.get("sources") or [],
+                "paper": cached_paper,
+                "sources": cached_sources,
                 "diagnostics": {
                     "lookup_mode": "cache",
-                    "candidate_count": len(cached.get("sources") or []),
+                    "candidate_count": len(cached_sources),
                     "policy": requested_policy,
                     "effective_policy": "cache_hit",
                     "query_key": query_key,
@@ -558,17 +863,49 @@ def run_retrieve_paper(
                 },
                 "search_trace": [
                     "query_classification=cache_first",
-                    f"cache_hit paper_id={cached.get('paper_id')}",
-                    "resolution_status=resolved reason=cache_hit",
+                    f"cache_hit layer=db paper_id={cached_paper_id}",
+                    "resolution_status=resolved reason=cache_hit_db",
                 ],
             }
         else:
-            _emit_progress(progress_callback, event="cache_lookup_miss", query_key=query_key)
-            result = resolve_deterministic(request_payload, adapters, progress_callback=progress_callback)
+            _emit_progress(progress_callback, event="cache_lookup_miss", query_key=query_key, cache_layer="db")
+            fast_query = dict(request_payload)
+            fast_query["policy"] = "fast"
+            result = resolve_deterministic(fast_query, adapters, progress_callback=progress_callback)
+            if result.get("status") == "resolved" and not _is_paper_complete_for_db_hardening(result.get("paper") or {}):
+                _emit_progress(
+                    progress_callback,
+                    event="cache_miss_fast_incomplete_fallback_consensus",
+                    query_key=query_key,
+                    paper_id=((result.get("paper") or {}).get("paper_id") or ""),
+                )
+                consensus_query = dict(request_payload)
+                consensus_query["policy"] = "consensus"
+                result = resolve_deterministic(consensus_query, adapters, progress_callback=progress_callback)
+                trace = list(result.get("search_trace") or [])
+                trace.insert(0, "resolution_strategy=cache_miss_fast_incomplete_fallback_consensus")
+                result["search_trace"] = trace
     else:
         result = resolve_deterministic(request_payload, adapters, progress_callback=progress_callback)
 
-    rdir = _retrieval_dir(pdir)
+    if result.get("status") == "resolved" and result.get("paper"):
+        candidate = result.get("paper") or {}
+        equivalent = _find_equivalent_paper_entry(index_payload.get("papers", []), candidate)
+        existing_paper = (equivalent or {}).get("paper") or {}
+        canonical_paper_id = str(existing_paper.get("paper_id") or "")
+        if canonical_paper_id and canonical_paper_id != str(candidate.get("paper_id") or ""):
+            rewritten = dict(candidate)
+            rewritten["paper_id"] = canonical_paper_id
+            if not rewritten.get("doi") and existing_paper.get("doi"):
+                rewritten["doi"] = existing_paper.get("doi")
+            if not rewritten.get("arxiv_id") and existing_paper.get("arxiv_id"):
+                rewritten["arxiv_id"] = existing_paper.get("arxiv_id")
+            result = dict(result)
+            result["paper"] = rewritten
+            trace = list(result.get("search_trace") or [])
+            trace.append(f"paper_id_reconciled from={candidate.get('paper_id')} to={canonical_paper_id}")
+            result["search_trace"] = trace
+
     paper_id = ((result.get("paper") or {}).get("paper_id") or "")
     existing_entry = None
     if paper_id:
@@ -609,7 +946,7 @@ def run_retrieve_paper(
         paper_id=paper_id,
         existing_entry=bool(existing_entry),
         query_keys=len((updated_entry or {}).get("query_keys") or []),
-        merged_sources=len((updated_entry or {}).get("sources") or []),
+        merged_sources=int((updated_entry or {}).get("source_count") or 0),
         total_papers=len(index_payload.get("papers", [])),
     )
 

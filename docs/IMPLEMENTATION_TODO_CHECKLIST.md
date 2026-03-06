@@ -32,12 +32,13 @@ Scope:
 
 | Task | Status | Priority | Notes | Exit Criteria |
 |---|---|---|---|---|
-| Title/arXiv resolution reliability | In progress | P0 | arXiv URL normalization hardening landed (`http/https`, `abs/pdf`, version stripping); broader query reliability still needs benchmark verification. | Known DOI/arXiv/title benchmark set passes with expected `resolved`/`ambiguous_requires_selection`/`not_found`. |
+| Title/arXiv resolution reliability | In progress | P0 | arXiv URL normalization hardening landed (`http/https`, `abs/pdf`, version stripping); arXiv DOI alias (`10.48550/arXiv.*`) now resolves through arXiv identity path. Need broader benchmark verification. | Known DOI/arXiv/title benchmark set passes with expected `resolved`/`ambiguous_requires_selection`/`not_found`. |
 | CLI debug visibility | Done | P0 | CLI now prints step-by-step search path, adapter timings/errors, cache hit/miss, and reconcile/persist events. | Retrieval path is inspectable from terminal without opening artifacts. |
-| Deterministic policy behavior (`consensus`, `fast`, `cache_first`) | In progress | P0 | Implemented but needs stricter behavior checks and docs alignment. | Policy-specific acceptance tests pass and behavior is deterministic across reruns. |
-| Cache-first index correctness (`one paper once`) | In progress | P0 | Query history append, request/source cumulative artifacts, and index compaction are in place; mixed-query edge cases still need focused validation. | Repeated mixed queries append `queries[]`, keep one canonical paper entry, and resolve cache hits reliably across identifier forms. |
+| Deterministic policy behavior (`consensus`, `fast`, `cache_first`) | In progress | P0 | `cache_first` now prefers DB cache first; on miss it runs `fast` and only falls back to `consensus` when fast returns resolved-but-incomplete paper metadata for DB hardening. Needs broader benchmark verification and docs alignment. | Policy-specific acceptance tests pass and behavior is deterministic across reruns. |
+| Cache-first index correctness (`one paper once`) | In progress | P0 | Query history append, request/source cumulative artifacts, alias-aware key matching (`arXiv` <-> `10.48550/arXiv.*`), and equivalent-entry reconciliation are in place; mixed-query edge cases still need focused validation. | Repeated mixed queries append `queries[]`, keep one canonical paper entry, and resolve cache hits reliably across identifier forms. |
+| Identifier consistency guardrails for deterministic candidates | In progress | P0 | DOI/arXiv lookup now drops candidates whose returned identifiers do not match the requested identifier, reducing cross-index false positives. | Off-target adapter rows do not generate resolved papers or canonical ID drift for deterministic DOI/arXiv queries. |
 | Metadata richness in deterministic output | In progress | P0 | Adapters now propagate `abstract`/`keywords`/`categories`; merge and DB persistence support added. Need coverage checks across connectors/corpus. | Resolved papers include non-empty informative metadata when upstream sources provide it; DB rows persist and return these fields. |
-| Deterministic YAML readability/size control | In progress | P1 | Paper/source entries are compacted; counts/truncation markers added; legacy payloads compact on load. | `deterministic_result.yaml` remains human-inspectable under repeated runs and large source candidate sets. |
+| Deterministic YAML readability/size control | In progress | P1 | Human-facing index now keeps paper summary + trace + source counts only (no per-paper `diagnostics`/`sources` payload); detailed sources stay in `deterministic_sources.tsv`. | `deterministic_result.yaml` remains human-inspectable under repeated runs while detailed provenance remains available via TSV artifacts. |
 | Cross-source author canonicalization | Todo | P1 | Duplicate people still possible across heterogeneous IDs/surface names. | Canonical author merge rules reduce duplicate authors for a regression sample set. |
 | Provenance and search-trace quality | In progress | P1 | Trace exists; needs cleaner wording and stable schema for downstream tooling. | Trace/provenance schema finalized and documented with fixture examples. |
 | Fresh-session deterministic retrieval smoke/regression | Todo | P0 | Need cold-start validation in a clean session/workspace to catch state-carryover assumptions. | Fresh-session checklist executed and recorded (`cache_first`, title/doi/arXiv permutations, expected cache behavior). |
@@ -71,8 +72,8 @@ Done when:
 
 Use this queue at the start of the next session:
 
-1. Run cold-start deterministic checks for: DOI, arXiv URL (`http`, `https`, `vN`), title exact, title ambiguous.
+1. Run cold-start deterministic checks for: DOI, arXiv URL (`http`, `https`, `vN`), arXiv DOI alias (`10.48550/arXiv.*`), title exact, title ambiguous.
 2. Validate cache behavior by repeating each query under `cache_first` and confirming `cache_hit=true` in `queries[]`.
-3. Confirm compact index shape (`source_count`, `sources_truncated`, compact authors) remains stable after multiple runs.
+3. Confirm summary index shape (`source_count`, `sources_truncated`, compact authors, no `sources`/`diagnostics`) remains stable after multiple runs.
 4. Verify metadata backfill quality (`abstract`, `keywords`, `categories`) on a small pinned paper set and record connector gaps.
 5. Add/update regression fixtures from the above runs and lock expected statuses/reasons.

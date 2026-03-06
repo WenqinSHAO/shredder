@@ -188,6 +188,14 @@ def add_provenance(
         )
 
 
+def delete_paper(paper_id: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM paper_authors WHERE paper_id = ?", (paper_id,))
+        conn.execute("DELETE FROM provenance WHERE entity_type = 'paper' AND entity_id = ?", (paper_id,))
+        conn.execute("DELETE FROM provenance WHERE entity_type = 'paper_author' AND entity_id LIKE ?", (f"{paper_id}::%",))
+        conn.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
+
+
 def search_papers(query: str) -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
@@ -203,10 +211,22 @@ def search_papers(query: str) -> list[dict]:
     return out
 
 
+def find_paper_ids_by_doi(doi: str) -> list[str]:
+    normalized = str(doi or "").strip().lower()
+    if not normalized:
+        return []
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM papers WHERE lower(doi)=? ORDER BY updated_at DESC, created_at DESC",
+            (normalized,),
+        ).fetchall()
+    return [str(row["id"]) for row in rows]
+
+
 def get_paper_with_authors(paper_id: str) -> dict:
     with _connect() as conn:
         paper = conn.execute(
-            "SELECT id, title, venue, year, doi, abstract, keywords_json, categories_json FROM papers WHERE id=?",
+            "SELECT id, title, venue, year, doi, abstract, keywords_json, categories_json, html_url FROM papers WHERE id=?",
             (paper_id,),
         ).fetchone()
         if not paper:

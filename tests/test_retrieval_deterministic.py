@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import ANY, patch
 
 from src.cli import main
-from src.retrieval.service import resolve_deterministic
+from src.retrieval.service import canonical_query_key, resolve_deterministic
 
 
 class _DoiAdapter:
@@ -111,6 +111,46 @@ class TestDeterministicResolverUnit(unittest.TestCase):
         result = resolve_deterministic({"arxiv_url": "http://arxiv.org/abs/2401.12345v1"}, [_ArxivAdapter()])
         self.assertEqual(result["status"], "resolved")
         self.assertEqual(result["paper"]["paper_id"], "arxiv:2401.12345")
+
+    def test_arxiv_doi_alias_uses_arxiv_identity(self):
+        query = {"doi": "https://doi.org/10.48550/arXiv.2401.12345"}
+        self.assertEqual(canonical_query_key(query), "arxiv:2401.12345")
+        result = resolve_deterministic(query, [_ArxivAdapter()])
+        self.assertEqual(result["status"], "resolved")
+        self.assertEqual(result["query_classification"], "arxiv")
+        self.assertEqual(result["paper"]["paper_id"], "arxiv:2401.12345")
+        self.assertEqual(result["paper"]["arxiv_id"], "2401.12345")
+
+    def test_doi_resolution_drops_mismatched_candidates(self):
+        class _MismatchDoiAdapter:
+            name = "mismatch"
+
+            def lookup_doi(self, doi: str) -> list[dict]:
+                return [
+                    {
+                        "source": "mismatch",
+                        "source_id": "x",
+                        "title": "Wrong DOI result",
+                        "venue": "",
+                        "year": "2024",
+                        "doi": "10.2/not-the-requested-doi",
+                        "arxiv_id": "",
+                        "url": "",
+                        "authors": [],
+                        "score": 1.0,
+                        "reason": "lookup_doi",
+                    }
+                ]
+
+            def lookup_arxiv(self, arxiv_id: str) -> list[dict]:
+                return []
+
+            def search_title(self, title: str, limit: int = 5) -> list[dict]:
+                return []
+
+        result = resolve_deterministic({"doi": "10.1/xyz"}, [_MismatchDoiAdapter()])
+        self.assertEqual(result["status"], "not_found")
+        self.assertEqual(result["reason"], "no_candidates")
 
     def test_merge_includes_abstract_keywords_and_categories(self):
         class _MetaAdapter:

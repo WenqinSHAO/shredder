@@ -35,6 +35,7 @@ SOURCE_FIELDS = [
 ]
 
 ProgressCallback = Callable[[dict], None]
+ARXIV_DOI_PREFIX = "10.48550/arxiv."
 
 
 def _emit_progress(progress_callback: ProgressCallback | None, *, event: str, **payload) -> None:
@@ -55,11 +56,28 @@ def normalize_arxiv_input(arxiv_url: str = "", arxiv_id: str = "") -> str:
     return normalize_arxiv_id(arxiv_url)
 
 
+def arxiv_id_from_doi_alias(doi: str | None) -> str:
+    normalized = normalize_doi(doi or "")
+    if not normalized.startswith(ARXIV_DOI_PREFIX):
+        return ""
+    return normalize_arxiv_id(normalized[len(ARXIV_DOI_PREFIX) :])
+
+
+def _effective_lookup_identifiers(query: dict) -> tuple[str, str]:
+    doi = normalize_doi(query.get("doi", ""))
+    arxiv_id = normalize_arxiv_input(query.get("arxiv_url", ""), query.get("arxiv_id", ""))
+    alias_arxiv = arxiv_id_from_doi_alias(doi)
+    if alias_arxiv and not arxiv_id:
+        arxiv_id = alias_arxiv
+    # arXiv DOI aliases should resolve through arXiv lookup mode for deterministic identity.
+    effective_doi = "" if alias_arxiv else doi
+    return effective_doi, arxiv_id
+
+
 def canonical_query_key(normalized_query: dict) -> str:
-    doi = normalize_doi(normalized_query.get("doi", ""))
+    doi, arxiv_id = _effective_lookup_identifiers(normalized_query)
     if doi:
         return f"doi:{doi}"
-    arxiv_id = normalize_arxiv_input(normalized_query.get("arxiv_url", ""), normalized_query.get("arxiv_id", ""))
     if arxiv_id:
         return f"arxiv:{arxiv_id}"
     title = normalize_title(str(normalized_query.get("title") or ""))
@@ -235,8 +253,7 @@ def merge_paper_rows(rows: list[dict]) -> dict:
 
 
 def _lookup_mode(query: dict) -> str:
-    doi = normalize_doi(query.get("doi", ""))
-    arxiv_id = normalize_arxiv_input(query.get("arxiv_url", ""), query.get("arxiv_id", ""))
+    doi, arxiv_id = _effective_lookup_identifiers(query)
     title = str(query.get("title") or "")
     if doi:
         return "doi"
@@ -247,7 +264,7 @@ def _lookup_mode(query: dict) -> str:
     return "none"
 
 
-def _adapter_diag(adapter: RetrievalAdapter, mode: str, rows_returned: int) -> dict:
+def _adapter_diag(adapter: RetrievalAdapter, mode: str, rows_returned: int, rows_filtered_out: int = 0) -> dict:
     if hasattr(adapter, "diagnostics"):
         diag = adapter.diagnostics()
     else:
@@ -262,8 +279,20 @@ def _adapter_diag(adapter: RetrievalAdapter, mode: str, rows_returned: int) -> d
         }
     if not diag.get("action"):
         diag["action"] = "not_attempted"
-    diag.update({"lookup_mode": mode, "rows_returned": rows_returned})
+    diag.update({"lookup_mode": mode, "rows_returned": rows_returned, "rows_filtered_out": rows_filtered_out})
     return diag
+
+
+def _candidate_matches_query(row: dict, *, mode: str, query_doi: str, query_arxiv_id: str) -> bool:
+    if mode == "doi":
+        return normalize_doi(row.get("doi", "")) == query_doi
+    if mode == "arxiv":
+        row_arxiv = normalize_arxiv_id(row.get("arxiv_id", ""))
+        if row_arxiv == query_arxiv_id:
+            return True
+        row_doi_alias = arxiv_id_from_doi_alias(row.get("doi", ""))
+        return row_doi_alias == query_arxiv_id
+    return True
 
 
 def _collect_candidates(
@@ -272,8 +301,7 @@ def _collect_candidates(
     policy: str = "consensus",
     progress_callback: ProgressCallback | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    doi = normalize_doi(query.get("doi", ""))
-    arxiv_id = normalize_arxiv_input(query.get("arxiv_url", ""), query.get("arxiv_id", ""))
+    doi, arxiv_id = _effective_lookup_identifiers(query)
     title = str(query.get("title") or "")
     mode = _lookup_mode(query)
     candidates: list[dict] = []
@@ -332,10 +360,21 @@ def _collect_candidates(
             rows = adapter.lookup_arxiv(arxiv_id)
         elif title:
             rows = adapter.search_title(title, limit=int(query.get("limit", 5)))
-        rows = rows or []
+        raw_rows = rows or []
+        rows = [
+            row
+            for row in raw_rows
+            if _candidate_matches_query(
+                row,
+                mode=mode,
+                query_doi=doi,
+                query_arxiv_id=arxiv_id,
+            )
+        ]
+        filtered_out = max(0, len(raw_rows) - len(rows))
         elapsed_ms = int((perf_counter() - started) * 1000)
         candidates.extend(rows)
-        adapter_diag = _adapter_diag(adapter, mode, len(rows))
+        adapter_diag = _adapter_diag(adapter, mode, len(rows), filtered_out)
         diagnostics.append(adapter_diag)
         _emit_progress(
             progress_callback,
@@ -345,6 +384,7 @@ def _collect_candidates(
             adapter_index=index,
             adapter_total=len(adapters),
             rows_returned=len(rows),
+            rows_filtered_out=filtered_out,
             elapsed_ms=elapsed_ms,
             enabled=adapter_diag.get("enabled", True),
             action=adapter_diag.get("action", ""),
@@ -374,6 +414,8 @@ def _input_warnings(normalized_query: dict) -> list[str]:
         warnings.append("arxiv_url_argument_looks_like_doi_url")
     if doi and not doi.startswith("10."):
         warnings.append("doi_argument_not_normalized")
+    if arxiv_id_from_doi_alias(doi):
+        warnings.append("doi_argument_is_arxiv_doi_alias")
     return warnings
 
 

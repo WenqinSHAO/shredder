@@ -1,5 +1,7 @@
 from .store import (
     add_provenance,
+    delete_paper,
+    find_paper_ids_by_doi,
     get_author_profile,
     get_paper_with_authors,
     init_kb,
@@ -19,6 +21,8 @@ __all__ = [
     "upsert_paper_author",
     "upsert_author_org",
     "add_provenance",
+    "delete_paper",
+    "find_paper_ids_by_doi",
     "search_papers",
     "get_paper_with_authors",
     "get_author_profile",
