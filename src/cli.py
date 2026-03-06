@@ -83,9 +83,10 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
         signals = event.get("extracted_signals") or {}
         det_queries = event.get("deterministic_queries") or []
         open_plan = event.get("open_query_plan") or []
+        plan_template = str(event.get("plan_template") or "").strip()
         print(
             f"{prefix} cycle={event.get('cycle_index')} planning rationale={event.get('plan_rationale')} "
-            f"query=\"{q_preview}\"",
+            f"template={plan_template or 'n/a'} query=\"{q_preview}\"",
             flush=True,
         )
         print(
@@ -101,7 +102,38 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
         if open_plan:
             print(f"{prefix} planning open_queries={len(open_plan)}", flush=True)
             for idx, item in enumerate(open_plan[:3], start=1):
-                print(f"{prefix} open_query[{idx}]={_short_text(str(item.get('query') or ''), 120)}", flush=True)
+                print(
+                    f"{prefix} open_query[{idx}]={_short_text(str(item.get('query') or ''), 120)} "
+                    f"scope={item.get('connector_scope')} purpose={_short_text(str(item.get('purpose') or ''), 80)}",
+                    flush=True,
+                )
+        return
+    if name == "agentic_llm_payload":
+        payload = event.get("payload") or {}
+        task = str(payload.get("task") or "")
+        model = str(payload.get("model") or "")
+        planner = payload.get("output") if isinstance(payload.get("output"), dict) else {}
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} llm_payload task={task} model={model} "
+            f"planned_query=\"{_short_text(str(planner.get('planned_query') or ''), 100)}\"",
+            flush=True,
+        )
+        return
+    if name == "agentic_web_payload":
+        provider = str(event.get("provider") or "")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if provider == "searxng":
+            print(
+                f"{prefix} cycle={event.get('cycle_index')} web_payload provider={provider} "
+                f"q=\"{_short_text(str(payload.get('q') or ''), 120)}\"",
+                flush=True,
+            )
+        elif provider == "page_fetch":
+            print(
+                f"{prefix} cycle={event.get('cycle_index')} web_payload provider={provider} "
+                f"url=\"{_short_text(str(payload.get('url') or ''), 120)}\"",
+                flush=True,
+            )
         return
     if name == "agentic_query_start":
         print(
@@ -154,6 +186,30 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
             f"decision={event.get('decision')} reason={event.get('reason')}",
             flush=True,
         )
+        return
+    if name == "agentic_search_decision":
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} search_decision query=\"{_short_text(str(event.get('query') or ''), 90)}\" "
+            f"purpose={_short_text(str(event.get('purpose') or ''), 64)} fulfilled={int(bool(event.get('fulfilled')))} "
+            f"next={event.get('next_hop_decision')}",
+            flush=True,
+        )
+        proposed = str(event.get("next_query_proposal") or "").strip()
+        if proposed:
+            print(f"{prefix} search_next_query \"{_short_text(proposed, 120)}\"", flush=True)
+        return
+    if name == "agentic_search_trace":
+        decisions = event.get("decisions") or []
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} search_trace_count={len(decisions)}",
+            flush=True,
+        )
+        for item in decisions[:3]:
+            print(
+                f"{prefix} trace query=\"{_short_text(str(item.get('query') or ''), 88)}\" "
+                f"fulfilled={int(bool(item.get('fulfilled')))} purpose={_short_text(str(item.get('purpose') or ''), 56)}",
+                flush=True,
+            )
         return
     if name == "agentic_ranked_preview":
         count = int(event.get("shortlisted_count") or 0)

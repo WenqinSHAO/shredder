@@ -179,6 +179,16 @@ Done when:
 
 Use this queue at the start of the next session:
 
+Progress snapshot (`2026-03-07`, rework pass-1 landed):
+- `A3` cycle memory now persists decision-grade records in `agentic_result.yaml`:
+  - planner input/output, LLM planner payload trace, per-action tool IO, per-search purpose/fulfillment/next-hop decisions, per-candidate keep/ignore decisions, controller guardrail state.
+- `A4` router policy now supports adaptive template routing and connector pruning:
+  - template-aware planning (`conference_program_first`, `scholar_graph`, `bibliography_index`, `identifier_targeted`)
+  - reduced scholarly open-search fan-out via adapter prioritization
+  - configurable web page fetch/parse path (`retrieval.agentic.web_fetch`) for high-value pages.
+- `A5` theme workflow now runs strict candidate-centric verification on extracted identifiers/titles from discovery rows and fetched page snippets (no mixed free-text deterministic lookups).
+- `A6` CLI debug surfaces now expose planning template details, exact LLM planner payload, web search/fetch payloads, and search decision traces.
+
 1. Critical carry-over issues to address first (blocking `A3-A6` completion):
    - Overall search flow is still flawed: loop must be strictly candidate-centric and iterative:
      - derive web searches from initial prompt
@@ -213,9 +223,9 @@ Use this queue at the start of the next session:
 2. Environment + validation baseline:
    - Use virtual environment: `/home/wenqin/.virtualenvs/shredder`.
    - Verified command baseline:
-     - Full test suite: `53 passed, 27 subtests passed`.
+     - Full test suite: `56 passed, 27 subtests passed`.
      - Command used: `/home/wenqin/.virtualenvs/shredder/bin/python -m pytest -q`
-   - Focused I1 test file status: `7 passed` for `tests/test_retrieval_agentic_i1.py`.
+   - Focused I1 test file status: `9 passed` for `tests/test_retrieval_agentic_i1.py`.
 
 3. Rework Increment-1 `A3` first (memory hardening before new features):
    - Redesign cycle memory schema around decision-grade records:

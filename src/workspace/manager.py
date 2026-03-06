@@ -76,6 +76,19 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
                             "min_ranked_candidates": 2,
                             "searxng_base_url": "",
                         },
+                        "web_fetch": {
+                            "enabled": True,
+                            "max_pages_per_cycle": 3,
+                            "timeout_s": 8.0,
+                            "min_interval_s": 0.0,
+                            "max_chars": 6000,
+                            "target_domains": [
+                                "dblp.org",
+                                "openreview.net",
+                                "neurips.cc",
+                                "proceedings.mlr.press",
+                            ],
+                        },
                     },
                     "deterministic": {"ambiguity_delta": 0.05, "policy": "cache_first"},
                     "adapters": {

@@ -336,6 +336,77 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             self.assertIn("deterministic:resolve", cycle_rows[0]["tool_calls"])
             self.assertEqual(cycle_rows[0]["plan_rationale"], "identifier_first_then_theme_expand")
 
+    def test_agentic_cycle_memory_contains_decision_grade_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws):
+                run_step("demo", "init", theme="systems")
+                with patch("src.orchestrator.agentic.build_adapters", return_value=[_AgenticAdapter()]):
+                    run_step(
+                        "demo",
+                        "retrieve-agentic",
+                        prompt="memory disaggregation",
+                        workflow="theme_refine",
+                        top_n=2,
+                        max_cycles=1,
+                    )
+
+            result = yamlx.load(ws / "demo" / "artifacts" / "retrieval" / "agentic_result.yaml")
+            cycle_memory = list(result.get("cycle_memory") or [])
+            self.assertEqual(len(cycle_memory), 1)
+            cycle = cycle_memory[0]
+            self.assertIn("planner_input", cycle)
+            self.assertIn("planner_output", cycle)
+            self.assertIn("llm_trace", cycle)
+            self.assertIn("tool_actions", cycle)
+            self.assertIn("search_decisions", cycle)
+            self.assertIn("candidate_decisions", cycle)
+            self.assertIn("controller_state", cycle)
+            self.assertIn("router_state", cycle)
+            self.assertEqual(cycle["planner_output"]["planned_query"], cycle["llm_trace"]["output"]["planned_query"])
+
+    def test_agentic_broad_prompt_uses_conference_program_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws):
+                run_step("demo", "init", theme="systems")
+                project_yaml = ws / "demo" / "project.yaml"
+                project_payload = yamlx.load(project_yaml)
+                project_payload["discovery"]["connectors"]["searxng"]["enabled"] = True
+                project_payload["discovery"]["connectors"]["searxng"]["base_url"] = "https://searx.local"
+                yamlx.dump_to_path(project_yaml, project_payload)
+                web_payload = [
+                    {
+                        "source": "searxng",
+                        "source_id": "https://neurips.cc/program",
+                        "title": "NeurIPS 2025 Accepted Papers",
+                        "venue": "NeurIPS",
+                        "year": "2025",
+                        "doi": "",
+                        "arxiv_id": "",
+                        "url": "https://neurips.cc/program",
+                    }
+                ]
+                with patch("src.orchestrator.agentic.build_adapters", return_value=[_EmptyAgenticAdapter()]):
+                    with patch("src.orchestrator.agentic.SearxngConnector.search", return_value=web_payload):
+                        run_step(
+                            "demo",
+                            "retrieve-agentic",
+                            prompt="latest paper on agentic search from top AI conferences",
+                            workflow="theme_refine",
+                            top_n=2,
+                            max_cycles=1,
+                        )
+
+            result = yamlx.load(ws / "demo" / "artifacts" / "retrieval" / "agentic_result.yaml")
+            cycle = (result.get("cycle_memory") or [])[0]
+            self.assertEqual(cycle["planner_output"]["template"], "conference_program_first")
+            search_decisions = cycle.get("search_decisions") or []
+            self.assertTrue(any(str(item.get("connector_scope") or "") == "web" for item in search_decisions))
+            self.assertEqual(cycle["router_state"]["router_profile"]["template"], "conference_program_first")
+
 
 if __name__ == "__main__":
     unittest.main()

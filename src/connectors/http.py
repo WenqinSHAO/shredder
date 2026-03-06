@@ -61,6 +61,52 @@ def get_json(
     raise RuntimeError("get_json exhausted retries without response")
 
 
+def get_text(
+    url: str,
+    timeout_s: float,
+    min_interval_s: float,
+    retry_policy: RetryPolicy | None = None,
+) -> str:
+    policy = retry_policy or RetryPolicy(max_attempts=1, base_backoff_s=0.0, max_backoff_s=0.0, jitter_s=0.0, retry_http_statuses=set())
+    last_error: Exception | None = None
+
+    for attempt in range(1, policy.max_attempts + 1):
+        try:
+            with urlopen(url, timeout=timeout_s) as response:
+                raw = response.read()
+                charset = ""
+                headers = getattr(response, "headers", None)
+                if headers is not None and hasattr(headers, "get_content_charset"):
+                    charset = str(headers.get_content_charset() or "").strip()
+            encoding = charset or "utf-8"
+            try:
+                text = raw.decode(encoding, errors="replace")
+            except LookupError:
+                text = raw.decode("utf-8", errors="replace")
+            if min_interval_s > 0:
+                time.sleep(min_interval_s)
+            return text
+        except HTTPError as exc:
+            last_error = exc
+            if exc.code not in policy.retry_http_statuses:
+                raise
+        except (URLError, TimeoutError, socket.timeout) as exc:
+            last_error = exc
+
+        if attempt >= policy.max_attempts:
+            break
+
+        backoff = min(policy.base_backoff_s * (2 ** (attempt - 1)), policy.max_backoff_s)
+        jitter = random.uniform(0.0, policy.jitter_s) if policy.jitter_s > 0 else 0.0
+        sleep_s = min_interval_s + backoff + jitter
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("get_text exhausted retries without response")
+
+
 def normalize_doi(doi: str | None) -> str:
     if not doi:
         return ""

@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from src.connectors.http import RetryPolicy, get_json, normalize_arxiv_id
+from src.connectors.http import RetryPolicy, get_json, get_text, normalize_arxiv_id
 
 
 class _Response:
@@ -81,6 +81,26 @@ class TestHttpRetries(unittest.TestCase):
                 )
 
         self.assertEqual(attempts["n"], 3)
+
+    def test_get_text_retries_and_decodes(self):
+        attempts = {"n": 0}
+
+        def fake_urlopen(url, timeout):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise socket.timeout("timeout")
+            return _Response("hello world".encode("utf-8"))
+
+        with patch("src.connectors.http.urlopen", side_effect=fake_urlopen), patch("src.connectors.http.time.sleep"):
+            text = get_text(
+                "https://example.org/page",
+                timeout_s=1.0,
+                min_interval_s=0.0,
+                retry_policy=RetryPolicy(max_attempts=2, base_backoff_s=0.0, max_backoff_s=0.0, jitter_s=0.0),
+            )
+
+        self.assertEqual(attempts["n"], 2)
+        self.assertEqual(text, "hello world")
 
 
 class TestNormalization(unittest.TestCase):
