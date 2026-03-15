@@ -1,6 +1,6 @@
 # Implementation Progress Board
 
-Last updated: 2026-03-06
+Last updated: 2026-03-15
 
 ## 1) Program Overview
 
@@ -12,7 +12,7 @@ Detailed task tables are maintained only for modules currently in active impleme
 | Module | Progress | Status |
 |---|---:|---|
 | Meta Info Retrieval (deterministic) | `85%` (`████████░░`) | Stabilized |
-| Agentic Meta Info Retrieval | `20%` (`██░░░░░░░░`) | Active (bootstrap only) |
+| Agentic Meta Info Retrieval | `30%` (`███░░░░░░░`) | Active (I2 LLM+SearxNG loop) |
 | Data Backend and RAG | `20%` (`██░░░░░░░░`) | Planned |
 | Paper Context Retrieval | `5%` (`░░░░░░░░░░`) | Not started |
 | Paper Context Formatted Extraction | `10%` (`█░░░░░░░░░`) | Not started |
@@ -59,29 +59,60 @@ Decision:
 - Add `homepage_url` (or equivalent) to author schema and retrieval pipeline.
 - Add optional richer author profile enrichment fields after next-stage stabilization.
 
-## Agentic Meta Info Retrieval - Active (Clean Baseline)
+## Agentic Meta Info Retrieval - Active (I2 LLM + SearxNG Loop)
 
 Scope:
-- Keep only a clean bootstrap implementation for agentic retrieval.
-- Preserve artifact contracts and one-cycle execution visibility.
-- Defer advanced planning/routing/multi-cycle logic to the next dedicated design session.
+- Keep existing `retrieve-agentic` entry points and core artifacts.
+- Implement iterative LLM-powered query understanding for web retrieval through SearxNG.
+- Keep scope narrow: no resume, no human-gated stop, no multi-workflow policy engine.
 
-### 3.4 Implemented Baseline
+### 3.4 I2 Sprint Board
 
 | ID | Item | Status | Note |
 |---|---|---|---|
-| A1 | Session artifacts (`agentic_request/session/result/questions`, cycle/candidate TSVs) | Done | Contracts are written on every run. |
-| A2 | One-cycle orchestrator (`plan -> retrieve -> rank -> decide`) | Done | Current behavior is explicitly single-cycle bootstrap. |
-| A3 | Basic tests for non-empty and empty candidate paths | Done | See `tests/test_retrieval_agentic_i1.py`. |
-| A4 | Resume, multi-cycle control, lead-specific workflows | Deferred | Not part of current clean baseline. |
-| A5 | Advanced policy engine (clarification/feedback/convergence) | Deferred | Not part of current clean baseline. |
+| A1 | LLM planner step (`plan_queries_llm`) outputs structured query set for SearxNG | Todo | Use DeepSeek via `litellm`; validate strict JSON output. |
+| A2 | Multi-cycle orchestrator (`plan -> search_web -> condense -> decide`) | Todo | Stop on LLM convergence or `max_cycles` cap. |
+| A3 | SearxNG-only retrieval in this workflow | Todo | Query `SEARXNG_URL`; no adapter merge in I2. |
+| A4 | Intermediate artifacts for web results and LLM payload summaries | Todo | Persist compact cycle evidence for observability. |
+| A5 | I2 tests (planner parse, convergence, empty results, artifact writes) | Todo | Keep existing I1 artifact contract compatibility. |
 
 ### 3.5 Defaults and Limits
 
-- Workflow is fixed to `theme_refine` in current code path.
-- Agentic run is single-cycle by design in current baseline.
-- User-facing knobs are only `prompt` and `top_n`.
-- Advanced resume and multi-hop planning are intentionally deferred.
+- Active workflow name for I2: `searxng_meta_refine_v1`.
+- Retrieval source scope for I2: SearxNG only.
+- Loop stop rule: LLM returns `stop=true` OR no meaningful new narrowed signals, always bounded by `max_cycles`.
+- Existing user knobs remain `prompt` and `top_n`; cycle and model controls come from project config.
+
+### 3.6 I2 Contracts and Config
+
+Cycle-level behavior contract:
+1. LLM planning receives user prompt + prior cycle condensed summary and emits JSON:
+   - `queries: list[str]`
+   - `rationale: str`
+   - `stop: bool`
+   - `stop_reason: str`
+2. System executes each query against `SEARXNG_URL/search` using `format=json` and `categories=science`.
+3. System condenses raw web results locally before sending back to LLM.
+4. LLM decides next query set or stop; repeat until convergence or `max_cycles`.
+
+Artifacts:
+- Keep existing artifacts:
+  - `agentic_request.yaml`
+  - `agentic_session.yaml`
+  - `agentic_result.yaml`
+  - `agentic_questions.yaml`
+  - `agentic_cycles.tsv`
+  - `agentic_candidates_latest.tsv`
+- Add I2 intermediate artifacts:
+  - `agentic_web_results.tsv` (append-only across cycles, includes `cycle_index`, `query`, rank, compact metadata)
+  - `agentic_llm_payloads.yaml` (per-cycle planner/decider input summaries and outputs; do not store full raw web payloads)
+
+Config defaults:
+- `retrieval.agentic.max_cycles`: `3`
+- `retrieval.agentic.queries_per_cycle`: `4`
+- `retrieval.agentic.web_results_per_query`: `8`
+- `retrieval.agentic.llm.model`: `deepseek-chat`
+- `retrieval.agentic.llm.api_key_env`: `DS_API_KEY`
 
 ## 4) Non-Active Modules (Summary Only)
 
@@ -110,10 +141,13 @@ Evidence snapshot:
 
 Active next milestone:
 
-`M-Next-Stage-Launch`: begin Agentic Meta Info Retrieval + Data Backend/RAG with deterministic layer frozen except bugfixes.
+`M-Agentic-I2`: establish convergent LLM-guided SearxNG loop with inspectable intermediate artifacts.
 
 Done when:
-- Detailed active task board is opened for Agentic Meta Info Retrieval with first sprint acceptance criteria. (Done)
+- LLM planner emits valid query plans and decisions with robust parse/validation.
+- Agentic orchestrator runs multi-cycle retrieval and stops with convergence + safety cap semantics.
+- Intermediate web and LLM summary artifacts are written per cycle.
+- I2 tests are added and passing without breaking I1 artifact compatibility.
 - Detailed active task board is opened for Data Backend/RAG with deterministic artifact integration contracts.
 - Deferred deterministic backlog and wishlist remain explicitly non-blocking unless they become concrete blockers.
 
@@ -122,8 +156,8 @@ Done when:
 Use this queue at the start of the next session:
 
 1. Session handoff snapshot (cleaned baseline):
-   - Agentic orchestrator remains at one-cycle bootstrap level.
-   - Artifacts and tests are kept, but deferred features are removed from active scope.
+   - Agentic orchestrator target is I2 iterative LLM+SearxNG loop.
+   - Preserve current artifact compatibility while adding intermediate cycle artifacts.
    - Entry points remain:
      - Runner step: `retrieve-agentic`
      - CLI command: `python -m src.cli retrieve-agentic <project_id> --prompt ... --top-n N`
@@ -131,14 +165,16 @@ Use this queue at the start of the next session:
 
 2. Environment + validation baseline:
    - Use virtual environment: `/home/wenqin/.virtualenvs/shredder`.
-   - Verified command baseline:
-     - Full test suite: `48 passed, 27 subtests passed`.
-     - Command used: `/home/wenqin/.virtualenvs/shredder/bin/python -m pytest -q`
-   - Focused I1 test file added: `tests/test_retrieval_agentic_i1.py`.
+   - Baseline command:
+     - `/home/wenqin/.virtualenvs/shredder/bin/python -m pytest -q`
+   - Retrieval-specific focus:
+     - Existing: `tests/test_retrieval_agentic_i1.py`
+     - Add for I2: planner parse, convergence, empty-search path, artifact integration.
 
 3. Next session entry criteria:
-   - Decide one architecture direction (minimal deterministic loop vs LLM-planned exploration) before adding new features.
-   - Re-open detailed planning only after that architecture decision is explicit.
+   - `DS_API_KEY` is available in env.
+   - `SEARXNG_URL` points to reachable backend.
+   - `litellm` dependency is installed in runtime.
 
 4. Workspace hygiene reminder before commit:
    - Do not commit generated runtime files such as `kb/kb.sqlite` and `src/shredder.egg-info/`.
