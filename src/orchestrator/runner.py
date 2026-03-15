@@ -37,9 +37,6 @@ def run_step(project_id: str, step: str, **kwargs):
         return run_retrieve_agentic(
             project_id,
             prompt=kwargs.get("prompt", ""),
-            workflow=kwargs.get("workflow", "theme_refine"),
             top_n=int(kwargs.get("top_n", 5)),
-            max_cycles=int(kwargs.get("max_cycles", 1)),
-            session_id=kwargs.get("session_id", ""),
         )
     raise ValueError(f"Unknown step: {step}")

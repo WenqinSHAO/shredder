@@ -63,9 +63,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         "demo",
                         "retrieve-agentic",
                         prompt="memory disaggregation",
-                        workflow="theme_refine",
                         top_n=2,
-                        max_cycles=1,
                     )
 
             self.assertTrue(result_path.exists())
@@ -120,9 +118,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         "demo",
                         "retrieve-agentic",
                         prompt="nonexistent topic",
-                        workflow="theme_refine",
                         top_n=3,
-                        max_cycles=1,
                     )
 
             rdir = ws / "demo" / "artifacts" / "retrieval"

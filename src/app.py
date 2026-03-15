@@ -34,10 +34,7 @@ class RetrieveOpenRequest(BaseModel):
 
 class RetrieveAgenticRequest(BaseModel):
     prompt: str
-    workflow: str = "theme_refine"
     top_n: int = 5
-    max_cycles: int = 1
-    session_id: str = ""
 
 
 @app.get("/healthz")
@@ -98,10 +95,7 @@ def retrieve_agentic(project_id: str, body: RetrieveAgenticRequest):
             project_id,
             "retrieve-agentic",
             prompt=body.prompt,
-            workflow=body.workflow,
             top_n=body.top_n,
-            max_cycles=body.max_cycles,
-            session_id=body.session_id,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

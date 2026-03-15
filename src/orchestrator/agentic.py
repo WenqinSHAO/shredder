@@ -69,28 +69,6 @@ def _new_session_id(prompt: str) -> str:
     return f"agentic-{stamp}-{digest}"
 
 
-def _merge_defaults(default: dict, payload: dict) -> dict:
-    merged = dict(default)
-    for key, value in payload.items():
-        if key not in merged:
-            merged[key] = value
-            continue
-        if isinstance(merged[key], dict) and isinstance(value, dict):
-            merged[key] = _merge_defaults(merged[key], value)
-            continue
-        merged[key] = value
-    return merged
-
-
-def _load_contract(path: Path, default_payload: dict) -> dict:
-    if not path.exists():
-        return default_payload
-    payload = load(path)
-    if not isinstance(payload, dict):
-        return default_payload
-    return _merge_defaults(default_payload, payload)
-
-
 def _request_contract(
     *,
     session_id: str,
@@ -228,24 +206,15 @@ def _state_path() -> str:
     return "plan>retrieve>rank>decide"
 
 
-def _build_cycle_plan(prompt: str, workflow: str) -> dict:
-    if workflow == "theme_refine":
-        query_plan = plan_queries(prompt)
-        planned_query = query_plan[0]["query"] if query_plan else prompt.strip()
-        return {
-            "workflow": workflow,
-            "planned_query": planned_query,
-            "retrieval_query": planned_query,
-            "query_plan": query_plan,
-            "rationale": "theme_refine_bootstrap",
-        }
-    planned = prompt.strip()
+def _build_cycle_plan(prompt: str) -> dict:
+    query_plan = plan_queries(prompt)
+    planned_query = query_plan[0]["query"] if query_plan else prompt.strip()
     return {
-        "workflow": workflow,
-        "planned_query": planned,
-        "retrieval_query": planned,
-        "query_plan": [{"query": planned, "connector_scope": "all", "intent": "generic"}],
-        "rationale": "generic_bootstrap",
+        "workflow": "theme_refine",
+        "planned_query": planned_query,
+        "retrieval_query": planned_query,
+        "query_plan": query_plan,
+        "rationale": "theme_refine_bootstrap",
     }
 
 
@@ -253,10 +222,7 @@ def run_retrieve_agentic(
     project_id: str,
     *,
     prompt: str = "",
-    workflow: str = "theme_refine",
     top_n: int = 5,
-    max_cycles: int = 1,
-    session_id: str = "",
 ) -> Path:
     pdir = project_dir(project_id)
     paths = _agentic_paths(pdir)
@@ -266,15 +232,14 @@ def run_retrieve_agentic(
 
     requested_top_n = int(top_n or agentic_cfg.get("top_n", 5) or 5)
     effective_top_n = max(1, requested_top_n)
-    requested_cycles = int(max_cycles or agentic_cfg.get("max_cycles", 1) or 1)
-    effective_max_cycles = max(1, requested_cycles)
-    workflow_name = str(workflow or agentic_cfg.get("workflow", "theme_refine") or "theme_refine").strip() or "theme_refine"
+    effective_max_cycles = 1
+    workflow_name = "theme_refine"
 
     resolved_prompt = str(prompt or "").strip()
-    resolved_session_id = str(session_id or "").strip() or _new_session_id(resolved_prompt or workflow_name)
+    resolved_session_id = _new_session_id(resolved_prompt or workflow_name)
     request_id = f"req-{resolved_session_id}"
 
-    default_request = _request_contract(
+    request_payload = _request_contract(
         session_id=resolved_session_id,
         request_id=request_id,
         project_id=project_id,
@@ -283,66 +248,23 @@ def run_retrieve_agentic(
         top_n=effective_top_n,
         max_cycles=effective_max_cycles,
     )
-    request_payload = _load_contract(paths["request"], default_request)
-    if str(request_payload.get("session_id") or "") not in {"", resolved_session_id}:
-        request_payload = default_request
-    if resolved_prompt:
-        request_payload["prompt"] = resolved_prompt
     resolved_prompt = str(request_payload.get("prompt") or "").strip()
     if not resolved_prompt:
         raise ValueError("Prompt is required")
-    request_payload["workflow"] = workflow_name
-    request_payload["session_id"] = resolved_session_id
-    request_payload["request_id"] = request_id
-    request_payload["project_id"] = project_id
-    request_payload.setdefault("limits", {})
-    request_payload["limits"]["top_n"] = effective_top_n
-    request_payload["limits"]["max_cycles"] = effective_max_cycles
-    request_payload["updated_at"] = _utc_now()
-
-    default_session = _session_contract(
+    session_payload = _session_contract(
         session_id=resolved_session_id,
         request_id=request_id,
         project_id=project_id,
         workflow=workflow_name,
         max_cycles=effective_max_cycles,
     )
-    session_payload = _load_contract(paths["session"], default_session)
-    if str(session_payload.get("session_id") or "") not in {"", resolved_session_id}:
-        session_payload = default_session
-    session_payload["session_id"] = resolved_session_id
-    session_payload["request_id"] = request_id
-    session_payload["workflow"] = workflow_name
-    session_payload["project_id"] = project_id
-    session_payload["max_cycles"] = effective_max_cycles
-
-    default_result = _result_contract(
+    result_payload = _result_contract(
         session_id=resolved_session_id,
         request_id=request_id,
         workflow=workflow_name,
         top_n=effective_top_n,
     )
-    result_payload = _load_contract(paths["result"], default_result)
-    if str(result_payload.get("session_id") or "") not in {"", resolved_session_id}:
-        result_payload = default_result
-    result_payload["session_id"] = resolved_session_id
-    result_payload["request_id"] = request_id
-    result_payload["workflow"] = workflow_name
-    result_payload["top_n"] = effective_top_n
-
-    default_questions = _questions_contract(session_id=resolved_session_id)
-    questions_payload = _load_contract(paths["questions"], default_questions)
-    if str(questions_payload.get("session_id") or "") not in {"", resolved_session_id}:
-        questions_payload = default_questions
-    questions_payload["session_id"] = resolved_session_id
-    questions_payload["updated_at"] = _utc_now()
-
-    if str(session_payload.get("status") or "").strip().lower() == "completed":
-        write_yaml(paths["request"], request_payload)
-        write_yaml(paths["session"], session_payload)
-        write_yaml(paths["result"], result_payload)
-        write_yaml(paths["questions"], questions_payload)
-        return paths["result"]
+    questions_payload = _questions_contract(session_id=resolved_session_id)
 
     adapters = build_adapters(pmeta)
     cycle_index = int(session_payload.get("current_cycle") or 0) + 1
@@ -354,7 +276,7 @@ def run_retrieve_agentic(
     write_yaml(paths["request"], request_payload)
     write_yaml(paths["questions"], questions_payload)
 
-    plan = _build_cycle_plan(resolved_prompt, workflow_name)
+    plan = _build_cycle_plan(resolved_prompt)
     session_payload["state"] = "retrieve"
     session_payload["updated_at"] = _utc_now()
     write_yaml(paths["session"], session_payload)
@@ -400,13 +322,9 @@ def run_retrieve_agentic(
         decision = "stop"
         decision_reason = "no_candidates"
         stop_reason = "no_candidates"
-    elif cycle_index >= effective_max_cycles:
-        decision = "stop"
-        decision_reason = "cycle_budget_reached"
-        stop_reason = "max_cycles_reached"
     else:
         decision = "stop"
-        decision_reason = "single_cycle_bootstrap"
+        decision_reason = "bootstrap_cycle_complete"
         stop_reason = "initial_cycle_complete"
 
     cycle_row = {

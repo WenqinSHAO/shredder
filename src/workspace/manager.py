@@ -62,9 +62,7 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
                     "open_top_n": 5,
                     "agentic": {
                         "enabled": True,
-                        "workflow": "theme_refine",
                         "top_n": 5,
-                        "max_cycles": 1,
                     },
                     "deterministic": {"ambiguity_delta": 0.05, "policy": "cache_first"},
                     "adapters": {

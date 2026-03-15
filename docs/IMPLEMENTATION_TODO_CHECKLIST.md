@@ -12,7 +12,7 @@ Detailed task tables are maintained only for modules currently in active impleme
 | Module | Progress | Status |
 |---|---:|---|
 | Meta Info Retrieval (deterministic) | `85%` (`████████░░`) | Stabilized |
-| Agentic Meta Info Retrieval | `35%` (`███░░░░░░░`) | Active (I1 kickoff landed) |
+| Agentic Meta Info Retrieval | `20%` (`██░░░░░░░░`) | Active (bootstrap only) |
 | Data Backend and RAG | `20%` (`██░░░░░░░░`) | Planned |
 | Paper Context Retrieval | `5%` (`░░░░░░░░░░`) | Not started |
 | Paper Context Formatted Extraction | `10%` (`█░░░░░░░░░`) | Not started |
@@ -59,87 +59,29 @@ Decision:
 - Add `homepage_url` (or equivalent) to author schema and retrieval pipeline.
 - Add optional richer author profile enrichment fields after next-stage stabilization.
 
-## Agentic Meta Info Retrieval - Active
+## Agentic Meta Info Retrieval - Active (Clean Baseline)
 
 Scope:
-- Build checkpoint/resume agentic retrieval on top of deterministic DOI/arXiv/title resolution.
-- Persist intermediate cycle artifacts as session memory and progress-control ledger.
-- Split lead-based workflows into dedicated sub-modules (`lead_author_org_venue`, `lead_citation_graph`) with shared runtime/scoring.
+- Keep only a clean bootstrap implementation for agentic retrieval.
+- Preserve artifact contracts and one-cycle execution visibility.
+- Defer advanced planning/routing/multi-cycle logic to the next dedicated design session.
 
-Execution strategy:
-- Deliver in four increments with explicit dependencies and acceptance criteria.
-- Keep deterministic retrieval layer frozen except bugfixes and compatibility adaptations.
+### 3.4 Implemented Baseline
 
-### 3.4 Incremental Task Board
+| ID | Item | Status | Note |
+|---|---|---|---|
+| A1 | Session artifacts (`agentic_request/session/result/questions`, cycle/candidate TSVs) | Done | Contracts are written on every run. |
+| A2 | One-cycle orchestrator (`plan -> retrieve -> rank -> decide`) | Done | Current behavior is explicitly single-cycle bootstrap. |
+| A3 | Basic tests for non-empty and empty candidate paths | Done | See `tests/test_retrieval_agentic_i1.py`. |
+| A4 | Resume, multi-cycle control, lead-specific workflows | Deferred | Not part of current clean baseline. |
+| A5 | Advanced policy engine (clarification/feedback/convergence) | Deferred | Not part of current clean baseline. |
 
-#### Increment 1: Session Core + Theme Workflow (`M-Agentic-I1`)
+### 3.5 Defaults and Limits
 
-| ID | Sub-module | Task | Status | Acceptance Criteria | Depends On |
-|---|---|---|---|---|---|
-| A1 | Session Contracts | Define `agentic_request.yaml`, `agentic_session.yaml`, `agentic_result.yaml`, `agentic_questions.yaml`, `agentic_cycles.tsv`, `agentic_candidates_latest.tsv` schemas/contracts. | Done | Artifacts are versioned, deterministic-fielded, and loadable across resume cycles. | None |
-| A2 | Orchestrator Core | Build single-loop orchestrator state machine: `plan -> retrieve -> rank -> decide(ask/continue/stop)`. | Done | One full cycle runs with no user interrupt path and writes all session artifacts. | A1 |
-| A3 | Progress Memory | Persist per-cycle memory: planned query, tool calls, candidate deltas, rationale, stop-check signals. | In progress | Resume from checkpoint reproduces same next step given same inputs. | A1,A2 |
-| A4 | Tool Router | Implement scholarly-first tool routing (KB + OpenAlex/Crossref/S2/arXiv), web fallback trigger policy scaffold. | Todo | Router calls web only when scholarly retrieval is insufficient by policy. | A2 |
-| A5 | Workflow: Theme Refinement | Implement `theme_refine` workflow with iterative narrowing and candidate shortlist updates. | In progress | Broad-theme prompt converges to shortlist with >=2 cycles and explicit rationale history. | A2,A4 |
-| A6 | CLI/API Session UX | Add checkpoint-resume interfaces: start session, fetch status, submit answers, finalize. | In progress | CLI/API can pause on question and resume without losing cycle memory. | A2,A3 |
-| A7 | Tests I1 | Unit + integration coverage for state machine, artifact writing, resume idempotence, theme workflow. | In progress | CI tests cover happy path + resume path + empty-result fallback path. | A1-A6 |
-
-#### Increment 2: Fuzzy Reference + Feedback Learning (`M-Agentic-I2`)
-
-| ID | Sub-module | Task | Status | Acceptance Criteria | Depends On |
-|---|---|---|---|---|---|
-| B1 | Workflow: Fuzzy Reference | Implement `fuzzy_reference` workflow for shorthand/inexact paper mentions using lexical candidate generation + LLM rerank + metadata checks. | Todo | Inexact paper queries recover likely canonical papers with explicit confidence + alternatives. | A4,A5 |
-| B2 | User Feedback Loop | Add `keep/remove/why-missing` feedback capture and apply it to next-cycle scoring/query reformulation. | Todo | Feedback changes ranking/frontier in next cycle and is recorded in ledger. | A3,B1 |
-| B3 | Clarification Policy | Interrupt-driven question policy (only ambiguity/confidence failures), with max questions per cycle. | Todo | Session asks only when thresholds fail; otherwise proceeds autonomously. | A2,B2 |
-| B4 | Ranking Engine v1 | Balanced precision/recall scoring with transparent components: relevance, source quality, lead match, novelty, user-feedback alignment. | Todo | Candidate table includes per-component score breakdown persisted in artifacts. | B2 |
-| B5 | Stop/Convergence Controller | Default stop = convergence + user confirm; guardrails: max hops=3, cycle/tool/token/time budgets. | Todo | Stop reason always explicit and reproducible in `agentic_result.yaml`. | B3,B4 |
-| B6 | Tests I2 | Golden tests for fuzzy-reference scenarios and feedback-driven reranking behavior. | Todo | Fixture suite validates convergence and ambiguity-handling paths. | B1-B5 |
-
-#### Increment 3: Lead-Based Workflow Pack (Author/Org/Venue) (`M-Agentic-I3`)
-
-| ID | Sub-module | Task | Status | Acceptance Criteria | Depends On |
-|---|---|---|---|---|---|
-| C1 | Lead Normalization | Parse/normalize leads from prompt: author, institution, venue, paper seed, year bounds, domain tags. | Todo | Lead parsing emits typed lead objects with confidence and unresolved fields. | B4 |
-| C2 | Workflow: Author/Org/Venue | Implement dedicated `lead_author_org_venue` workflow with facet-specific query planners and constraints. | Todo | Query like "all networking papers from Alibaba on SIGCOMM" yields constrained shortlist with traceable filters. | C1 |
-| C3 | Planner Specialization | Add facet planner strategies (author-centric, org-centric, venue-centric) rather than one generic planner. | Todo | Planner strategy chosen by lead type and persisted in cycle ledger. | C2 |
-| C4 | Constraint Refinement | Add interactive refinement prompts specific to lead facets (e.g., affiliation ambiguity, venue aliasing, year scope conflicts). | Todo | User can refine constraints mid-session without restarting session. | C2,C3 |
-| C5 | Tests I3 | Scenario tests for author/org/venue lead retrieval and constraint refinement loops. | Todo | Each lead type has passing end-to-end scenario with resume path. | C1-C4 |
-
-#### Increment 4: Citation Workflow + Hardening (`M-Agentic-I4 / RC1`)
-
-| ID | Sub-module | Task | Status | Acceptance Criteria | Depends On |
-|---|---|---|---|---|---|
-| D1 | Workflow: Citation Graph | Implement dedicated `lead_citation_graph` workflow (forward citations, backward references, bounded expansion). | Todo | Citation-based exploration behaves differently from author/org/venue and is traceable in ledger. | C1,B5 |
-| D2 | Multi-hop Expansion Policy | Enable adaptive expansion up to max 3 hops with per-hop frontier controls and pruning. | Todo | Hop transitions and pruning decisions are explicit and replayable. | D1 |
-| D3 | Web Fallback Provider Layer | Implement pluggable provider interface; default SearXNG provider and optional extension hook for hosted providers. | Todo | If pluggable path is not viable in sprint scope, fallback to SearXNG-only without contract changes. | A4 |
-| D4 | Observability + Evaluation | Add cycle-level metrics: latency, tool calls, fallback rate, clarification rate, convergence cycles, acceptance rate. | Todo | Metrics emitted to artifacts and used by regression tests. | D1-D3 |
-| D5 | RC1 Hardening | Backward compatibility checks, failure-mode tests, docs updates, and launch checklist. | Todo | RC1 gate passes with deterministic handoff compatibility preserved. | D1-D4 |
-
-### 3.5 Minimum Required Test Scenarios
-
-1. Broad-theme interactive narrowing with at least one clarification interrupt.
-2. Fuzzy shorthand paper query resolved to canonical candidate set.
-3. Lead-based author/org/venue constrained search with user feedback refinement.
-4. Citation-graph exploration with bounded hops and convergence stop.
-5. Session interruption/resume across multiple cycles with exact artifact continuity.
-6. Scholarly-first success path and web-fallback path both covered.
-7. Deterministic handoff compatibility: resolved finalists pass through existing deterministic persistence path unchanged.
-
-### 3.6 Assumptions and Defaults
-
-- Orchestrator model: single-controller loop.
-- Interaction mode: checkpoint-resume via CLI/API.
-- Retrieval policy: scholarly-first, web fallback conditional.
-- Lead workflows are intentionally split:
-  - `theme_refine`
-  - `fuzzy_reference`
-  - `lead_author_org_venue`
-  - `lead_citation_graph`
-- Convergence defaults:
-  - max hops = 3
-  - stop on convergence + user confirmation
-  - enforce cycle/tool/time/token guardrails
-- Intermediate steps are mandatory persisted memory for both progress control and replay/debug.
+- Workflow is fixed to `theme_refine` in current code path.
+- Agentic run is single-cycle by design in current baseline.
+- User-facing knobs are only `prompt` and `top_n`.
+- Advanced resume and multi-hop planning are intentionally deferred.
 
 ## 4) Non-Active Modules (Summary Only)
 
@@ -179,80 +121,24 @@ Done when:
 
 Use this queue at the start of the next session:
 
-1. Session handoff snapshot (completed in this session):
-   - Increment-1 `A1/A2` landed:
-     - New agentic orchestrator: `src/orchestrator/agentic.py`.
-     - Single-loop state machine implemented: `plan -> retrieve -> rank -> decide`.
-     - Artifacts written per run:
-       - `agentic_request.yaml`
-       - `agentic_session.yaml`
-       - `agentic_result.yaml`
-       - `agentic_questions.yaml`
-       - `agentic_cycles.tsv`
-       - `agentic_candidates_latest.tsv`
-     - Contract versions currently set to `0.1.0`.
-   - Entry points added:
+1. Session handoff snapshot (cleaned baseline):
+   - Agentic orchestrator remains at one-cycle bootstrap level.
+   - Artifacts and tests are kept, but deferred features are removed from active scope.
+   - Entry points remain:
      - Runner step: `retrieve-agentic`
-     - CLI command: `python -m src.cli retrieve-agentic <project_id> --prompt ...`
+     - CLI command: `python -m src.cli retrieve-agentic <project_id> --prompt ... --top-n N`
      - API endpoint: `POST /projects/{project_id}/retrieve/agentic`
-   - Project defaults updated:
-     - `project.yaml -> retrieval.agentic` scaffold (`enabled/workflow/top_n/max_cycles`).
 
-2. Environment + validation baseline for fresh session:
+2. Environment + validation baseline:
    - Use virtual environment: `/home/wenqin/.virtualenvs/shredder`.
    - Verified command baseline:
      - Full test suite: `48 passed, 27 subtests passed`.
      - Command used: `/home/wenqin/.virtualenvs/shredder/bin/python -m pytest -q`
    - Focused I1 test file added: `tests/test_retrieval_agentic_i1.py`.
 
-3. Execute Increment-1 `A3` next (resume-safe progress memory):
-   - Upgrade current single-cycle behavior into deterministic multi-cycle progression.
-   - Ensure resume idempotence:
-     - same `session_id` + unchanged inputs => deterministic next action/cycle.
-     - no accidental state reset except explicit new session.
-   - Persist and replay per-cycle memory fields already scaffolded in `agentic_cycles.tsv` and `agentic_result.yaml`.
+3. Next session entry criteria:
+   - Decide one architecture direction (minimal deterministic loop vs LLM-planned exploration) before adding new features.
+   - Re-open detailed planning only after that architecture decision is explicit.
 
-4. Execute Increment-1 `A4` next (tool router, scholarly-first):
-   - Add explicit router layer in agentic runtime:
-     - primary scholarly path: KB + OpenAlex + Crossref + Semantic Scholar + arXiv adapters.
-     - conditional web fallback path gated by insufficiency policy.
-   - Integrate `SEARXNG_URL` as configurable fallback provider scaffold.
-   - Keep policy decisions traceable in cycle ledger (reason + trigger).
-
-5. Execute Increment-1 `A5/A6` next (theme workflow + session UX):
-   - Extend `theme_refine` from bootstrap into iterative narrowing (`>=2` cycles when needed).
-   - Add checkpoint-resume UX surface:
-     - start session
-     - get session status
-     - submit clarification answers
-     - finalize session
-   - Ensure CLI/API can pause/resume without losing cycle memory.
-
-6. Execute Increment-1 `A7` next (test hardening):
-   - Expand tests to include:
-     - resume path idempotence
-     - multi-cycle convergence behavior
-     - scholarly-first success and web-fallback trigger path
-     - empty-result fallback (already covered; keep regression)
-   - Add dedicated agentic loop harness before real LLM integration:
-     - `DummyLLMClient` (fixture-driven deterministic planner/ranker/question outputs)
-     - optional `ReplayLLMClient` (captured JSON replay)
-     - env-gated backend switch: `dummy | replay | deepseek`
-     - note: direct redirection to Codex session is not a runtime API backend.
-
-7. Sprint defaults to keep fixed for I1 completion:
-   - Agentic runtime remains an internal single-controller state machine (no external framework dependency in I1).
-   - LLM backend target remains DeepSeek via `DS_API_KEY` (OpenAI-compatible adapter boundary).
-   - Web fallback target remains SearXNG via `SEARXNG_URL`.
-
-8. Workspace hygiene reminder before commit:
+4. Workspace hygiene reminder before commit:
    - Do not commit generated runtime files such as `kb/kb.sqlite` and `src/shredder.egg-info/`.
-
-9. Carry-over implementation references:
-   - LangChain Open Deep Research: https://github.com/langchain-ai/open_deep_research
-   - PaperQA2: https://github.com/Future-House/paper-qa
-   - Haystack conditional fallback routing: https://haystack.deepset.ai/tutorials/36_building_fallbacks_with_conditional_routing
-   - OpenAlex filter docs: https://docs.openalex.org/how-to-use-the-api/get-lists-of-entities/filter-entity-lists
-   - Crossref REST API tips: https://www.crossref.org/documentation/retrieve-metadata/rest-api/tips-for-using-the-crossref-rest-api/
-   - SearXNG Search API: https://docs.searxng.org/dev/search_api.html
-   - arXiv API user manual + ToU: https://info.arxiv.org/help/api/user-manual.html , https://info.arxiv.org/help/api/tou.html
