@@ -41,7 +41,7 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
                 "schema": "examples/schema.yaml",
                 "year_min": 2020,
                 "year_max": datetime.now(timezone.utc).year,
-                "venues": ["SIGCOMM", "NSDI", "HPCA", "OSDI", "MLSys", "ASPLOS"],
+                "venues": [],
                 "discovery": {
                     "limit": 25,
                     "connectors": {
@@ -63,6 +63,14 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
                     "agentic": {
                         "enabled": True,
                         "top_n": 5,
+                        "max_cycles": 3,
+                        "queries_per_cycle": 4,
+                        "web_results_per_query": 8,
+                        "searxng_categories": "general",
+                        "llm": {
+                            "model": "deepseek/deepseek-chat",
+                            "api_key_env": "DS_API_KEY",
+                        },
                     },
                     "deterministic": {"ambiguity_delta": 0.05, "policy": "cache_first"},
                     "adapters": {

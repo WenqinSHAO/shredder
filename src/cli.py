@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 from src.orchestrator.runner import run_step
 from src.utils.yamlx import YamlDependencyError
@@ -117,6 +118,92 @@ def _print_retrieve_paper_progress(event: dict) -> None:
         )
 
 
+def _print_retrieve_agentic_progress(event: dict) -> None:
+    name = str(event.get("event") or "")
+    if not name:
+        return
+    prefix = "[retrieve-agentic]"
+
+    if name == "agentic_start":
+        print(
+            f"{prefix} start workflow={event.get('workflow')} top_n={event.get('top_n')} "
+            f"max_cycles={event.get('max_cycles')} queries_per_cycle={event.get('queries_per_cycle')} "
+            f"results_per_query={event.get('web_results_per_query')} categories={event.get('searxng_categories')} "
+            f"llm_model={event.get('llm_model')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_cycle_start":
+        print(
+            f"{prefix} cycle {event.get('cycle_index')}/{event.get('max_cycles')} start",
+            flush=True,
+        )
+        return
+    if name == "agentic_llm_planner_request":
+        payload = event.get("payload") or {}
+        print(f"{prefix} planner request:", flush=True)
+        print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+        return
+    if name == "agentic_llm_planner_response":
+        payload = event.get("payload") or {}
+        print(f"{prefix} planner response:", flush=True)
+        print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+        planned = event.get("planned_queries") or []
+        print(f"{prefix} derived queries ({len(planned)}): {planned}", flush=True)
+        return
+    if name == "agentic_web_search_query_start":
+        print(
+            f"{prefix} search start query={event.get('query')} categories={event.get('categories')} "
+            f"limit={event.get('limit')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_web_search_query_done":
+        print(
+            f"{prefix} search done query={event.get('query')} raw_results={event.get('raw_results')} "
+            f"used_results={event.get('used_results')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_condensed_summary":
+        summary = event.get("summary") or {}
+        print(
+            f"{prefix} condensed summary cycle={event.get('cycle_index')} "
+            f"result_count={summary.get('result_count')} venues={summary.get('venues')} "
+            f"keywords={summary.get('keywords')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_llm_decider_request":
+        payload = event.get("payload") or {}
+        print(f"{prefix} decider request:", flush=True)
+        print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+        return
+    if name == "agentic_llm_decider_response":
+        payload = event.get("payload") or {}
+        print(f"{prefix} decider response:", flush=True)
+        print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+        return
+    if name == "agentic_cycle_decision":
+        print(
+            f"{prefix} cycle={event.get('cycle_index')} decision={event.get('decision')} "
+            f"reason={event.get('decision_reason')} stop_reason={event.get('stop_reason')} "
+            f"raw={event.get('raw_candidates')} shortlisted={event.get('shortlisted')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_complete":
+        print(
+            f"{prefix} complete status={event.get('status')} cycle_count={event.get('cycle_count')} "
+            f"stop_reason={event.get('stop_reason')} final_candidates={event.get('final_candidates')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_failed":
+        print(f"{prefix} failed reason={event.get('reason')}", flush=True)
+        return
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Shredder local-first research pipeline CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -189,6 +276,7 @@ def main() -> None:
                 "retrieve-agentic",
                 prompt=args.prompt,
                 top_n=args.top_n,
+                progress_callback=_print_retrieve_agentic_progress,
             )
             print(f"Agentic retrieval complete: {result}")
     except YamlDependencyError as exc:

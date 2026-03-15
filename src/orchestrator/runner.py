@@ -38,5 +38,6 @@ def run_step(project_id: str, step: str, **kwargs):
             project_id,
             prompt=kwargs.get("prompt", ""),
             top_n=int(kwargs.get("top_n", 5)),
+            progress_callback=kwargs.get("progress_callback"),
         )
     raise ValueError(f"Unknown step: {step}")

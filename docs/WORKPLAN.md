@@ -3,11 +3,23 @@
 Detailed execution tracking lives in `docs/IMPLEMENTATION_TODO_CHECKLIST.md`.
 Current module-level progress bars are maintained in section `2) Module Progress Bars` of that checklist.
 
-Current status (2026-03-06):
+Current status (2026-03-15):
 - Deterministic paper/author metadata retrieval is stabilized for handoff (`M-Deterministic-RC1` achieved).
-- Agentic Meta retrieval is kept at a clean bootstrap baseline (single-cycle) pending redesign.
-- Next active focus is Data Backend/RAG integration plus agentic redesign decision.
+- Agentic Meta retrieval now runs an iterative LLM + SearxNG loop with cycle artifacts and CLI debug traces.
+- Next active focus is query-quality improvement via domain-knowledge-assisted academic search planning.
 - Remaining deterministic items are non-blocking hardening/wishlist unless they become concrete blockers.
+
+## Near-Term Focus (Agentic Meta)
+
+### F0 (Done): Make LLM + SearxNG loop run
+- Implement cycle loop (`plan -> search_web -> condense -> decide`) with `max_cycles` guard.
+- Persist web intermediate artifacts and LLM payload summaries.
+- Add/refresh tests and baseline debug visibility in CLI.
+
+### F1 (Next Commit): Domain-Knowledge Assistance for Academic Search
+- Keep current loop structure and artifact contracts.
+- Add domain knowledge to reduce redundant queries and improve coverage for academic paper search.
+- User-owned planning template: fill section `3.7` in `docs/IMPLEMENTATION_TODO_CHECKLIST.md` before implementation.
 
 ## Milestones
 

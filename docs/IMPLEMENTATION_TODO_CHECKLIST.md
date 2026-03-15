@@ -12,7 +12,7 @@ Detailed task tables are maintained only for modules currently in active impleme
 | Module | Progress | Status |
 |---|---:|---|
 | Meta Info Retrieval (deterministic) | `85%` (`████████░░`) | Stabilized |
-| Agentic Meta Info Retrieval | `30%` (`███░░░░░░░`) | Active (I2 LLM+SearxNG loop) |
+| Agentic Meta Info Retrieval | `45%` (`████░░░░░░`) | Active (I2 loop running; domain boost next) |
 | Data Backend and RAG | `20%` (`██░░░░░░░░`) | Planned |
 | Paper Context Retrieval | `5%` (`░░░░░░░░░░`) | Not started |
 | Paper Context Formatted Extraction | `10%` (`█░░░░░░░░░`) | Not started |
@@ -70,11 +70,12 @@ Scope:
 
 | ID | Item | Status | Note |
 |---|---|---|---|
-| A1 | LLM planner step (`plan_queries_llm`) outputs structured query set for SearxNG | Todo | Use DeepSeek via `litellm`; validate strict JSON output. |
-| A2 | Multi-cycle orchestrator (`plan -> search_web -> condense -> decide`) | Todo | Stop on LLM convergence or `max_cycles` cap. |
-| A3 | SearxNG-only retrieval in this workflow | Todo | Query `SEARXNG_URL`; no adapter merge in I2. |
-| A4 | Intermediate artifacts for web results and LLM payload summaries | Todo | Persist compact cycle evidence for observability. |
-| A5 | I2 tests (planner parse, convergence, empty results, artifact writes) | Todo | Keep existing I1 artifact contract compatibility. |
+| A1 | LLM planner step (`plan_queries_llm`) outputs structured query set for SearxNG | Done | DeepSeek via `litellm` wired with robust JSON parsing/retry. |
+| A2 | Multi-cycle orchestrator (`plan -> search_web -> condense -> decide`) | Done | Convergence + `max_cycles` cap implemented. |
+| A3 | SearxNG-only retrieval in this workflow | Done | Uses `SEARXNG_URL`; no adapter merge in I2. |
+| A4 | Intermediate artifacts for web results and LLM payload summaries | Done | `agentic_web_results.tsv` and `agentic_llm_payloads.yaml` persisted. |
+| A5 | I2 tests (planner parse, convergence, empty results, artifact writes) | Done | `tests/test_retrieval_agentic_i1.py` updated and passing. |
+| A6 | CLI debug stream for cycle/LLM/search visibility | Done | Planner/decider payloads and cycle decisions are printed. |
 
 ### 3.5 Defaults and Limits
 
@@ -91,7 +92,7 @@ Cycle-level behavior contract:
    - `rationale: str`
    - `stop: bool`
    - `stop_reason: str`
-2. System executes each query against `SEARXNG_URL/search` using `format=json` and `categories=science`.
+2. System executes each query against `SEARXNG_URL/search` using `format=json` and configured categories (`retrieval.agentic.searxng_categories`, default `general`).
 3. System condenses raw web results locally before sending back to LLM.
 4. LLM decides next query set or stop; repeat until convergence or `max_cycles`.
 
@@ -111,8 +112,22 @@ Config defaults:
 - `retrieval.agentic.max_cycles`: `3`
 - `retrieval.agentic.queries_per_cycle`: `4`
 - `retrieval.agentic.web_results_per_query`: `8`
-- `retrieval.agentic.llm.model`: `deepseek-chat`
+- `retrieval.agentic.searxng_categories`: `general`
+- `retrieval.agentic.llm.model`: `deepseek/deepseek-chat`
 - `retrieval.agentic.llm.api_key_env`: `DS_API_KEY`
+
+### 3.7 Next Step (Domain-Knowledge Assisted Academic Search) - User Fill-In Section
+
+Purpose:
+- Keep current LLM+SearxNG loop unchanged as baseline.
+- Next commit adds domain knowledge so query plans are less redundant and more academically targeted.
+
+To be completed by user:
+- Domain strategy families to enforce each cycle (example: year-sweep, venue-program, org-filter-first, author-affiliation).
+- Priority sources/domains for academic paper metadata.
+- Coverage policy for prompts with time ranges (for example "since 2024").
+- Acceptance examples of "good query plans" vs "too redundant plans".
+- Any hard constraints for precision vs recall tradeoff.
 
 ## 4) Non-Active Modules (Summary Only)
 
@@ -148,6 +163,7 @@ Done when:
 - Agentic orchestrator runs multi-cycle retrieval and stops with convergence + safety cap semantics.
 - Intermediate web and LLM summary artifacts are written per cycle.
 - I2 tests are added and passing without breaking I1 artifact compatibility.
+- CLI emits debug traces for context engineering (planner/decider payloads, queries, cycle decisions).
 - Detailed active task board is opened for Data Backend/RAG with deterministic artifact integration contracts.
 - Deferred deterministic backlog and wishlist remain explicitly non-blocking unless they become concrete blockers.
 
@@ -156,8 +172,8 @@ Done when:
 Use this queue at the start of the next session:
 
 1. Session handoff snapshot (cleaned baseline):
-   - Agentic orchestrator target is I2 iterative LLM+SearxNG loop.
-   - Preserve current artifact compatibility while adding intermediate cycle artifacts.
+   - I2 iterative LLM+SearxNG loop is running.
+   - Preserve artifact compatibility while improving query quality in next step.
    - Entry points remain:
      - Runner step: `retrieve-agentic`
      - CLI command: `python -m src.cli retrieve-agentic <project_id> --prompt ... --top-n N`
@@ -169,12 +185,13 @@ Use this queue at the start of the next session:
      - `/home/wenqin/.virtualenvs/shredder/bin/python -m pytest -q`
    - Retrieval-specific focus:
      - Existing: `tests/test_retrieval_agentic_i1.py`
-     - Add for I2: planner parse, convergence, empty-search path, artifact integration.
+     - Add next: domain-knowledge planner quality and anti-redundancy tests.
 
 3. Next session entry criteria:
    - `DS_API_KEY` is available in env.
    - `SEARXNG_URL` points to reachable backend.
    - `litellm` dependency is installed in runtime.
+   - Domain-knowledge section (3.7) is filled by user for next commit.
 
 4. Workspace hygiene reminder before commit:
    - Do not commit generated runtime files such as `kb/kb.sqlite` and `src/shredder.egg-info/`.
