@@ -76,4 +76,4 @@ Endpoints:
 - `GET /projects/{project_id}/artifacts`
 - `GET /healthz`
 
-See `docs/IMPLEMENTATION_TODO_CHECKLIST.md` for current execution status and active task board.
+See `docs/TODO.md` for current execution status and active task board.
