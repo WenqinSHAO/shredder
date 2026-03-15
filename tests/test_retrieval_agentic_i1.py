@@ -71,25 +71,22 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 run_step("demo", "init", theme="systems")
                 with patch.dict("os.environ", {"SEARXNG_URL": "http://searxng:8080", "DS_API_KEY": "dummy"}, clear=False):
                     with patch(
-                        "src.orchestrator.agentic._plan_queries_llm",
+                        "src.orchestrator.agentic._agent_next_action_llm",
                         return_value={
+                            "action": "search_web",
                             "queries": ["memory disaggregation systems"],
                             "rationale": "seed",
-                            "stop": False,
+                            "stop": True,
                             "stop_reason": "",
                         },
                     ):
-                        with patch(
-                            "src.orchestrator.agentic._decide_next_llm",
-                            return_value={"stop": True, "stop_reason": "sufficient", "queries": [], "rationale": "done"},
-                        ):
-                            with patch("src.orchestrator.agentic._search_web_queries", side_effect=_mock_search_web_cycle1):
-                                result_path = run_step(
-                                    "demo",
-                                    "retrieve-agentic",
-                                    prompt="memory disaggregation",
-                                    top_n=2,
-                                )
+                        with patch("src.orchestrator.agentic._search_web_queries", side_effect=_mock_search_web_cycle1):
+                            result_path = run_step(
+                                "demo",
+                                "retrieve-agentic",
+                                prompt="memory disaggregation",
+                                top_n=2,
+                            )
 
             self.assertTrue(result_path.exists())
             rdir = ws / "demo" / "artifacts" / "retrieval"
@@ -112,22 +109,29 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             self.assertEqual(session["state"], "completed")
             self.assertEqual(int(session["current_cycle"]), 1)
             self.assertEqual(result["status"], "completed")
-            self.assertGreaterEqual(len(result["final_candidates"]), 1)
+            self.assertEqual(result["final_candidates"], [])
+            self.assertGreaterEqual(len(result.get("latest_url_shortlist") or []), 1)
             self.assertEqual(questions["pending"], [])
             self.assertEqual(len(llm_payloads["cycles"]), 1)
 
             cycles_path = rdir / "agentic_cycles.tsv"
             candidates_path = rdir / "agentic_candidates_latest.tsv"
             web_results_path = rdir / "agentic_web_results.tsv"
+            actions_path = rdir / "agentic_actions.tsv"
+            url_hits_path = rdir / "agentic_url_hits_latest.yaml"
+            fetch_queue_path = rdir / "agentic_fetch_queue.yaml"
             self.assertTrue(cycles_path.exists())
             self.assertTrue(candidates_path.exists())
             self.assertTrue(web_results_path.exists())
+            self.assertTrue(actions_path.exists())
+            self.assertTrue(url_hits_path.exists())
+            self.assertTrue(fetch_queue_path.exists())
 
             with cycles_path.open("r", encoding="utf-8") as f:
                 cycle_rows = list(csv.DictReader(f, delimiter="\t"))
             self.assertEqual(len(cycle_rows), 1)
             self.assertEqual(cycle_rows[0]["decision"], "stop")
-            self.assertEqual(cycle_rows[0]["state_path"], "plan>search_web>condense>decide")
+            self.assertEqual(cycle_rows[0]["state_path"], "plan>action>observe")
             self.assertEqual(cycle_rows[0]["workflow"], "searxng_meta_refine_v1")
 
             with candidates_path.open("r", encoding="utf-8") as f:
@@ -135,6 +139,11 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             self.assertGreaterEqual(len(candidate_rows), 1)
             self.assertEqual(candidate_rows[0]["rank"], "1")
             self.assertEqual(candidate_rows[0]["selected"], "1")
+            with actions_path.open("r", encoding="utf-8") as f:
+                action_rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertEqual(len(action_rows), 1)
+            self.assertEqual(action_rows[0]["action"], "search_web")
+            self.assertEqual(action_rows[0]["status"], "ok")
 
     def test_agentic_empty_results_stops_with_no_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -144,31 +153,29 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 run_step("demo", "init", theme="systems")
                 with patch.dict("os.environ", {"SEARXNG_URL": "http://searxng:8080", "DS_API_KEY": "dummy"}, clear=False):
                     with patch(
-                        "src.orchestrator.agentic._plan_queries_llm",
+                        "src.orchestrator.agentic._agent_next_action_llm",
                         return_value={
+                            "action": "search_web",
                             "queries": ["nonexistent topic"],
                             "rationale": "seed",
-                            "stop": False,
+                            "stop": True,
                             "stop_reason": "",
                         },
                     ):
-                        with patch(
-                            "src.orchestrator.agentic._decide_next_llm",
-                            return_value={"stop": True, "stop_reason": "no_signal", "queries": [], "rationale": "done"},
-                        ):
-                            with patch("src.orchestrator.agentic._search_web_queries", side_effect=_mock_search_web_empty):
-                                run_step(
-                                    "demo",
-                                    "retrieve-agentic",
-                                    prompt="nonexistent topic",
-                                    top_n=3,
-                                )
+                        with patch("src.orchestrator.agentic._search_web_queries", side_effect=_mock_search_web_empty):
+                            run_step(
+                                "demo",
+                                "retrieve-agentic",
+                                prompt="nonexistent topic",
+                                top_n=3,
+                            )
 
             rdir = ws / "demo" / "artifacts" / "retrieval"
             result = yamlx.load(rdir / "agentic_result.yaml")
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["stop_reason"], "no_candidates")
             self.assertEqual(result["final_candidates"], [])
+            self.assertEqual(result.get("latest_url_shortlist"), [])
 
             with (rdir / "agentic_cycles.tsv").open("r", encoding="utf-8") as f:
                 cycle_rows = list(csv.DictReader(f, delimiter="\t"))
@@ -178,6 +185,41 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             with (rdir / "agentic_candidates_latest.tsv").open("r", encoding="utf-8") as f:
                 candidate_rows = list(csv.DictReader(f, delimiter="\t"))
             self.assertEqual(candidate_rows, [])
+
+    def test_agentic_unimplemented_action_stub_stops_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws):
+                run_step("demo", "init", theme="systems")
+                with patch.dict("os.environ", {"SEARXNG_URL": "http://searxng:8080", "DS_API_KEY": "dummy"}, clear=False):
+                    with patch(
+                        "src.orchestrator.agentic._agent_next_action_llm",
+                        return_value={
+                            "action": "ask_user",
+                            "queries": [],
+                            "rationale": "need tie-break",
+                            "stop": False,
+                            "stop_reason": "",
+                        },
+                    ):
+                        run_step(
+                            "demo",
+                            "retrieve-agentic",
+                            prompt="same-name authors at systems conference",
+                            top_n=2,
+                        )
+
+            rdir = ws / "demo" / "artifacts" / "retrieval"
+            result = yamlx.load(rdir / "agentic_result.yaml")
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["stop_reason"], "action_not_implemented:ask_user")
+
+            with (rdir / "agentic_actions.tsv").open("r", encoding="utf-8") as f:
+                action_rows = list(csv.DictReader(f, delimiter="\t"))
+            self.assertEqual(len(action_rows), 1)
+            self.assertEqual(action_rows[0]["action"], "ask_user")
+            self.assertEqual(action_rows[0]["status"], "not_implemented")
 
     def test_agentic_missing_searxng_env_fails_with_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:

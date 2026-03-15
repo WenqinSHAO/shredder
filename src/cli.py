@@ -139,17 +139,18 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
             flush=True,
         )
         return
-    if name == "agentic_llm_planner_request":
+    if name == "agentic_llm_planner_request" or name == "agentic_llm_agent_request":
         payload = event.get("payload") or {}
-        print(f"{prefix} planner request:", flush=True)
+        print(f"{prefix} agent request:", flush=True)
         print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
         return
-    if name == "agentic_llm_planner_response":
+    if name == "agentic_llm_planner_response" or name == "agentic_llm_agent_response":
         payload = event.get("payload") or {}
-        print(f"{prefix} planner response:", flush=True)
+        print(f"{prefix} agent response:", flush=True)
         print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
         planned = event.get("planned_queries") or []
-        print(f"{prefix} derived queries ({len(planned)}): {planned}", flush=True)
+        selected_action = event.get("selected_action")
+        print(f"{prefix} selected_action={selected_action} derived queries ({len(planned)}): {planned}", flush=True)
         return
     if name == "agentic_web_search_query_start":
         print(

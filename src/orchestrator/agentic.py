@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from src.connectors.http import get_json, normalize_arxiv_id, normalize_doi
 from src.retrieval.service import SOURCE_FIELDS, write_yaml
@@ -66,6 +67,31 @@ WEB_RESULT_FIELDS = [
     "author_hint",
 ]
 
+ACTION_TRACE_FIELDS = [
+    "timestamp",
+    "session_id",
+    "cycle_index",
+    "action",
+    "status",
+    "planned_queries",
+    "tool_calls",
+    "stop",
+    "stop_reason",
+    "rationale",
+    "notes",
+]
+
+APP_SUPPORTED_ACTIONS = {
+    "search_web",
+    "fetch_content",
+    "extract_content",
+    "ask_user",
+    "memory_read",
+    "memory_write",
+}
+
+AGENT_INTERNAL_ACTIONS = {"finalize"}
+
 STOPWORDS = {
     "the",
     "and",
@@ -84,6 +110,27 @@ STOPWORDS = {
     "system",
     "paper",
     "research",
+}
+
+NOISY_TITLE_TOKENS = {
+    "webmail",
+    "whatsapp",
+    "login",
+    "song",
+    "youtube",
+    "dailymotion",
+    "google play",
+}
+
+ACADEMIC_HOST_TOKENS = {
+    "acm.org",
+    "ieee.org",
+    "arxiv.org",
+    "usenix.org",
+    "openreview.net",
+    "dblp.org",
+    "doi.org",
+    ".edu",
 }
 
 ProgressCallback = Callable[[dict], None]
@@ -116,6 +163,9 @@ def _agentic_paths(pdir: Path) -> dict[str, Path]:
         "candidates": rdir / "agentic_candidates_latest.tsv",
         "web_results": rdir / "agentic_web_results.tsv",
         "llm_payloads": rdir / "agentic_llm_payloads.yaml",
+        "actions": rdir / "agentic_actions.tsv",
+        "url_hits": rdir / "agentic_url_hits_latest.yaml",
+        "fetch_queue": rdir / "agentic_fetch_queue.yaml",
     }
 
 
@@ -202,6 +252,7 @@ def _result_contract(
         "cycle_count": 0,
         "top_n": top_n,
         "final_candidates": [],
+        "latest_url_shortlist": [],
         "decision_history": [],
         "created_at": _utc_now(),
         "updated_at": _utc_now(),
@@ -282,8 +333,44 @@ def _append_web_results(path: Path, rows: list[dict]) -> None:
             writer.writerow({k: str(row.get(k, "") or "") for k in WEB_RESULT_FIELDS})
 
 
+def _append_action_row(path: Path, row: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exists = path.exists()
+    with path.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=ACTION_TRACE_FIELDS, delimiter="\t")
+        if not exists:
+            writer.writeheader()
+        writer.writerow({k: str(row.get(k, "") or "") for k in ACTION_TRACE_FIELDS})
+
+
+def _write_url_hits_latest(path: Path, *, session_id: str, cycle_index: int, hits: list[dict], rejected: dict[str, int]) -> None:
+    payload = {
+        "artifact_type": "agentic_url_hits_latest",
+        "schema_version": "0.1.0",
+        "session_id": session_id,
+        "cycle_index": cycle_index,
+        "hit_count": len(hits),
+        "hits": hits,
+        "rejected_counts": rejected,
+        "updated_at": _utc_now(),
+    }
+    write_yaml(path, payload)
+
+
+def _write_fetch_queue(path: Path, *, session_id: str, cycle_index: int, queue: list[dict]) -> None:
+    payload = {
+        "artifact_type": "agentic_fetch_queue",
+        "schema_version": "0.1.0",
+        "session_id": session_id,
+        "cycle_index": cycle_index,
+        "queue": queue,
+        "updated_at": _utc_now(),
+    }
+    write_yaml(path, payload)
+
+
 def _state_path() -> str:
-    return "plan>search_web>condense>decide"
+    return "plan>action>observe"
 
 
 def _read_int(value: Any, default: int) -> int:
@@ -401,6 +488,86 @@ def _unique_queries(items: Any, limit: int) -> list[str]:
     return out
 
 
+def _read_plan_update(payload: dict) -> dict:
+    value = payload.get("plan_update")
+    return value if isinstance(value, dict) else {}
+
+
+def _read_params(payload: dict) -> dict:
+    value = payload.get("params")
+    return value if isinstance(value, dict) else {}
+
+
+def _read_progress_update(payload: dict) -> dict:
+    value = payload.get("progress_update")
+    return value if isinstance(value, dict) else {}
+
+
+def _extract_action_queries(payload: dict, *, limit: int) -> list[str]:
+    params = _read_params(payload)
+    if isinstance(params.get("queries"), list):
+        return _unique_queries(params.get("queries"), limit)
+    return _unique_queries(payload.get("queries"), limit)
+
+
+def _host_from_url(url: str) -> str:
+    try:
+        return (urlparse(url).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+def _peek_text(text: str, limit: int = 220) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(0, limit - 3)] + "..."
+
+
+def _domain_quality_adjustment(url: str, title: str) -> float:
+    host = _host_from_url(url)
+    lowered_title = str(title or "").lower()
+    score = 0.0
+    if any(token in host for token in ACADEMIC_HOST_TOKENS):
+        score += 0.25
+    if any(token in lowered_title for token in NOISY_TITLE_TOKENS):
+        score -= 0.25
+    if any(token in host for token in ("webmail", "whatsapp", "telenet", "play.google.com", "youtube.com", "dailymotion.com")):
+        score -= 0.35
+    return score
+
+
+def _reject_reason(row: dict) -> str:
+    host = str(row.get("_host") or _host_from_url(str(row.get("url") or ""))).lower()
+    title = str(row.get("title") or "").lower()
+    if any(token in host for token in ("youtube.com", "music.youtube", "play.google.com", "apps.apple.com")):
+        return "consumer_app"
+    if any(token in host for token in ("support.google.com/maps",)) or "maps" in host:
+        return "off_topic_host"
+    if any(token in title for token in NOISY_TITLE_TOKENS):
+        return "noisy_title"
+    if not any(token in host for token in ACADEMIC_HOST_TOKENS) and "sigcomm" not in title and "alibaba" not in title:
+        return "low_academic_signal"
+    return ""
+
+
+def _filter_search_rows(rows: list[dict]) -> tuple[list[dict], dict[str, int]]:
+    kept: list[dict] = []
+    rejected: dict[str, int] = {}
+    for row in rows:
+        reason = _reject_reason(row)
+        if not reason:
+            kept.append(row)
+            continue
+        rejected[reason] = rejected.get(reason, 0) + 1
+    return kept, rejected
+
+
+def _make_hit_id(url: str, title: str) -> str:
+    text = f"{str(url or '').strip().lower()}|{str(title or '').strip().lower()}"
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
 def _litellm_complete_json(*, model: str, api_key_env: str, messages: list[dict]) -> dict:
     api_key = str(os.environ.get(api_key_env) or "").strip()
     if not api_key:
@@ -446,6 +613,124 @@ def _litellm_complete_json(*, model: str, api_key_env: str, messages: list[dict]
     return payload
 
 
+def _agent_next_action_llm(
+    *,
+    user_prompt: str,
+    cycle_index: int,
+    max_cycles: int,
+    previous_summary: dict,
+    current_candidates: list[dict],
+    plan_state: dict,
+    plan_progress: list[dict],
+    queries_per_cycle: int,
+    search_categories: str,
+    model: str,
+    api_key_env: str,
+) -> dict:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an academic paper agentic search planner. "
+                "Goal: produce candidate paper list (title + doi/arxiv/url + evidence hints), not full metadata. "
+                "The user query may be compound across cues (topic, author, venue, institution, year); first decompose cues, "
+                "then choose an execution path and action sequence. Planning quality is critical. "
+                "Supported actions in app are: search_web, fetch_content, extract_content, ask_user, memory_read, memory_write. "
+                "Only search_web is executable now; others are stubs but still must be reflected in planning. "
+                "finalize is an agent-internal behavior, not an app action. "
+                "When the plan is complete, set stop=true and stop_reason accordingly instead of issuing finalize as app tool call. "
+                "Use dynamic multi-hop strategy. If venue cues exist, prefer searching conference program/accepted/proceedings pages. "
+                "If multiple venues are plausible, enumerate them and search one by one. "
+                "If author cue exists, search author-centric sources and filter by topic/time. "
+                "If topic cue exists, do open search and refine via semantic relevance to paper titles/snippets. "
+                "If ambiguity remains, choose ask_user. "
+                "Do not hardcode venue names. "
+                "Focus this phase on user query understanding, tool-aware search planning, and plan progress update based on tool outcomes. "
+                "Do not rely on hardened-memory workflows in this phase. "
+                "After search_web, shortlist URLs before any fetch step. "
+                "If action is fetch_content, params must include targets with url/title and desired filters (author/org/topic/year) "
+                "so downstream extraction can be one-shot and context-lean. "
+                "Return strict JSON object only with keys: action, params, plan_update, progress_update, rationale, stop, stop_reason."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "task": "select_next_action",
+                    "cycle_index": cycle_index,
+                    "max_cycles": max_cycles,
+                    "user_prompt": user_prompt,
+                    "previous_cycle_summary": previous_summary,
+                    "current_candidates": current_candidates,
+                    "plan_state": plan_state,
+                    "plan_progress": plan_progress,
+                    "available_actions": sorted(APP_SUPPORTED_ACTIONS),
+                    "agent_internal_behaviors": sorted(AGENT_INTERNAL_ACTIONS),
+                    "constraints": {
+                        "max_queries": queries_per_cycle,
+                        "backend": "searxng",
+                        "categories": search_categories,
+                        "implemented_actions": ["search_web"],
+                    },
+                    "output_contract": {
+                        "action": "str",
+                        "params": {
+                            "queries": "list[str] for search_web only",
+                            "targets": [
+                                {
+                                    "url": "str",
+                                    "title": "str",
+                                    "why": "str",
+                                    "filters": {"author": "str?", "institution": "str?", "topic": "str?", "year_gte": "int?"},
+                                }
+                            ],
+                        },
+                        "plan_update": {
+                            "cue_breakdown": ["topic", "author", "venue", "institution", "year"],
+                            "steps": [{"step_id": "str", "action": "str", "goal": "str"}],
+                            "active_step_id": "str",
+                            "todo": [{"todo_id": "str", "action": "fetch_content|extract_content|search_web", "status": "todo|doing|done", "target": "str"}],
+                        },
+                        "progress_update": {
+                            "step_id": "str",
+                            "status": "planned|running|done|blocked",
+                            "note": "str",
+                        },
+                    },
+                },
+                ensure_ascii=True,
+            ),
+        },
+    ]
+    payload = _litellm_complete_json(model=model, api_key_env=api_key_env, messages=messages)
+    action = str(payload.get("action") or "").strip().lower()
+    if action in AGENT_INTERNAL_ACTIONS:
+        return {
+            "action": action,
+            "stop": True,
+            "stop_reason": str(payload.get("stop_reason") or "agent_finalize"),
+            "queries": [],
+            "params": _read_params(payload),
+            "plan_update": _read_plan_update(payload),
+            "progress_update": _read_progress_update(payload),
+            "rationale": str(payload.get("rationale") or ""),
+        }
+
+    if action not in APP_SUPPORTED_ACTIONS:
+        action = "search_web"
+    return {
+        "action": action,
+        "stop": bool(payload.get("stop", False)),
+        "stop_reason": str(payload.get("stop_reason") or ""),
+        "queries": _extract_action_queries(payload, limit=queries_per_cycle),
+        "params": _read_params(payload),
+        "plan_update": _read_plan_update(payload),
+        "progress_update": _read_progress_update(payload),
+        "rationale": str(payload.get("rationale") or ""),
+    }
+
+
 def _plan_queries_llm(
     *,
     user_prompt: str,
@@ -456,38 +741,24 @@ def _plan_queries_llm(
     model: str,
     api_key_env: str,
 ) -> dict:
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You generate precise web-search queries for academic metadata retrieval. "
-                "Return strict JSON object only with keys: queries, rationale, stop, stop_reason."
-            ),
-        },
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "task": "plan_queries",
-                    "cycle_index": cycle_index,
-                    "user_prompt": user_prompt,
-                    "previous_cycle_summary": previous_summary,
-                    "constraints": {
-                        "max_queries": queries_per_cycle,
-                        "backend": "searxng",
-                        "categories": search_categories,
-                    },
-                },
-                ensure_ascii=True,
-            ),
-        },
-    ]
-    payload = _litellm_complete_json(model=model, api_key_env=api_key_env, messages=messages)
+    payload = _agent_next_action_llm(
+        user_prompt=user_prompt,
+        cycle_index=cycle_index,
+        max_cycles=max(cycle_index, 1),
+        previous_summary=previous_summary,
+        current_candidates=[],
+        plan_state={},
+        plan_progress=[],
+        queries_per_cycle=queries_per_cycle,
+        search_categories=search_categories,
+        model=model,
+        api_key_env=api_key_env,
+    )
     return {
-        "queries": _unique_queries(payload.get("queries"), queries_per_cycle),
-        "rationale": str(payload.get("rationale") or ""),
-        "stop": bool(payload.get("stop", False)),
-        "stop_reason": str(payload.get("stop_reason") or ""),
+        "queries": payload["queries"],
+        "rationale": payload["rationale"],
+        "stop": payload["stop"],
+        "stop_reason": payload["stop_reason"],
     }
 
 
@@ -502,35 +773,24 @@ def _decide_next_llm(
     model: str,
     api_key_env: str,
 ) -> dict:
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You decide whether retrieval is exhaustive. Return strict JSON object only with keys: "
-                "stop, stop_reason, queries, rationale."
-            ),
-        },
-        {
-            "role": "user",
-            "content": json.dumps(
-                {
-                    "task": "decide_or_continue",
-                    "cycle_index": cycle_index,
-                    "max_cycles": max_cycles,
-                    "user_prompt": user_prompt,
-                    "current_queries": current_queries,
-                    "condensed_summary": condensed_summary,
-                },
-                ensure_ascii=True,
-            ),
-        },
-    ]
-    payload = _litellm_complete_json(model=model, api_key_env=api_key_env, messages=messages)
+    payload = _agent_next_action_llm(
+        user_prompt=user_prompt,
+        cycle_index=cycle_index,
+        max_cycles=max_cycles,
+        previous_summary=condensed_summary,
+        current_candidates=[],
+        plan_state={},
+        plan_progress=[],
+        queries_per_cycle=queries_per_cycle,
+        search_categories="general",
+        model=model,
+        api_key_env=api_key_env,
+    )
     return {
-        "stop": bool(payload.get("stop", False)),
-        "stop_reason": str(payload.get("stop_reason") or ""),
-        "queries": _unique_queries(payload.get("queries"), queries_per_cycle),
-        "rationale": str(payload.get("rationale") or ""),
+        "stop": payload["stop"],
+        "stop_reason": payload["stop_reason"],
+        "queries": payload["queries"] if payload["action"] == "search_web" else current_queries,
+        "rationale": payload["rationale"],
     }
 
 
@@ -588,6 +848,7 @@ def _normalize_searx_row(*, session_id: str, cycle_index: int, query: str, query
     quality_score += 0.2 if doi else 0.0
     quality_score += 0.15 if arxiv_id else 0.0
     quality_score += 0.05 if venue else 0.0
+    quality_score += _domain_quality_adjustment(url, title)
 
     candidate_row = {
         "source": source,
@@ -606,6 +867,7 @@ def _normalize_searx_row(*, session_id: str, cycle_index: int, query: str, query
         "query_used": query,
         "_snippet": snippet,
         "_author_hint": author_hint,
+        "_host": _host_from_url(url),
     }
     return web_row, candidate_row
 
@@ -726,16 +988,15 @@ def _unique_nonempty(items: list[str], limit: int) -> list[str]:
     return out
 
 
-def _condense_results(rows: list[dict], max_hits: int = 20) -> dict:
+def _condense_results(rows: list[dict], *, max_hits: int = 8, rejected_counts: dict[str, int] | None = None) -> dict:
     scoped = rows[:max_hits]
     hits = [
         {
             "title": str(row.get("title") or ""),
             "url": str(row.get("url") or ""),
-            "venue": str(row.get("venue") or ""),
-            "year": str(row.get("year") or ""),
-            "doi": str(row.get("doi") or ""),
-            "arxiv_id": str(row.get("arxiv_id") or ""),
+            "peek": _peek_text(str(row.get("_snippet") or row.get("abstract") or "")),
+            "source": str(row.get("source") or ""),
+            "host": str(row.get("_host") or _host_from_url(str(row.get("url") or ""))),
             "score": float(row.get("score", 0.0) or 0.0),
         }
         for row in scoped
@@ -754,12 +1015,13 @@ def _condense_results(rows: list[dict], max_hits: int = 20) -> dict:
         "venues": venues,
         "authors": authors,
         "keywords": keywords,
+        "rejected_counts": dict(rejected_counts or {}),
     }
 
 
-def _to_final_candidates(session_id: str, cycle_index: int, shortlisted: list[dict], top_n: int) -> tuple[list[dict], list[dict]]:
+def _to_url_hits(session_id: str, cycle_index: int, shortlisted: list[dict], top_n: int) -> tuple[list[dict], list[dict]]:
     candidate_rows: list[dict] = []
-    final_candidates: list[dict] = []
+    url_hits: list[dict] = []
     for idx, candidate in enumerate(shortlisted[:top_n], start=1):
         row = dict(candidate)
         row["session_id"] = session_id
@@ -768,21 +1030,67 @@ def _to_final_candidates(session_id: str, cycle_index: int, shortlisted: list[di
         row["candidate_key"] = _candidate_key(row)
         row["selected"] = "1"
         candidate_rows.append(row)
-        final_candidates.append(
+        url_hits.append(
             {
+                "hit_id": _make_hit_id(str(row.get("url") or ""), str(row.get("title") or "")),
                 "rank": idx,
-                "candidate_key": row["candidate_key"],
-                "title": str(row.get("title") or ""),
-                "venue": str(row.get("venue") or ""),
-                "year": str(row.get("year") or ""),
+                "url_title": str(row.get("title") or ""),
+                "url": str(row.get("url") or ""),
+                "peek": _peek_text(str(row.get("_snippet") or row.get("abstract") or "")),
+                "source": str(row.get("source") or ""),
+                "host": str(row.get("_host") or _host_from_url(str(row.get("url") or ""))),
+                "query_used": str(row.get("query_used") or ""),
                 "doi": str(row.get("doi") or ""),
                 "arxiv_id": str(row.get("arxiv_id") or ""),
-                "url": str(row.get("url") or ""),
                 "score": float(row.get("score", 0.0) or 0.0),
-                "source": str(row.get("source") or ""),
             }
         )
-    return candidate_rows, final_candidates
+    return candidate_rows, url_hits
+
+
+def _execute_agent_action(
+    *,
+    action: str,
+    session_id: str,
+    cycle_index: int,
+    params: dict,
+    searxng_url: str,
+    search_categories: str,
+    web_results_per_query: int,
+    timeout_s: float,
+    progress_callback: ProgressCallback | None,
+) -> dict:
+    if action == "search_web":
+        queries = _extract_action_queries({"params": params}, limit=16)
+        web_rows, raw_candidates = _search_web_queries(
+            session_id=session_id,
+            cycle_index=cycle_index,
+            queries=queries,
+            searxng_url=searxng_url,
+            search_categories=search_categories,
+            web_results_per_query=web_results_per_query,
+            timeout_s=timeout_s,
+            progress_callback=progress_callback,
+        )
+        return {
+            "status": "ok",
+            "tool_calls": f"searxng:{len(queries)}",
+            "web_rows": web_rows,
+            "raw_candidates": raw_candidates,
+            "stop": False,
+            "stop_reason": "",
+            "notes": f"executed_web_search queries={len(queries)}",
+        }
+
+    return {
+        "status": "not_implemented",
+        "tool_calls": f"stub:{action}",
+        "web_rows": [],
+        "raw_candidates": [],
+        "stop": True,
+        "stop_reason": f"action_not_implemented:{action}",
+        "notes": f"action handler is a stub in this phase params={json.dumps(params, ensure_ascii=True)}",
+    }
 
 
 def _persist_all(paths: dict[str, Path], request_payload: dict, session_payload: dict, result_payload: dict, questions_payload: dict, llm_payloads: dict) -> None:
@@ -875,6 +1183,8 @@ def run_retrieve_agentic(
         result_payload["updated_at"] = _utc_now()
         _persist_all(paths, request_payload, session_payload, result_payload, questions_payload, llm_payloads)
         _write_candidates_latest(paths["candidates"], [])
+        _write_url_hits_latest(paths["url_hits"], session_id=resolved_session_id, cycle_index=0, hits=[], rejected={})
+        _write_fetch_queue(paths["fetch_queue"], session_id=resolved_session_id, cycle_index=0, queue=[])
         _emit_progress(
             progress_callback,
             event="agentic_failed",
@@ -883,9 +1193,19 @@ def run_retrieve_agentic(
         return paths["result"]
 
     _write_candidates_latest(paths["candidates"], [])
+    _write_url_hits_latest(paths["url_hits"], session_id=resolved_session_id, cycle_index=0, hits=[], rejected={})
+    _write_fetch_queue(paths["fetch_queue"], session_id=resolved_session_id, cycle_index=0, queue=[])
     _persist_all(paths, request_payload, session_payload, result_payload, questions_payload, llm_payloads)
 
     previous_summary: dict[str, Any] = {}
+    previous_candidates: list[dict] = []
+    plan_state: dict[str, Any] = {
+        "cue_breakdown": [],
+        "steps": [],
+        "active_step_id": "",
+        "todo": [],
+    }
+    plan_progress: list[dict[str, Any]] = []
     current_cycle = 0
     stop_reason = ""
     last_decision = "stop"
@@ -906,48 +1226,97 @@ def run_retrieve_agentic(
             session_payload["updated_at"] = _utc_now()
             _persist_all(paths, request_payload, session_payload, result_payload, questions_payload, llm_payloads)
 
-            planner_input = {
+            agent_input = {
                 "user_prompt": resolved_prompt,
                 "cycle_index": cycle_index,
                 "previous_summary": previous_summary,
+                "current_candidates": previous_candidates,
+                "plan_state": plan_state,
+                "plan_progress": plan_progress[-8:],
             }
             _emit_progress(
                 progress_callback,
-                event="agentic_llm_planner_request",
+                event="agentic_llm_agent_request",
                 cycle_index=cycle_index,
-                payload=planner_input,
+                payload=agent_input,
             )
-            planner_output = _plan_queries_llm(
+            agent_output = _agent_next_action_llm(
                 user_prompt=resolved_prompt,
                 cycle_index=cycle_index,
-                queries_per_cycle=queries_per_cycle,
+                max_cycles=effective_max_cycles,
                 previous_summary=previous_summary,
+                current_candidates=previous_candidates,
+                plan_state=plan_state,
+                plan_progress=plan_progress[-8:],
+                queries_per_cycle=queries_per_cycle,
                 search_categories=searxng_categories,
                 model=llm_model,
                 api_key_env=llm_api_key_env,
             )
-            planned_queries = planner_output["queries"]
+            selected_action = str(agent_output.get("action") or "search_web")
+            planned_queries = list(agent_output.get("queries") or [])
+            action_params = dict(agent_output.get("params") or {})
+            if selected_action == "search_web" and not list(action_params.get("queries") or []):
+                action_params["queries"] = planned_queries
+            plan_update = dict(agent_output.get("plan_update") or {})
+            progress_update = dict(agent_output.get("progress_update") or {})
             _emit_progress(
                 progress_callback,
-                event="agentic_llm_planner_response",
+                event="agentic_llm_agent_response",
                 cycle_index=cycle_index,
-                payload=planner_output,
+                payload=agent_output,
+                selected_action=selected_action,
                 planned_queries=planned_queries,
             )
-            if planner_output["stop"] and not planned_queries:
-                stop_reason = planner_output.get("stop_reason") or "llm_converged"
+            if plan_update:
+                if isinstance(plan_update.get("cue_breakdown"), list):
+                    plan_state["cue_breakdown"] = [str(v) for v in plan_update.get("cue_breakdown") if str(v).strip()]
+                if isinstance(plan_update.get("steps"), list):
+                    plan_state["steps"] = [item for item in plan_update.get("steps") if isinstance(item, dict)]
+                if "active_step_id" in plan_update:
+                    plan_state["active_step_id"] = str(plan_update.get("active_step_id") or "")
+                if isinstance(plan_update.get("todo"), list):
+                    plan_state["todo"] = [item for item in plan_update.get("todo") if isinstance(item, dict)]
+            if progress_update:
+                plan_progress.append(
+                    {
+                        "timestamp": _utc_now(),
+                        "cycle_index": cycle_index,
+                        "source": "agent",
+                        "step_id": str(progress_update.get("step_id") or ""),
+                        "status": str(progress_update.get("status") or ""),
+                        "note": str(progress_update.get("note") or ""),
+                    }
+                )
+            if agent_output["stop"] and not planned_queries:
+                stop_reason = agent_output.get("stop_reason") or "llm_converged"
                 last_decision = "stop"
-                last_decision_reason = "planner_stop"
+                last_decision_reason = "agent_stop"
                 llm_payloads["cycles"].append(
                     {
                         "cycle_index": cycle_index,
                         "timestamp": _utc_now(),
-                        "planner_input_summary": planner_input,
-                        "planner_output": planner_output,
-                        "decider_input_summary": {},
-                        "decider_output": {"stop": True, "stop_reason": stop_reason, "queries": [], "rationale": "planner_stop"},
+                        "agent_input_summary": agent_input,
+                        "agent_output": agent_output,
+                        "action_result_summary": {"status": "skipped", "reason": "agent_stop"},
                     }
                 )
+                _append_action_row(
+                    paths["actions"],
+                    {
+                        "timestamp": _utc_now(),
+                        "session_id": resolved_session_id,
+                        "cycle_index": cycle_index,
+                        "action": selected_action,
+                        "status": "skipped",
+                        "planned_queries": " || ".join(planned_queries),
+                        "tool_calls": "llm:agent",
+                        "stop": "1",
+                        "stop_reason": stop_reason,
+                        "rationale": agent_output.get("rationale") or "",
+                        "notes": "agent_stop_without_action_execution",
+                    },
+                )
                 _append_cycle_row(
                     paths["cycles"],
                     {
@@ -956,14 +1325,14 @@ def run_retrieve_agentic(
                         "workflow": workflow_name,
                         "cycle_index": cycle_index,
                         "state_path": _state_path(),
-                        "planned_query": "",
+                        "planned_query": " || ".join(planned_queries),
                         "retrieval_query": "",
-                        "tool_calls": "llm:planner",
+                        "tool_calls": "llm:agent",
                         "raw_candidates": 0,
                         "ranked_candidates": 0,
                         "candidate_delta": 0,
                         "decision": "stop",
-                        "decision_reason": "planner_stop",
+                        "decision_reason": "agent_stop",
                         "stop_reason": stop_reason,
                         "question_id": "",
                     },
@@ -973,42 +1342,7 @@ def run_retrieve_agentic(
                     event="agentic_cycle_decision",
                     cycle_index=cycle_index,
                     decision="stop",
-                    decision_reason="planner_stop",
-                    stop_reason=stop_reason,
-                )
-                break
-
-            if not planned_queries:
-                stop_reason = "planner_no_queries"
-                last_decision = "stop"
-                last_decision_reason = "planner_no_queries"
-                _write_candidates_latest(paths["candidates"], [])
-                _append_cycle_row(
-                    paths["cycles"],
-                    {
-                        "timestamp": _utc_now(),
-                        "session_id": resolved_session_id,
-                        "workflow": workflow_name,
-                        "cycle_index": cycle_index,
-                        "state_path": _state_path(),
-                        "planned_query": "",
-                        "retrieval_query": "",
-                        "tool_calls": "llm:planner",
-                        "raw_candidates": 0,
-                        "ranked_candidates": 0,
-                        "candidate_delta": 0,
-                        "decision": "stop",
-                        "decision_reason": "planner_no_queries",
-                        "stop_reason": stop_reason,
-                        "question_id": "",
-                    },
-                )
-                _emit_progress(
-                    progress_callback,
-                    event="agentic_cycle_decision",
-                    cycle_index=cycle_index,
-                    decision="stop",
-                    decision_reason="planner_no_queries",
+                    decision_reason="agent_stop",
                     stop_reason=stop_reason,
                 )
                 break
@@ -1017,86 +1351,129 @@ def run_retrieve_agentic(
             session_payload["updated_at"] = _utc_now()
             _persist_all(paths, request_payload, session_payload, result_payload, questions_payload, llm_payloads)
 
-            web_rows, raw_candidates = _search_web_queries(
+            action_result = _execute_agent_action(
+                action=selected_action,
                 session_id=resolved_session_id,
                 cycle_index=cycle_index,
-                queries=planned_queries,
+                params=action_params,
                 searxng_url=searxng_url,
                 search_categories=searxng_categories,
                 web_results_per_query=web_results_per_query,
                 timeout_s=searxng_timeout_s,
                 progress_callback=progress_callback,
             )
+            web_rows = list(action_result.get("web_rows") or [])
+            raw_candidates = list(action_result.get("raw_candidates") or [])
+            plan_progress.append(
+                {
+                    "timestamp": _utc_now(),
+                    "cycle_index": cycle_index,
+                    "source": "tool",
+                    "step_id": str(plan_state.get("active_step_id") or ""),
+                    "status": str(action_result.get("status") or ""),
+                    "note": str(action_result.get("notes") or ""),
+                    "action": selected_action,
+                    "retrieved_count": len(raw_candidates),
+                }
+            )
+            _append_action_row(
+                paths["actions"],
+                {
+                    "timestamp": _utc_now(),
+                    "session_id": resolved_session_id,
+                    "cycle_index": cycle_index,
+                    "action": selected_action,
+                    "status": action_result.get("status") or "",
+                    "planned_queries": " || ".join(planned_queries),
+                    "tool_calls": f"llm:agent,{action_result.get('tool_calls') or ''}",
+                    "stop": "1" if bool(action_result.get("stop")) else "0",
+                    "stop_reason": action_result.get("stop_reason") or "",
+                    "rationale": agent_output.get("rationale") or "",
+                    "notes": action_result.get("notes") or "",
+                },
+            )
             _append_web_results(paths["web_results"], web_rows)
 
-            ranked_rows = _rank_candidates(raw_candidates)
-            shortlisted = ranked_rows[:effective_top_n]
-            previous_count = len(list(result_payload.get("final_candidates") or []))
-            candidate_rows, final_candidates = _to_final_candidates(
+            filtered_rows, rejected_counts = _filter_search_rows(raw_candidates)
+            ranked_rows = _rank_candidates(filtered_rows)
+            url_shortlisted = ranked_rows[:effective_top_n]
+            previous_count = len(list(result_payload.get("latest_url_shortlist") or []))
+            candidate_rows, url_hits = _to_url_hits(
                 resolved_session_id,
                 cycle_index,
-                shortlisted,
+                url_shortlisted,
                 effective_top_n,
             )
             _write_candidates_latest(paths["candidates"], candidate_rows)
+            _write_url_hits_latest(
+                paths["url_hits"],
+                session_id=resolved_session_id,
+                cycle_index=cycle_index,
+                hits=url_hits,
+                rejected=rejected_counts,
+            )
+
+            queue_targets = list((action_params.get("targets") or [])) if isinstance(action_params, dict) else []
+            if not queue_targets:
+                queue_targets = [
+                    {
+                        "target_id": f"fetch-{hit.get('hit_id')}",
+                        "url": hit.get("url", ""),
+                        "title": hit.get("url_title", ""),
+                        "why": "high_ranked_search_hit",
+                        "filters": {
+                            "institution_contains": "",
+                            "author_contains": "",
+                            "topic": resolved_prompt,
+                            "year_gte": "",
+                        },
+                        "status": "todo",
+                    }
+                    for hit in url_hits[: min(5, len(url_hits))]
+                ]
+            _write_fetch_queue(
+                paths["fetch_queue"],
+                session_id=resolved_session_id,
+                cycle_index=cycle_index,
+                queue=queue_targets,
+            )
 
             session_payload["state"] = "rank"
             session_payload["updated_at"] = _utc_now()
             _persist_all(paths, request_payload, session_payload, result_payload, questions_payload, llm_payloads)
 
-            condensed_summary = _condense_results(ranked_rows, max_hits=max(effective_top_n * 3, 12))
+            condensed_summary = _condense_results(ranked_rows, max_hits=min(8, max(5, effective_top_n)), rejected_counts=rejected_counts)
             _emit_progress(
                 progress_callback,
                 event="agentic_condensed_summary",
                 cycle_index=cycle_index,
                 summary=condensed_summary,
             )
-            session_payload["state"] = "decide"
+            session_payload["state"] = "observe"
             session_payload["updated_at"] = _utc_now()
             _persist_all(paths, request_payload, session_payload, result_payload, questions_payload, llm_payloads)
-
-            decider_input = {
-                "cycle_index": cycle_index,
-                "max_cycles": effective_max_cycles,
-                "current_queries": planned_queries,
-                "condensed_summary": condensed_summary,
-            }
-            _emit_progress(
-                progress_callback,
-                event="agentic_llm_decider_request",
-                cycle_index=cycle_index,
-                payload=decider_input,
-            )
-            decider_output = _decide_next_llm(
-                user_prompt=resolved_prompt,
-                cycle_index=cycle_index,
-                max_cycles=effective_max_cycles,
-                current_queries=planned_queries,
-                condensed_summary=condensed_summary,
-                queries_per_cycle=queries_per_cycle,
-                model=llm_model,
-                api_key_env=llm_api_key_env,
-            )
-            _emit_progress(
-                progress_callback,
-                event="agentic_llm_decider_response",
-                cycle_index=cycle_index,
-                payload=decider_output,
-            )
 
             llm_payloads["cycles"].append(
                 {
                     "cycle_index": cycle_index,
                     "timestamp": _utc_now(),
-                    "planner_input_summary": planner_input,
-                    "planner_output": planner_output,
-                    "decider_input_summary": decider_input,
-                    "decider_output": decider_output,
+                    "agent_input_summary": agent_input,
+                    "agent_output": agent_output,
+                    "action_result_summary": {
+                        "status": action_result.get("status") or "",
+                        "tool_calls": action_result.get("tool_calls") or "",
+                        "stop": bool(action_result.get("stop", False)),
+                        "stop_reason": action_result.get("stop_reason") or "",
+                    },
                 }
             )
             llm_payloads["updated_at"] = _utc_now()
 
-            if not shortlisted:
+            if bool(action_result.get("stop", False)):
+                decision = "stop"
+                decision_reason = "action_not_implemented"
+                stop_reason = str(action_result.get("stop_reason") or "action_stop")
+            elif not url_shortlisted:
                 decision = "stop"
                 decision_reason = "no_candidates"
                 stop_reason = "no_candidates"
@@ -1104,14 +1481,14 @@ def run_retrieve_agentic(
                 decision = "stop"
                 decision_reason = "max_cycles_reached"
                 stop_reason = "max_cycles_reached"
-            elif decider_output["stop"]:
+            elif agent_output["stop"]:
                 decision = "stop"
                 decision_reason = "llm_converged"
-                stop_reason = decider_output.get("stop_reason") or "llm_converged"
-            elif not decider_output["queries"]:
+                stop_reason = agent_output.get("stop_reason") or "llm_converged"
+            elif selected_action == "search_web" and not planned_queries:
                 decision = "stop"
-                decision_reason = "llm_no_next_queries"
-                stop_reason = "llm_no_next_queries"
+                decision_reason = "agent_no_queries"
+                stop_reason = "agent_no_queries"
             else:
                 decision = "continue"
                 decision_reason = "llm_continue"
@@ -1127,10 +1504,10 @@ def run_retrieve_agentic(
                     "state_path": _state_path(),
                     "planned_query": " || ".join(planned_queries),
                     "retrieval_query": " || ".join(planned_queries),
-                    "tool_calls": f"llm:planner,llm:decider,searxng:{len(planned_queries)}",
+                    "tool_calls": f"llm:agent,{action_result.get('tool_calls') or ''}",
                     "raw_candidates": len(raw_candidates),
-                    "ranked_candidates": len(shortlisted),
-                    "candidate_delta": len(shortlisted) - previous_count,
+                    "ranked_candidates": len(url_shortlisted),
+                    "candidate_delta": len(url_shortlisted) - previous_count,
                     "decision": decision,
                     "decision_reason": decision_reason,
                     "stop_reason": stop_reason,
@@ -1145,10 +1522,11 @@ def run_retrieve_agentic(
                 decision_reason=decision_reason,
                 stop_reason=stop_reason,
                 raw_candidates=len(raw_candidates),
-                shortlisted=len(shortlisted),
+                shortlisted=len(url_shortlisted),
             )
 
-            result_payload["final_candidates"] = final_candidates
+            # Keep final_candidates reserved for post-extraction paper-level output.
+            result_payload["latest_url_shortlist"] = url_hits
             result_payload["cycle_count"] = cycle_index
             result_payload.setdefault("decision_history", []).append(
                 {
@@ -1158,14 +1536,19 @@ def run_retrieve_agentic(
                     "decision_reason": decision_reason,
                     "stop_reason": stop_reason,
                     "planned_queries": planned_queries,
+                    "selected_action": selected_action,
+                    "plan_state": dict(plan_state),
+                    "plan_progress_recent": plan_progress[-8:],
                     "retrieved_count": len(raw_candidates),
-                    "ranked_count": len(shortlisted),
-                    "planner_rationale": planner_output.get("rationale", ""),
-                    "decider_rationale": decider_output.get("rationale", ""),
+                    "filtered_count": len(filtered_rows),
+                    "rejected_counts": dict(rejected_counts),
+                    "ranked_count": len(url_shortlisted),
+                    "agent_rationale": agent_output.get("rationale", ""),
                 }
             )
             result_payload["updated_at"] = _utc_now()
             previous_summary = condensed_summary
+            previous_candidates = url_hits
             last_decision = decision
             last_decision_reason = decision_reason
 
@@ -1193,7 +1576,7 @@ def run_retrieve_agentic(
             status="completed",
             cycle_count=current_cycle,
             stop_reason=stop_reason,
-            final_candidates=len(result_payload.get("final_candidates") or []),
+            final_candidates=len(result_payload.get("latest_url_shortlist") or []),
         )
     except Exception as exc:
         reason = f"agentic_error:{type(exc).__name__}:{exc}"
