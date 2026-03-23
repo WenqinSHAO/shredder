@@ -76,7 +76,6 @@ def _write_agentic_trajectory(
         refs = move.get("refs") if isinstance(move.get("refs"), dict) else {}
         progress = move.get("progress") if isinstance(move.get("progress"), dict) else {}
         action_debug = move.get("action_debug") if isinstance(move.get("action_debug"), dict) else {}
-        canonicalize = action_debug.get("canonicalize") if isinstance(action_debug.get("canonicalize"), dict) else {}
         targets = [item for item in (action_debug.get("targets") or []) if isinstance(item, dict)]
         user_view.append(
             {
@@ -96,17 +95,6 @@ def _write_agentic_trajectory(
                     "llm_errors": sum(int(item.get("llm_errors") or 0) for item in targets),
                 }
                 if action == "extract_content"
-                else {},
-                "canonicalize_summary": {
-                    "status": str(canonicalize.get("status") or ""),
-                    "scope": str(canonicalize.get("scope") or ""),
-                    "input_count": int(canonicalize.get("input_count") or 0),
-                    "output_count": int(canonicalize.get("output_count") or 0),
-                    "dropped": int(canonicalize.get("dropped") or 0),
-                    "overridden_non_match": int(canonicalize.get("overridden_non_match") or 0),
-                    "drop_reasons": dict(canonicalize.get("drop_reasons") or {}),
-                }
-                if canonicalize
                 else {},
                 "raw_event_ids": [str(v) for v in (refs.get("raw_event_ids") or [])[:6]],
                 "fetch_raw_paths": [str(v) for v in (refs.get("fetch_raw_paths") or [])[:6]],
