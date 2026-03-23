@@ -170,33 +170,49 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-23: Completed Q2 by extracting search/extract state-apply helpers into `src/orchestrator/agentic_state_apply.py` and adding targeted tests for the new boundary.
 - 2026-03-23: Completed Q3 by extracting compact cycle-trace projection helpers into `src/orchestrator/agentic_trace.py` and adding focused trace-helper tests.
 - 2026-03-23: Completed Q5 by running the full `tests/test_retrieval_agentic_i1.py` suite (78 passing tests) and deferred Q4 until extraction behavior stabilizes further.
+- 2026-03-23: Re-reviewed the agentic search code against this board and refined the next-stage queue: canonical URL-target hardening and mechanism-boundary extraction should come before a broad replay audit, because the current leverage is still in ownership cleanup and alias/canonicalization correctness.
 
 ### 3.2.7 Next Big Stage
 
-Next stage focus: extraction behavior stabilization before fetch-store work.
+Next stage focus: harden canonical extract request resolution and continue shrinking coordinator ownership before reopening fetch-store/cache work.
 
 Why this comes next:
-- Q4 cache/fetch-store work has limited payoff until extraction coverage and candidate semantics are stable
-- current leverage is still in extraction correctness, replay confidence, and compact contracts
-- once extraction behavior is steady, cache boundaries can be designed against fewer moving targets
+- the broad extraction heuristics already have a large replay/unit test surface, but canonical URL-target resolution still has weak seams
+- current extract request resolution still mixes requested URLs, hit ids, redirected URLs, and fetched-record aliases without one clearly enforced canonical path
+- `agentic.py` is still too large because it still owns fetch/raw-trace/LLM transport helpers in addition to loop coordination
+- fetch-store/cache work will be easier to design after the canonical request path and coordinator ownership boundaries are tighter
 
 Stage goals:
-1. stabilize extraction semantics for author/institution/venue matching on replay fixtures
-2. make coverage behavior and extract progress easier to inspect from compact artifacts
-3. remove remaining extraction-side ambiguity around target ids vs URLs vs fetched-record reuse
-4. only then reopen fetch-store/cache work with a smaller, more stable contract surface
+1. enforce one canonical path from planner-selected targets to fetched records, including redirected and alias URLs
+2. move remaining fetch and LLM mechanism helpers out of `agentic.py` so the coordinator surface keeps shrinking
+3. unify per-URL extract progress / coverage projection so agent memory, trajectory, and result artifacts read from the same compact state shape
+4. only after those seams stabilize, run a narrower replay audit for the remaining author/institution/venue extraction edge cases
+5. keep Q4 fetch-store/cache design deferred until the above contracts are small enough to design against confidently
 
 Next session checklist:
-- start with `E1`, using saved fetched raw HTML fixtures as the primary fast validation boundary
-- only change extraction interfaces where replay tests expose ambiguity or duplicated paths
-- keep `Q4` deferred unless extraction contracts become stable enough to justify reopening fetch/cache work
-- update this board after each meaningful extraction-contract or replay-fixture change
+- start with `E1`, because alias/canonical URL handling is a sharper correctness risk than another broad extraction audit
+- prefer slices that reduce coordinator ownership or remove duplicated canonicalization/projection paths
+- keep `Q4` deferred unless the request-resolution and fetch/extract boundaries become stable enough to justify cache design work
+- when adding tests, strengthen them to assert positive extracted outputs and artifact state, not just the absence of one stop reason
+- update this board after each meaningful boundary change or replay-backed correction
 
 Immediate queue for the next stage:
-- `E1 -> H5, H9`: replay-backed extraction behavior audit for author/institution/venue matching edge cases
-- `E2 -> H2, H5, H6`: narrow extraction target resolution around one canonical URL-target path
-- `E3 -> H5, H7, H8`: simplify remaining extraction progress/coverage reporting that still leaks mechanism detail into loop-adjacent code
-- `E4 -> H4`: reopen fetch-store/cache design only after E1-E3 are stable
+- `E1 -> H2, H5, H6, H9`: canonical URL-target path hardening
+  - make extract request resolution use alias-aware fetched-record selection rather than exact-URL-only filtering
+  - tighten redirected-URL and hit-id remap tests so they assert actual extracted results / artifact state
+  - keep planner-facing extract params compact while app-side resolution owns canonical URL, alias, and fetched-record reuse
+- `E2 -> H1, H4, H6`: extract fetch mechanism ownership out of `agentic.py`
+  - move raw fetch / retry / save / pagination-fetch helpers into a dedicated mechanism module
+  - leave the loop with only planner turn, action dispatch, and cycle finalize responsibilities
+- `E3 -> H1, H3, H6`: extract LLM transport / JSON completion helpers out of `agentic.py`
+  - move OpenAI-compatible request/response parsing and message-metric helpers behind a dedicated boundary shared by planner and extractor calls
+  - keep action contracts unchanged while reducing coordinator-local mechanism code
+- `E4 -> H5, H7, H8`: unify per-URL extract progress projection
+  - remove duplicated status derivation between agent memory views and result coverage summaries
+  - define one compact per-URL state/projection shape that feeds trajectory, result coverage, and planner memory
+- `E5 -> H5, H9`: replay-backed extraction audit after the above seams settle
+  - focus only on remaining author/institution/venue edge cases and coverage semantics that still fail or stay ambiguous after E1-E4
+  - avoid reopening broader fetch-store/cache design until these replay-backed contracts are stable
 
 ## 4) Non-Active Modules (Summary Only)
 
