@@ -63,6 +63,7 @@ def _compact_result_payload(
     *,
     run_result: dict,
     paper_state: dict,
+    coverage_summary: dict | None,
     prompt: str,
     llm_model: str,
     display_top_n: int,
@@ -95,7 +96,7 @@ def _compact_result_payload(
         )
     if int(display_top_n or 0) > 0:
         papers = papers[: int(display_top_n)]
-    coverage = paper_state.get("coverage_summary") if isinstance(paper_state.get("coverage_summary"), dict) else {}
+    coverage = coverage_summary if isinstance(coverage_summary, dict) else {}
     return {
         "artifact_type": "agentic_result",
         "schema_version": "0.2.0",
@@ -107,12 +108,10 @@ def _compact_result_payload(
         "trajectory_ref": "agentic_trajectory.yaml",
         "raw_trace_ref": "agentic_raw.ndjson",
         "coverage": {
-            "fetch_targets_total": int(coverage.get("fetch_targets_total") or 0),
-            "fetch_targets_ok": int(coverage.get("fetch_targets_ok") or 0),
-            "extract_records_total": int(coverage.get("extract_records_total") or 0),
-            "extract_records_ok": int(coverage.get("extract_records_ok") or 0),
-            "extract_records_with_venue_evidence": int(coverage.get("extract_records_with_venue_evidence") or 0),
-            "venue_evidence_required": bool(coverage.get("venue_evidence_required", False)),
+            "shortlisted_urls_total": int(coverage.get("shortlisted_urls_total") or 0),
+            "shortlisted_urls_complete": int(coverage.get("shortlisted_urls_complete") or 0),
+            "shortlisted_urls_with_more_results": int(coverage.get("shortlisted_urls_with_more_results") or 0),
+            "url_checks": [dict(row) for row in (coverage.get("url_checks") or []) if isinstance(row, dict)],
             "final_match_count": len(final_candidates),
             "final_unique_title_count": len(final_unique_title_keys),
             "support_score_avg": round(sum(support_scores) / len(support_scores), 4) if support_scores else 0.0,

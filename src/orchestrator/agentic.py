@@ -287,22 +287,6 @@ def _new_result_state() -> dict:
     }
 
 
-def _default_paper_state() -> dict[str, Any]:
-    return {
-        "final_candidates": [],
-        "fallback_candidates": [],
-        "coverage_summary": {
-            "fetch_targets_total": 0,
-            "fetch_targets_ok": 0,
-            "fetch_targets_error": 0,
-            "extract_records_total": 0,
-            "extract_records_ok": 0,
-            "extract_records_with_venue_evidence": 0,
-            "venue_evidence_required": False,
-        },
-    }
-
-
 def _read_int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -1724,6 +1708,18 @@ def _make_progress_record(*, source: str, step_id: str, status: str, note: str) 
 
 
 @dataclass
+class _PaperState:
+    final_candidates: list[dict[str, Any]] = field(default_factory=list)
+    fallback_candidates: list[dict[str, Any]] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "final_candidates": [dict(row) for row in self.final_candidates if isinstance(row, dict)],
+            "fallback_candidates": [dict(row) for row in self.fallback_candidates if isinstance(row, dict)],
+        }
+
+
+@dataclass
 class _AgenticSearchLoop:
     paths: dict[str, Path]
     prompt: str
@@ -1733,7 +1729,7 @@ class _AgenticSearchLoop:
     debug_retrieval: bool
     progress_callback: ProgressCallback | None = None
     run_result: dict[str, Any] = field(default_factory=_new_result_state)
-    paper_state: dict[str, Any] = field(default_factory=_default_paper_state)
+    paper_state: "_PaperState" = field(default_factory=lambda: _PaperState())
     agent_memory: dict[str, Any] = field(default_factory=dict)
     agent_plan: dict[str, Any] = field(default_factory=_default_plan_state)
     cycle_trace: list[dict[str, Any]] = field(default_factory=list)
@@ -1788,7 +1784,8 @@ class _AgenticSearchLoop:
         display_limit = max(0, int(self.result_config.display_limit or 0))
         compact_result = _compact_result_payload(
             run_result=self.run_result,
-            paper_state=self.paper_state,
+            paper_state=self.paper_state.as_dict(),
+            coverage_summary=_build_extract_coverage_summary(self.extract_state.by_url),
             prompt=self.prompt,
             llm_model=agent_model,
             display_top_n=display_limit,
@@ -1797,17 +1794,7 @@ class _AgenticSearchLoop:
 
     def _execute_action(self, *, action: str, params: dict) -> dict:
         cycle_index = int(self.run_state.cycle_index or 0)
-        tool_runtime = {
-            "url_hits": [row for row in self.url_state.hits if isinstance(row, dict)],
-            "extract_state_by_url": {
-                str(url): dict(row)
-                for url, row in dict(self.extract_state.by_url or {}).items()
-                if str(url).strip() and isinstance(row, dict)
-            },
-            "fetched_records": [
-                row for row in self.extract_state.fetched_records if isinstance(row, dict)
-            ],
-        }
+        runtime_payload = _ActionRuntime.from_loop(self).to_payload()
         result = _execute_agent_action(
             action=action,
             session_id=self.session_id,
@@ -1824,7 +1811,7 @@ class _AgenticSearchLoop:
             llm_api_key_env=str(self.extract_config.api_key_env or "DS_API_KEY"),
             extract_use_llm_extractor=bool(self.extract_config.use_llm_extractor),
             progress_callback=self.progress_callback,
-            runtime_state=tool_runtime,
+            runtime_state=runtime_payload,
             next_op_id_fn=lambda _state, prefix="op": _next_op_id(self.trace_state, prefix),
             raw_event_fn=lambda event_type, payload, refs=None: self._append_raw(
                 action_id=f"c{cycle_index:02d}",
@@ -1833,15 +1820,7 @@ class _AgenticSearchLoop:
                 refs=refs,
             ),
         )
-        self.url_state.hits = [row for row in (tool_runtime.get("url_hits") or []) if isinstance(row, dict)]
-        self.extract_state.by_url = {
-            str(url): dict(row)
-            for url, row in dict(tool_runtime.get("extract_state_by_url") or {}).items()
-            if str(url).strip() and isinstance(row, dict)
-        }
-        self.extract_state.fetched_records = [
-            row for row in (tool_runtime.get("fetched_records") or []) if isinstance(row, dict)
-        ]
+        _ActionRuntime.from_payload(runtime_payload).apply_to_loop(self)
         return result
 
     def run(self) -> Path:
@@ -1884,7 +1863,89 @@ class _UrlState:
 @dataclass
 class _ExtractState:
     by_url: dict[str, dict[str, Any]] = field(default_factory=dict)
+    fetched_record_index: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+def _fetched_record_index_key(row: dict[str, Any]) -> str:
+    for value in (
+        str(row.get("url") or "").strip(),
+        str(row.get("requested_url") or "").strip(),
+    ):
+        if value:
+            return value
+    for value in (row.get("url_aliases") or []):
+        alias = str(value).strip()
+        if alias:
+            return alias
+    return ""
+
+
+def _index_fetched_records(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    for row in _merge_fetched_records([], [dict(item) for item in records if isinstance(item, dict)]):
+        key = _fetched_record_index_key(row)
+        if key:
+            index[key] = dict(row)
+    return index
+
+
+def _fetched_record_rows(extract_state: "_ExtractState") -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in dict(extract_state.fetched_record_index or {}).values()
+        if isinstance(row, dict)
+    ]
+
+
+@dataclass
+class _ActionRuntime:
+    url_hits: list[dict[str, Any]] = field(default_factory=list)
+    extract_state_by_url: dict[str, dict[str, Any]] = field(default_factory=dict)
     fetched_records: list[dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_loop(cls, loop: "_AgenticSearchLoop") -> "_ActionRuntime":
+        return cls(
+            url_hits=[dict(row) for row in loop.url_state.hits if isinstance(row, dict)],
+            extract_state_by_url={
+                str(url): dict(row)
+                for url, row in dict(loop.extract_state.by_url or {}).items()
+                if str(url).strip() and isinstance(row, dict)
+            },
+            fetched_records=_fetched_record_rows(loop.extract_state),
+        )
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "_ActionRuntime":
+        return cls(
+            url_hits=[dict(row) for row in (payload.get("url_hits") or []) if isinstance(row, dict)],
+            extract_state_by_url={
+                str(url): dict(row)
+                for url, row in dict(payload.get("extract_state_by_url") or {}).items()
+                if str(url).strip() and isinstance(row, dict)
+            },
+            fetched_records=[dict(row) for row in (payload.get("fetched_records") or []) if isinstance(row, dict)],
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "url_hits": [dict(row) for row in self.url_hits if isinstance(row, dict)],
+            "extract_state_by_url": {
+                str(url): dict(row)
+                for url, row in dict(self.extract_state_by_url or {}).items()
+                if str(url).strip() and isinstance(row, dict)
+            },
+            "fetched_records": [dict(row) for row in self.fetched_records if isinstance(row, dict)],
+        }
+
+    def apply_to_loop(self, loop: "_AgenticSearchLoop") -> None:
+        loop.url_state.hits = [dict(row) for row in self.url_hits if isinstance(row, dict)]
+        loop.extract_state.by_url = {
+            str(url): dict(row)
+            for url, row in dict(self.extract_state_by_url or {}).items()
+            if str(url).strip() and isinstance(row, dict)
+        }
+        loop.extract_state.fetched_record_index = _index_fetched_records(self.fetched_records)
 
 
 @dataclass
@@ -1920,17 +1981,12 @@ class _AgentDecision:
     reason: str
 
 
-def _paper_coverage(loop: _AgenticSearchLoop) -> dict[str, Any]:
-    coverage = loop.paper_state.setdefault("coverage_summary", {})
-    return coverage if isinstance(coverage, dict) else {}
-
-
 def _paper_final_candidates(loop: _AgenticSearchLoop) -> list[dict[str, Any]]:
-    return [row for row in (loop.paper_state.get("final_candidates") or []) if isinstance(row, dict)]
+    return [row for row in loop.paper_state.final_candidates if isinstance(row, dict)]
 
 
 def _paper_fallback_candidates(loop: _AgenticSearchLoop) -> list[dict[str, Any]]:
-    return [row for row in (loop.paper_state.get("fallback_candidates") or []) if isinstance(row, dict)]
+    return [row for row in loop.paper_state.fallback_candidates if isinstance(row, dict)]
 
 
 def _set_paper_candidates(
@@ -1939,36 +1995,55 @@ def _set_paper_candidates(
     final_candidates: list[dict[str, Any]],
     fallback_candidates: list[dict[str, Any]],
 ) -> None:
-    loop.paper_state["final_candidates"] = list(final_candidates)
-    loop.paper_state["fallback_candidates"] = list(fallback_candidates)
+    loop.paper_state.final_candidates = [dict(row) for row in final_candidates if isinstance(row, dict)]
+    loop.paper_state.fallback_candidates = [dict(row) for row in fallback_candidates if isinstance(row, dict)]
 
 
-def _update_paper_coverage(
+def _build_extract_coverage_summary(extract_state_by_url: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    url_checks: list[dict[str, Any]] = []
+    for url, row in dict(extract_state_by_url or {}).items():
+        if not str(url).strip() or not isinstance(row, dict):
+            continue
+        segments_done = int(row.get("segments_done") or 0)
+        segment_total = int(row.get("segment_total") or 0)
+        has_more = bool(row.get("coverage_has_more"))
+        url_checks.append(
+            {
+                "url": str(url),
+                "target_id": str(row.get("target_id") or ""),
+                "segments_done": segments_done,
+                "segment_total": segment_total,
+                "all_papers_extracted": segment_total > 0 and segments_done >= segment_total and not has_more,
+                "has_more_results": has_more,
+            }
+        )
+    return {
+        "shortlisted_urls_total": len(url_checks),
+        "shortlisted_urls_complete": sum(1 for row in url_checks if bool(row.get("all_papers_extracted"))),
+        "shortlisted_urls_with_more_results": sum(1 for row in url_checks if bool(row.get("has_more_results"))),
+        "url_checks": url_checks,
+    }
+
+
+def _update_extract_coverage_state(
     loop: _AgenticSearchLoop,
     *,
     action_result: dict[str, Any],
-    extracted_paper_candidates: list[dict[str, Any]],
 ) -> None:
-    coverage = _paper_coverage(loop)
-    requires_venue = _requires_venue_evidence(loop.prompt, loop.agent_plan)
-    coverage["venue_evidence_required"] = bool(requires_venue)
-    coverage["fetch_targets_total"] = int(coverage.get("fetch_targets_total", 0)) + int(
-        action_result.get("auto_fetched_count") or 0
-    )
-    coverage["fetch_targets_ok"] = int(coverage.get("fetch_targets_ok", 0)) + int(
-        action_result.get("auto_fetched_ok") or 0
-    )
-    coverage["fetch_targets_error"] = int(coverage.get("fetch_targets_error", 0)) + int(
-        action_result.get("auto_fetched_error") or 0
-    )
-    extract_records = [row for row in (action_result.get("extracted_records") or []) if isinstance(row, dict)]
-    coverage["extract_records_total"] = int(coverage.get("extract_records_total", 0)) + len(extract_records)
-    coverage["extract_records_ok"] = int(coverage.get("extract_records_ok", 0)) + sum(
-        1 for row in extract_records if str(row.get("status") or "") == "ok"
-    )
-    coverage["extract_records_with_venue_evidence"] = int(
-        coverage.get("extract_records_with_venue_evidence", 0)
-    ) + sum(1 for row in extracted_paper_candidates if _has_venue_evidence(row))
+    extract_trace = action_result.get("extract_windows_trace")
+    if not isinstance(extract_trace, list):
+        extract_trace = []
+    for item in extract_trace:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        page_state = loop.extract_state.by_url.setdefault(url, {})
+        page_state["target_id"] = str(item.get("target_id") or page_state.get("target_id") or "")
+        page_state["segments_done"] = int(item.get("segments_done") or page_state.get("segments_done") or 0)
+        page_state["segment_total"] = int(item.get("segment_total") or page_state.get("segment_total") or 0)
+        page_state["coverage_has_more"] = bool(item.get("coverage_has_more"))
 
 
 def _refresh_agent_memory(loop: _AgenticSearchLoop) -> None:
@@ -2113,10 +2188,9 @@ def _finalize_extract_action(
     extracted_paper_candidates: list[dict[str, Any]],
     action_result: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    _update_paper_coverage(
+    _update_extract_coverage_state(
         loop=loop,
         action_result=action_result,
-        extracted_paper_candidates=extracted_paper_candidates,
     )
     return []
 
@@ -2130,18 +2204,6 @@ def _finalize_extract_candidates(
     raw_event_ids: list[str],
 ) -> dict[str, Any]:
     cycle_candidates = [row for row in extracted_paper_candidates if isinstance(row, dict)]
-    canonicalize_info: dict[str, Any] = {
-        "status": "deterministic_only",
-        "reason": "minimal_debug_loop",
-        "input_count": len(cycle_candidates),
-        "output_count": len(cycle_candidates),
-        "scope": "cycle_local",
-    }
-    if len(cycle_candidates) >= 2:
-        cycle_candidates, canonicalize_info = _deterministic_canonicalize_candidates(cycle_candidates)
-        canonicalize_info["status"] = "deterministic_only"
-        canonicalize_info["reason"] = "minimal_debug_loop"
-
     cycle_candidates = list(cycle_candidates)
     requires_venue = _requires_venue_evidence(loop.prompt, loop.agent_plan)
     existing_final = _paper_final_candidates(loop)
@@ -2160,17 +2222,6 @@ def _finalize_extract_candidates(
             final_candidates=_merge_paper_candidates(existing_final, cycle_candidates),
             fallback_candidates=existing_fallback,
         )
-    merged_final = _paper_final_candidates(loop)
-    if len(merged_final) >= 2:
-        globally_deduped, global_dedup_info = _deterministic_canonicalize_candidates(merged_final)
-        _set_paper_candidates(
-            loop,
-            final_candidates=globally_deduped,
-            fallback_candidates=_paper_fallback_candidates(loop),
-        )
-        canonicalize_info["post_merge_dedup"] = global_dedup_info
-    if canonicalize_info:
-        action_result["canonicalize_trace"] = canonicalize_info
     return {
         "paper_candidates": cycle_candidates,
         "raw_event_ids": raw_event_ids,
@@ -2249,7 +2300,6 @@ def _record_cycle_summary(
         }
         if selected_action == "extract_content":
             extract_trace = action_result.get("extract_windows_trace") if isinstance(action_result.get("extract_windows_trace"), list) else []
-            canonicalize_trace = action_result.get("canonicalize_trace") if isinstance(action_result.get("canonicalize_trace"), dict) else {}
             loop.cycle_trace[-1]["action_debug"] = {
                 "targets": [
                     {
@@ -2280,18 +2330,6 @@ def _record_cycle_summary(
                     for item in extract_trace[:8]
                     if isinstance(item, dict)
                 ],
-                "canonicalize": {
-                    "status": str(canonicalize_trace.get("status") or ""),
-                    "input_count": int(canonicalize_trace.get("input_count") or 0),
-                    "output_count": int(canonicalize_trace.get("output_count") or 0),
-                    "dropped": int(canonicalize_trace.get("dropped") or 0),
-                    "reason": str(canonicalize_trace.get("reason") or ""),
-                    "scope": str(canonicalize_trace.get("scope") or ""),
-                    "verification_counts": dict(canonicalize_trace.get("verification_counts") or {}),
-                    "drop_reasons": dict(canonicalize_trace.get("drop_reasons") or {}),
-                    "overridden_non_match": int(canonicalize_trace.get("overridden_non_match") or 0),
-                    "post_merge_dedup": dict(canonicalize_trace.get("post_merge_dedup") or {}),
-                },
             }
         loop.cycle_trace[-1]["delta"] = cycle_delta
     return cycle_delta
@@ -2304,9 +2342,7 @@ def _record_cycle_refs(
 ) -> None:
     if not loop.cycle_trace:
         return
-    fetched_rows_for_refs = [
-        row for row in loop.extract_state.fetched_records if isinstance(row, dict)
-    ]
+    fetched_rows_for_refs = _fetched_record_rows(loop.extract_state)
     fetch_raw_paths = _unique_nonempty([str(row.get("raw_path") or "") for row in fetched_rows_for_refs], limit=12)
     loop.cycle_trace[-1]["refs"] = {
         "raw_event_ids": list(raw_event_ids),
@@ -2332,24 +2368,6 @@ def _record_cycle_outcome(
 ) -> None:
     if loop.cycle_trace:
         loop.cycle_trace[-1]["delta"] = cycle_delta
-        if selected_action == "extract_content":
-            action_debug = loop.cycle_trace[-1].get("action_debug")
-            if not isinstance(action_debug, dict):
-                action_debug = {}
-                loop.cycle_trace[-1]["action_debug"] = action_debug
-            canonicalize_trace = action_result.get("canonicalize_trace") if isinstance(action_result.get("canonicalize_trace"), dict) else {}
-            action_debug["canonicalize"] = {
-                "status": str(canonicalize_trace.get("status") or ""),
-                "input_count": int(canonicalize_trace.get("input_count") or 0),
-                "output_count": int(canonicalize_trace.get("output_count") or 0),
-                "dropped": int(canonicalize_trace.get("dropped") or 0),
-                "reason": str(canonicalize_trace.get("reason") or ""),
-                "scope": str(canonicalize_trace.get("scope") or ""),
-                "verification_counts": dict(canonicalize_trace.get("verification_counts") or {}),
-                "drop_reasons": dict(canonicalize_trace.get("drop_reasons") or {}),
-                "overridden_non_match": int(canonicalize_trace.get("overridden_non_match") or 0),
-                "post_merge_dedup": dict(canonicalize_trace.get("post_merge_dedup") or {}),
-            }
     _record_cycle_refs(loop=loop, raw_event_ids=raw_event_ids)
     loop._emit(
         event="agentic_cycle_decision",
