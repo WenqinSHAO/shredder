@@ -176,6 +176,7 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-23: Completed `E3` by moving OpenAI-compatible JSON transport, response-content parsing, and message-metric helpers into `src/orchestrator/agentic_llm.py` while keeping compatibility wrappers in `agentic.py`. Added focused transport-boundary tests and re-ran full `pytest` (`128 passed, 27 subtests passed`).
 - 2026-03-23: Completed the remaining `E1` request-shape cleanup by keeping planner-facing `extract_content` params target-scoped when `targets` are present, so app-side resolution owns the shared filter/anchor reconstruction. Full `pytest` still passes (`128 passed, 27 subtests passed`).
 - 2026-03-23: Completed `E4` by introducing a shared per-URL extract projection in `src/orchestrator/agentic_projection.py`, preserving `coverage_has_more` / failure / completion state through extract trace and state-apply, and switching planner memory, trajectory user-view, and result coverage to that shared shape. Full `pytest` now passes (`130 passed, 27 subtests passed`).
+- 2026-03-23: Completed the first `E5` replay-backed correction by enforcing venue evidence on the local/structured candidate-filter path when `match_decision` is absent, while still allowing explicit `match` decisions to pass. Added focused venue-edge-case tests and re-ran full `pytest` (`132 passed, 27 subtests passed`).
 
 ### 3.2.7 Next Big Stage
 
@@ -196,6 +197,7 @@ Stage goals:
 
 Next session checklist:
 - start with `E5`, because the remaining leverage is now in replay-backed extraction correctness rather than coordinator/mechanism ownership
+- treat `E5` as a sequence of narrow replay-backed corrections; avoid broad heuristic rewrites
 - prefer slices that reduce coordinator ownership or remove duplicated canonicalization/projection paths
 - keep `Q4` deferred unless the request-resolution and fetch/extract boundaries become stable enough to justify cache design work
 - when adding tests, strengthen them to assert positive extracted outputs and artifact state, not just the absence of one stop reason
@@ -203,7 +205,8 @@ Next session checklist:
 
 Immediate queue for the next stage:
 - `E5 -> H5, H9`: replay-backed extraction audit after the above seams settle
-  - focus only on remaining author/institution/venue edge cases and coverage semantics that still fail or stay ambiguous after E1-E4
+  - done: require venue evidence on the fallback candidate-filter path when venue intent exists and `match_decision` is not explicit
+  - next: audit remaining author/institution edge cases where structured row-local evidence may still be under- or over-enforced
   - avoid reopening broader fetch-store/cache design until these replay-backed contracts are stable
 
 ## 4) Non-Active Modules (Summary Only)

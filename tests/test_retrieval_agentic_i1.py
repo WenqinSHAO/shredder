@@ -587,6 +587,59 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertIn("NDD", str(candidates[0].get("title") or ""))
 
+    def test_extract_candidates_require_venue_evidence_when_match_decision_missing(self):
+        facts = [
+            {
+                "status": "ok",
+                "paper_title": "NDD: A Decision Diagram for Network Verification",
+                "year": "2025",
+                "doi": "",
+                "arxiv_id": "",
+                "url": "https://example.org/papers/google-network-verification",
+                "url_title": "Systems paper notes",
+                "evidence": "NDD: A Decision Diagram for Network Verification ... Hongkun Yang (Google)",
+                "score": 0.9,
+                "filters": {"institution": "Google", "year_gte": 2025, "venue": "SIGCOMM"},
+                "extract_source": "llm",
+                "extract_intent": {"must_match": {"venue_any": ["SIGCOMM"], "year_gte": 2025}},
+                "llm_extract": {
+                    "match_decision": "",
+                    "institution_match": True,
+                    "authors": ["Hongkun Yang"],
+                    "affiliations": ["Google"],
+                },
+            }
+        ]
+        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        self.assertEqual(candidates, [])
+
+    def test_extract_candidates_accept_venue_evidence_from_url_when_match_decision_missing(self):
+        facts = [
+            {
+                "status": "ok",
+                "paper_title": "Learnings from Deploying Network QoS Alignment to Application Priorities for Storage Services",
+                "year": "2025",
+                "doi": "",
+                "arxiv_id": "",
+                "url": "https://dblp.org/db/conf/nsdi/nsdi2025",
+                "url_title": "NSDI 2025",
+                "evidence": "Matthew Buckley, Parsa Pazhooheshy, Nandita Dukkipati",
+                "score": 0.9,
+                "filters": {"institution": "Google", "year_gte": 2025, "venue": "NSDI"},
+                "extract_source": "llm",
+                "extract_intent": {"must_match": {"venue_any": ["NSDI"], "year_gte": 2025}},
+                "llm_extract": {
+                    "match_decision": "",
+                    "authors": ["Matthew Buckley", "Parsa Pazhooheshy"],
+                    "affiliations": ["Google", "University of Toronto"],
+                    "institution_hits": ["Google"],
+                },
+            }
+        ]
+        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        self.assertEqual(len(candidates), 1)
+        self.assertIn("Learnings from Deploying Network QoS", str(candidates[0].get("title") or ""))
+
     def test_slice_segments_by_token_budget(self):
         segments = ["a" * 8000, "b" * 8000, "c" * 8000]
         batch = agentic_mod._slice_segments_by_token_budget(
