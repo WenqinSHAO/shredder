@@ -613,6 +613,57 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         candidates = agentic_mod._to_paper_candidates_from_facts(facts)
         self.assertEqual(candidates, [])
 
+    def test_extract_candidates_require_full_author_name_when_match_decision_missing(self):
+        facts = [
+            {
+                "status": "ok",
+                "paper_title": "QueuePair: A Datacenter Systems Paper",
+                "year": "2025",
+                "doi": "",
+                "arxiv_id": "",
+                "url": "https://example.org/program",
+                "url_title": "Systems program",
+                "evidence": "QueuePair: A Datacenter Systems Paper. Authors: Bob Smith, Carol Jones. Google.",
+                "score": 0.9,
+                "filters": {"author": "Alice Smith", "year_gte": 2025},
+                "extract_source": "llm",
+                "extract_intent": {"must_match": {"author_any": ["Alice Smith"], "year_gte": 2025}},
+                "llm_extract": {
+                    "match_decision": "",
+                    "authors": ["Bob Smith", "Carol Jones"],
+                    "affiliations": ["Google"],
+                },
+            }
+        ]
+        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        self.assertEqual(candidates, [])
+
+    def test_extract_candidates_accept_full_author_name_from_structured_fields(self):
+        facts = [
+            {
+                "status": "ok",
+                "paper_title": "Learnings from Deploying Network QoS Alignment to Application Priorities for Storage Services",
+                "year": "2025",
+                "doi": "",
+                "arxiv_id": "",
+                "url": "https://dblp.org/db/conf/nsdi/nsdi2025",
+                "url_title": "NSDI 2025",
+                "evidence": "Matthew Buckley, Parsa Pazhooheshy, Nandita Dukkipati",
+                "score": 0.9,
+                "filters": {"author": "Nandita Dukkipati", "year_gte": 2025},
+                "extract_source": "llm",
+                "extract_intent": {"must_match": {"author_any": ["Nandita Dukkipati"], "year_gte": 2025}},
+                "llm_extract": {
+                    "match_decision": "",
+                    "authors": ["Matthew Buckley", "Parsa Pazhooheshy", "Nandita Dukkipati"],
+                    "affiliations": ["Google", "University of Toronto"],
+                },
+            }
+        ]
+        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        self.assertEqual(len(candidates), 1)
+        self.assertIn("Learnings from Deploying Network QoS", str(candidates[0].get("title") or ""))
+
     def test_extract_candidates_accept_venue_evidence_from_url_when_match_decision_missing(self):
         facts = [
             {
