@@ -1335,7 +1335,10 @@ class _AgenticSearchLoop:
         compact_result = _compact_result_payload(
             run_result=self.run_result,
             paper_state=self.paper_state.as_dict(),
-            coverage_summary=_build_extract_coverage_summary(self.extract_state.by_url),
+            coverage_summary=_build_extract_coverage_summary(
+                self.extract_state.by_url,
+                url_hits=[row for row in self.url_state.hits if isinstance(row, dict)],
+            ),
             prompt=self.prompt,
             llm_model=agent_model,
             display_top_n=display_limit,

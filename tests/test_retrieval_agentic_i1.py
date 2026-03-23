@@ -2210,6 +2210,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(delta["shortlisted_count"], 1)
         self.assertEqual(cycle_trace[-1]["action_result"]["status"], "ok")
         self.assertEqual(cycle_trace[-1]["action_debug"]["targets"][0]["llm_items"], ["Paper A"])
+        self.assertEqual(cycle_trace[-1]["action_debug"]["url_checks"][0]["status"], "in_progress")
 
     # Verify the extracted trace helper attaches raw-event and fetch-artifact refs for downstream UI/debug views.
     def test_trace_record_cycle_refs_attaches_fetch_paths(self):
@@ -2227,11 +2228,52 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             {
                 "https://a.example": {"target_id": "t1", "segments_done": 3, "segment_total": 3, "coverage_has_more": False},
                 "https://b.example": {"target_id": "t2", "segments_done": 1, "segment_total": 4, "coverage_has_more": True},
-            }
+            },
+            url_hits=[
+                {"url": "https://a.example", "url_title": "A"},
+                {"url": "https://b.example", "url_title": "B"},
+                {"url": "https://c.example", "url_title": "C"},
+            ],
         )
-        self.assertEqual(summary["shortlisted_urls_total"], 2)
+        self.assertEqual(summary["shortlisted_urls_total"], 3)
         self.assertEqual(summary["shortlisted_urls_complete"], 1)
         self.assertEqual(summary["shortlisted_urls_with_more_results"], 1)
+        self.assertEqual(summary["url_checks"][0]["status"], "completed")
+        self.assertEqual(summary["url_checks"][1]["status"], "in_progress")
+        self.assertEqual(summary["url_checks"][2]["status"], "new")
+
+    def test_state_apply_extract_coverage_update_preserves_failure_and_has_more(self):
+        state: dict[str, dict] = {}
+        state_apply_mod._apply_extract_coverage_update(
+            state,
+            action_result={
+                "extract_windows_trace": [
+                    {
+                        "url": "https://a.example",
+                        "target_id": "t1",
+                        "segments_done": 2,
+                        "segment_total": 5,
+                        "coverage_has_more": True,
+                        "failed": False,
+                        "completed": False,
+                    },
+                    {
+                        "url": "https://b.example",
+                        "target_id": "t2",
+                        "segments_done": 1,
+                        "segment_total": 4,
+                        "coverage_has_more": False,
+                        "failed": True,
+                        "completed": False,
+                        "last_error": "timeout",
+                    },
+                ]
+            },
+        )
+        self.assertTrue(state["https://a.example"]["coverage_has_more"])
+        self.assertFalse(state["https://a.example"]["failed"])
+        self.assertTrue(state["https://b.example"]["failed"])
+        self.assertEqual(state["https://b.example"]["last_error"], "timeout")
 
     def test_state_apply_search_action_result_merges_hits(self):
         raw_candidates = [
@@ -2403,6 +2445,59 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(memory["last_step"]["action"], "search_web")
         self.assertEqual(memory["last_change"]["retrieved_count"], 12)
         self.assertTrue(any("timeout" in item for item in memory["blockers"]))
+
+    def test_write_agentic_trajectory_user_view_keeps_url_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "agentic_trajectory.yaml"
+            agentic_mod._write_agentic_trajectory(
+                path,
+                session_id="sess-1",
+                prompt="papers by Google at SIGCOMM in 2025",
+                moves=[
+                    {
+                        "cycle_index": 1,
+                        "action_id": "act-1",
+                        "selected_action": "extract_content",
+                        "action_input": {"action": "extract_content"},
+                        "action_result": {"status": "ok", "notes": "finished extraction"},
+                        "decision": {"decision": "continue", "decision_reason": "coverage_pending"},
+                        "progress": {},
+                        "action_debug": {
+                            "targets": [
+                                {
+                                    "target_id": "t1",
+                                    "segments_done": 2,
+                                    "segments_pending": 1,
+                                    "llm_requests": 1,
+                                    "llm_errors": 0,
+                                }
+                            ],
+                            "url_checks": [
+                                {
+                                    "url": "https://conf.example/program",
+                                    "target_id": "t1",
+                                    "status": "in_progress",
+                                    "segments_done": 2,
+                                    "segment_total": 3,
+                                    "all_papers_extracted": False,
+                                    "has_more_results": True,
+                                    "last_error": "",
+                                }
+                            ],
+                        },
+                        "refs": {},
+                    }
+                ],
+                status="running",
+                stop_reason="",
+                llm_model="deepseek/deepseek-chat",
+                max_cycles=3,
+                top_n=3,
+            )
+            trajectory = yamlx.load(path)
+        user_view = trajectory.get("user_view") or []
+        self.assertEqual(user_view[0]["extract_summary"]["url_checks"][0]["status"], "in_progress")
+        self.assertTrue(user_view[0]["extract_summary"]["url_checks"][0]["has_more_results"])
 
     def test_apply_plan_update_merges_deltas(self):
         merged = agentic_mod._apply_plan_update(

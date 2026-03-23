@@ -175,6 +175,7 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-23: Completed the main `E2` slice by moving raw fetch / retry / save / pagination-fetch implementation into `src/orchestrator/agentic_fetch.py` while keeping patch-compatible wrappers in `agentic.py`. Full `pytest` now passes (`125 passed, 27 subtests passed`).
 - 2026-03-23: Completed `E3` by moving OpenAI-compatible JSON transport, response-content parsing, and message-metric helpers into `src/orchestrator/agentic_llm.py` while keeping compatibility wrappers in `agentic.py`. Added focused transport-boundary tests and re-ran full `pytest` (`128 passed, 27 subtests passed`).
 - 2026-03-23: Completed the remaining `E1` request-shape cleanup by keeping planner-facing `extract_content` params target-scoped when `targets` are present, so app-side resolution owns the shared filter/anchor reconstruction. Full `pytest` still passes (`128 passed, 27 subtests passed`).
+- 2026-03-23: Completed `E4` by introducing a shared per-URL extract projection in `src/orchestrator/agentic_projection.py`, preserving `coverage_has_more` / failure / completion state through extract trace and state-apply, and switching planner memory, trajectory user-view, and result coverage to that shared shape. Full `pytest` now passes (`130 passed, 27 subtests passed`).
 
 ### 3.2.7 Next Big Stage
 
@@ -194,16 +195,13 @@ Stage goals:
 5. keep Q4 fetch-store/cache design deferred until the above contracts are small enough to design against confidently
 
 Next session checklist:
-- start with `E4`, because the remaining leverage is now in collapsing duplicated per-URL progress/coverage projection
+- start with `E5`, because the remaining leverage is now in replay-backed extraction correctness rather than coordinator/mechanism ownership
 - prefer slices that reduce coordinator ownership or remove duplicated canonicalization/projection paths
 - keep `Q4` deferred unless the request-resolution and fetch/extract boundaries become stable enough to justify cache design work
 - when adding tests, strengthen them to assert positive extracted outputs and artifact state, not just the absence of one stop reason
 - update this board after each meaningful boundary change or replay-backed correction
 
 Immediate queue for the next stage:
-- `E4 -> H5, H7, H8`: unify per-URL extract progress projection
-  - remove duplicated status derivation between agent memory views and result coverage summaries
-  - define one compact per-URL state/projection shape that feeds trajectory, result coverage, and planner memory
 - `E5 -> H5, H9`: replay-backed extraction audit after the above seams settle
   - focus only on remaining author/institution/venue edge cases and coverage semantics that still fail or stay ambiguous after E1-E4
   - avoid reopening broader fetch-store/cache design until these replay-backed contracts are stable

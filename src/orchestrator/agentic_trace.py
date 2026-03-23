@@ -2,41 +2,63 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.orchestrator.agentic_projection import _project_extract_url_row
 from src.orchestrator.agentic_search import _peek_text, _unique_nonempty
 
 
 # Build the compact extract debug payload that downstream trajectory views can project.
 def _summarize_extract_action_debug(action_result: dict[str, Any]) -> dict[str, Any]:
     extract_trace = action_result.get("extract_windows_trace") if isinstance(action_result.get("extract_windows_trace"), list) else []
+    targets = [
+        {
+            "target_id": str(item.get("target_id") or ""),
+            "url": str(item.get("url") or ""),
+            "window_count": int(item.get("window_count") or 0),
+            "segment_total": int(item.get("segment_total") or 0),
+            "segment_batch_size": int(item.get("segment_batch_size") or 0),
+            "batch_mode": str(item.get("batch_mode") or ""),
+            "input_token_budget": int(item.get("input_token_budget") or 0),
+            "segments_done": int(item.get("segments_done") or 0),
+            "segments_pending": int(item.get("segments_pending") or 0),
+            "coverage_pct": float(item.get("coverage_pct") or 0.0),
+            "llm_requests": int(item.get("llm_requests") or 0),
+            "llm_responses": int(item.get("llm_responses") or 0),
+            "llm_empty_responses": int(item.get("llm_empty_responses") or 0),
+            "llm_errors": int(item.get("llm_errors") or 0),
+            "last_input_tokens_est": int(item.get("last_input_tokens_est") or 0),
+            "last_segment_tokens_est": int(item.get("last_segment_tokens_est") or 0),
+            "last_scaffold_tokens_est": int(item.get("last_scaffold_tokens_est") or 0),
+            "llm_items_count": int(item.get("llm_items_count") or 0),
+            "llm_items": [
+                str(row.get("paper_title") or "")
+                for row in (item.get("llm_items") or [])[:10]
+                if isinstance(row, dict)
+            ],
+        }
+        for item in extract_trace[:8]
+        if isinstance(item, dict)
+    ]
     return {
-        "targets": [
+        "targets": targets,
+        "url_checks": [
             {
-                "target_id": str(item.get("target_id") or ""),
-                "url": str(item.get("url") or ""),
-                "window_count": int(item.get("window_count") or 0),
-                "segment_total": int(item.get("segment_total") or 0),
-                "segment_batch_size": int(item.get("segment_batch_size") or 0),
-                "batch_mode": str(item.get("batch_mode") or ""),
-                "input_token_budget": int(item.get("input_token_budget") or 0),
-                "segments_done": int(item.get("segments_done") or 0),
-                "segments_pending": int(item.get("segments_pending") or 0),
-                "coverage_pct": float(item.get("coverage_pct") or 0.0),
-                "llm_requests": int(item.get("llm_requests") or 0),
-                "llm_responses": int(item.get("llm_responses") or 0),
-                "llm_empty_responses": int(item.get("llm_empty_responses") or 0),
-                "llm_errors": int(item.get("llm_errors") or 0),
-                "last_input_tokens_est": int(item.get("last_input_tokens_est") or 0),
-                "last_segment_tokens_est": int(item.get("last_segment_tokens_est") or 0),
-                "last_scaffold_tokens_est": int(item.get("last_scaffold_tokens_est") or 0),
-                "llm_items_count": int(item.get("llm_items_count") or 0),
-                "llm_items": [
-                    str(row.get("paper_title") or "")
-                    for row in (item.get("llm_items") or [])[:10]
-                    if isinstance(row, dict)
-                ],
+                "url": str(row.get("url") or ""),
+                "target_id": str(row.get("target_id") or ""),
+                "status": str(row.get("status") or ""),
+                "segments_done": int(row.get("segments_done") or 0),
+                "segment_total": int(row.get("segment_total") or 0),
+                "all_papers_extracted": bool(row.get("all_papers_extracted")),
+                "has_more_results": bool(row.get("has_more_results")),
+                "last_error": str(row.get("last_error") or ""),
             }
-            for item in extract_trace[:8]
-            if isinstance(item, dict)
+            for row in (
+                _project_extract_url_row(
+                    url=str(item.get("url") or ""),
+                    row=dict(item),
+                )
+                for item in extract_trace[:8]
+                if isinstance(item, dict) and str(item.get("url") or "").strip()
+            )
         ],
     }
 

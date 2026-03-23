@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.orchestrator.agentic_projection import _project_extract_url_rows
 from src.orchestrator.agentic_text import _host_from_url, _normalize_anchor_terms, _peek_text
 from src.retrieval.service import write_yaml
 
@@ -77,6 +78,7 @@ def _write_agentic_trajectory(
         progress = move.get("progress") if isinstance(move.get("progress"), dict) else {}
         action_debug = move.get("action_debug") if isinstance(move.get("action_debug"), dict) else {}
         targets = [item for item in (action_debug.get("targets") or []) if isinstance(item, dict)]
+        url_checks = [item for item in (action_debug.get("url_checks") or []) if isinstance(item, dict)]
         user_view.append(
             {
                 "cycle_index": step,
@@ -93,6 +95,19 @@ def _write_agentic_trajectory(
                     "segments_pending": sum(int(item.get("segments_pending") or 0) for item in targets),
                     "llm_requests": sum(int(item.get("llm_requests") or 0) for item in targets),
                     "llm_errors": sum(int(item.get("llm_errors") or 0) for item in targets),
+                    "url_checks": [
+                        {
+                            "url": str(item.get("url") or ""),
+                            "target_id": str(item.get("target_id") or ""),
+                            "status": str(item.get("status") or ""),
+                            "segments_done": int(item.get("segments_done") or 0),
+                            "segment_total": int(item.get("segment_total") or 0),
+                            "all_papers_extracted": bool(item.get("all_papers_extracted")),
+                            "has_more_results": bool(item.get("has_more_results")),
+                            "last_error": str(item.get("last_error") or ""),
+                        }
+                        for item in url_checks[:6]
+                    ],
                 }
                 if action == "extract_content"
                 else {},
@@ -233,36 +248,22 @@ def _compact_known_urls_for_agent(
     extract_state_by_url: dict[str, Any] | None = None,
     max_items: int = 6,
 ) -> list[dict]:
-    out: list[dict] = []
-    seen: set[str] = set()
-    extract_state = extract_state_by_url if isinstance(extract_state_by_url, dict) else {}
-    for item in url_hits:
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or "").strip()
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        row_state = extract_state.get(url) if isinstance(extract_state.get(url), dict) else {}
-        status = "new"
-        if bool(row_state.get("completed")):
-            status = "completed"
-        elif bool(row_state.get("failed")):
-            status = "failed"
-        elif bool(row_state.get("fetched")) or int(row_state.get("segments_done") or 0) > 0:
-            status = "in_progress"
-        out.append(
-            {
-                "url": url,
-                "title": _peek_text(str(item.get("url_title") or item.get("title") or ""), 100),
-                "host": str(item.get("host") or _host_from_url(url)),
-                "peek": _peek_text(str(item.get("peek") or ""), 120),
-                "status": status,
-            }
-        )
-        if len(out) >= max_items:
-            break
-    return out
+    projected = _project_extract_url_rows(
+        extract_state_by_url=extract_state_by_url,
+        url_hits=[item for item in url_hits if isinstance(item, dict)],
+        max_items=max_items,
+    )
+    return [
+        {
+            "url": str(item.get("url") or ""),
+            "title": str(item.get("title") or ""),
+            "host": str(item.get("host") or _host_from_url(str(item.get("url") or ""))),
+            "peek": str(item.get("peek") or ""),
+            "status": str(item.get("status") or ""),
+        }
+        for item in projected
+        if isinstance(item, dict)
+    ]
 
 
 def _compact_matched_papers_for_agent(papers: list[dict], *, max_items: int = 6) -> list[dict]:
@@ -296,13 +297,17 @@ def _build_agent_memory(
     stop_reason: str = "",
 ) -> dict:
     plan = _compact_plan_for_agent(plan_state)
+    projected_urls = _project_extract_url_rows(
+        extract_state_by_url=extract_state_by_url,
+        url_hits=[item for item in url_hits if isinstance(item, dict)],
+    )
     blockers: list[str] = []
-    for url, row in list((extract_state_by_url or {}).items())[:16]:
-        if not isinstance(row, dict):
+    for item in projected_urls[:16]:
+        if not isinstance(item, dict):
             continue
-        if bool(row.get("failed")):
-            message = str(row.get("last_error") or "extract_failed").strip()
-            blockers.append(_peek_text(f"{url} :: {message}", 160))
+        if str(item.get("status") or "") == "failed":
+            message = str(item.get("last_error") or "extract_failed").strip()
+            blockers.append(_peek_text(f"{str(item.get('url') or '')} :: {message}", 160))
     if stop_reason:
         blockers.append(_peek_text(stop_reason, 160))
     last_step: dict[str, Any] = {}

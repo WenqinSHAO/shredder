@@ -1393,12 +1393,16 @@ def _run_prepared_extract_target(
             "segment_total": 0,
             "failed": False,
             "completed": False,
+            "coverage_has_more": False,
             "last_error": "",
         },
     )
     if bool(page_state.get("failed")) or bool(page_state.get("completed")):
         trace_entry["status"] = "skipped"
         trace_entry["skip_reason"] = "failed" if bool(page_state.get("failed")) else "completed"
+        trace_entry["failed"] = bool(page_state.get("failed"))
+        trace_entry["completed"] = bool(page_state.get("completed"))
+        trace_entry["coverage_has_more"] = bool(page_state.get("coverage_has_more"))
         trace_entry["last_error"] = str(page_state.get("last_error") or "")
         trace_entry["segments_done"] = int(page_state.get("segments_done") or 0)
         trace_entry["segments_pending"] = max(
@@ -1427,8 +1431,12 @@ def _run_prepared_extract_target(
     start = max(0, min(int(page_state.get("segments_done") or 0), len(ranked_segments)))
     if start >= len(ranked_segments):
         page_state["completed"] = True
+        page_state["coverage_has_more"] = False
         trace_entry["status"] = "skipped"
         trace_entry["skip_reason"] = "completed"
+        trace_entry["failed"] = False
+        trace_entry["completed"] = True
+        trace_entry["coverage_has_more"] = False
         trace_entry["segments_done"] = start
         trace_entry["segments_pending"] = 0
         trace_entry["coverage_pct"] = 100.0
@@ -1574,6 +1582,8 @@ def _run_prepared_extract_target(
                 llm_timeout_errors += 1
                 trace_entry["llm_timeout_errors"] = int(trace_entry.get("llm_timeout_errors") or 0) + 1
             page_state["failed"] = True
+            page_state["completed"] = False
+            page_state["coverage_has_more"] = False
             page_state["last_error"] = last_error
             page_state["segments_done"] = max(int(page_state.get("segments_done") or 0), batch_start)
             if raw_event_fn is not None:
@@ -1640,8 +1650,12 @@ def _run_prepared_extract_target(
 
     if start >= len(ranked_segments):
         page_state["completed"] = True
+        page_state["failed"] = False
     if not bool(page_state.get("failed")) and start < len(ranked_segments):
         coverage_has_more = True
+    page_state["coverage_has_more"] = coverage_has_more
+    if not bool(page_state.get("failed")):
+        page_state["last_error"] = ""
 
     trace_entry["llm_items_count"] = local_count
     trace_entry["llm_items"] = [
@@ -1655,6 +1669,11 @@ def _run_prepared_extract_target(
         }
         for item in local_trace_items
     ]
+    trace_entry["status"] = "failed" if bool(page_state.get("failed")) else ("completed" if bool(page_state.get("completed")) else "in_progress")
+    trace_entry["failed"] = bool(page_state.get("failed"))
+    trace_entry["completed"] = bool(page_state.get("completed"))
+    trace_entry["coverage_has_more"] = coverage_has_more
+    trace_entry["last_error"] = str(page_state.get("last_error") or "")
     trace_entry["segments_done"] = min(start, len(ranked_segments))
     trace_entry["segments_pending"] = max(0, len(ranked_segments) - int(trace_entry.get("segments_done") or 0))
     done = float(trace_entry.get("segments_done") or 0)

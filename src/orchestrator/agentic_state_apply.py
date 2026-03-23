@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.orchestrator.agentic_projection import _project_extract_url_rows
 from src.orchestrator.agentic_result import (
     _has_venue_evidence,
     _merge_paper_candidates,
@@ -39,24 +40,29 @@ def _set_paper_candidates(
 
 
 # Project extract-state progress into the compact result coverage contract.
-def _build_extract_coverage_summary(extract_state_by_url: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    url_checks: list[dict[str, Any]] = []
-    for url, row in dict(extract_state_by_url or {}).items():
-        if not str(url).strip() or not isinstance(row, dict):
-            continue
-        segments_done = int(row.get("segments_done") or 0)
-        segment_total = int(row.get("segment_total") or 0)
-        has_more = bool(row.get("coverage_has_more"))
-        url_checks.append(
-            {
-                "url": str(url),
-                "target_id": str(row.get("target_id") or ""),
-                "segments_done": segments_done,
-                "segment_total": segment_total,
-                "all_papers_extracted": segment_total > 0 and segments_done >= segment_total and not has_more,
-                "has_more_results": has_more,
-            }
-        )
+def _build_extract_coverage_summary(
+    extract_state_by_url: dict[str, dict[str, Any]],
+    *,
+    url_hits: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    projected_rows = _project_extract_url_rows(
+        extract_state_by_url=extract_state_by_url,
+        url_hits=url_hits,
+    )
+    url_checks = [
+        {
+            "url": str(row.get("url") or ""),
+            "target_id": str(row.get("target_id") or ""),
+            "status": str(row.get("status") or ""),
+            "segments_done": int(row.get("segments_done") or 0),
+            "segment_total": int(row.get("segment_total") or 0),
+            "all_papers_extracted": bool(row.get("all_papers_extracted")),
+            "has_more_results": bool(row.get("has_more_results")),
+            "last_error": str(row.get("last_error") or ""),
+        }
+        for row in projected_rows
+        if isinstance(row, dict)
+    ]
     return {
         "shortlisted_urls_total": len(url_checks),
         "shortlisted_urls_complete": sum(1 for row in url_checks if bool(row.get("all_papers_extracted"))),
@@ -85,6 +91,10 @@ def _apply_extract_coverage_update(
         page_state["segments_done"] = int(item.get("segments_done") or page_state.get("segments_done") or 0)
         page_state["segment_total"] = int(item.get("segment_total") or page_state.get("segment_total") or 0)
         page_state["coverage_has_more"] = bool(item.get("coverage_has_more"))
+        page_state["failed"] = bool(item.get("failed") or page_state.get("failed"))
+        page_state["completed"] = bool(item.get("completed") or page_state.get("completed"))
+        if str(item.get("last_error") or "").strip():
+            page_state["last_error"] = str(item.get("last_error") or "").strip()
 
 
 # Apply search results into persisted URL-hit state; upstream is search execution and downstream is later extract targeting.
