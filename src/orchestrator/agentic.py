@@ -287,22 +287,6 @@ def _new_result_state() -> dict:
     }
 
 
-def _default_paper_state() -> dict[str, Any]:
-    return {
-        "final_candidates": [],
-        "fallback_candidates": [],
-        "coverage_summary": {
-            "fetch_targets_total": 0,
-            "fetch_targets_ok": 0,
-            "fetch_targets_error": 0,
-            "extract_records_total": 0,
-            "extract_records_ok": 0,
-            "extract_records_with_venue_evidence": 0,
-            "venue_evidence_required": False,
-        },
-    }
-
-
 def _read_int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -1724,36 +1708,14 @@ def _make_progress_record(*, source: str, step_id: str, status: str, note: str) 
 
 
 @dataclass
-class _CoverageSummary:
-    shortlisted_urls_total: int = 0
-    shortlisted_urls_complete: int = 0
-    shortlisted_urls_with_more_results: int = 0
-    url_checks: list[dict[str, Any]] = field(default_factory=list)
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "shortlisted_urls_total": int(self.shortlisted_urls_total or 0),
-            "shortlisted_urls_complete": int(self.shortlisted_urls_complete or 0),
-            "shortlisted_urls_with_more_results": int(self.shortlisted_urls_with_more_results or 0),
-            "url_checks": [
-                dict(row)
-                for row in self.url_checks
-                if isinstance(row, dict) and str(row.get("url") or "").strip()
-            ],
-        }
-
-
-@dataclass
 class _PaperState:
     final_candidates: list[dict[str, Any]] = field(default_factory=list)
     fallback_candidates: list[dict[str, Any]] = field(default_factory=list)
-    coverage_summary: _CoverageSummary = field(default_factory=_CoverageSummary)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "final_candidates": [dict(row) for row in self.final_candidates if isinstance(row, dict)],
             "fallback_candidates": [dict(row) for row in self.fallback_candidates if isinstance(row, dict)],
-            "coverage_summary": self.coverage_summary.as_dict(),
         }
 
 
@@ -1823,6 +1785,7 @@ class _AgenticSearchLoop:
         compact_result = _compact_result_payload(
             run_result=self.run_result,
             paper_state=self.paper_state.as_dict(),
+            coverage_summary=_build_extract_coverage_summary(self.extract_state.by_url),
             prompt=self.prompt,
             llm_model=agent_model,
             display_top_n=display_limit,
@@ -1954,10 +1917,6 @@ class _AgentDecision:
     reason: str
 
 
-def _paper_coverage(loop: _AgenticSearchLoop) -> dict[str, Any]:
-    return loop.paper_state.coverage_summary.as_dict()
-
-
 def _paper_final_candidates(loop: _AgenticSearchLoop) -> list[dict[str, Any]]:
     return [row for row in loop.paper_state.final_candidates if isinstance(row, dict)]
 
@@ -1976,44 +1935,51 @@ def _set_paper_candidates(
     loop.paper_state.fallback_candidates = [dict(row) for row in fallback_candidates if isinstance(row, dict)]
 
 
-def _update_paper_coverage(
-    loop: _AgenticSearchLoop,
-    *,
-    action_result: dict[str, Any],
-    extracted_paper_candidates: list[dict[str, Any]],
-) -> None:
-    coverage = loop.paper_state.coverage_summary
-    extract_trace = action_result.get("extract_windows_trace")
-    if not isinstance(extract_trace, list):
-        extract_trace = []
+def _build_extract_coverage_summary(extract_state_by_url: dict[str, dict[str, Any]]) -> dict[str, Any]:
     url_checks: list[dict[str, Any]] = []
-    for item in extract_trace:
-        if not isinstance(item, dict):
+    for url, row in dict(extract_state_by_url or {}).items():
+        if not str(url).strip() or not isinstance(row, dict):
             continue
-        url = str(item.get("url") or "").strip()
-        if not url:
-            continue
-        segments_done = int(item.get("segments_done") or 0)
-        segment_total = int(item.get("segment_total") or 0)
-        has_more = bool(item.get("coverage_has_more"))
+        segments_done = int(row.get("segments_done") or 0)
+        segment_total = int(row.get("segment_total") or 0)
+        has_more = bool(row.get("coverage_has_more"))
         url_checks.append(
             {
-                "url": url,
-                "target_id": str(item.get("target_id") or ""),
+                "url": str(url),
+                "target_id": str(row.get("target_id") or ""),
                 "segments_done": segments_done,
                 "segment_total": segment_total,
                 "all_papers_extracted": segment_total > 0 and segments_done >= segment_total and not has_more,
                 "has_more_results": has_more,
             }
         )
-    coverage.url_checks = url_checks
-    coverage.shortlisted_urls_total = len(url_checks)
-    coverage.shortlisted_urls_complete = sum(
-        1 for row in url_checks if bool(row.get("all_papers_extracted"))
-    )
-    coverage.shortlisted_urls_with_more_results = sum(
-        1 for row in url_checks if bool(row.get("has_more_results"))
-    )
+    return {
+        "shortlisted_urls_total": len(url_checks),
+        "shortlisted_urls_complete": sum(1 for row in url_checks if bool(row.get("all_papers_extracted"))),
+        "shortlisted_urls_with_more_results": sum(1 for row in url_checks if bool(row.get("has_more_results"))),
+        "url_checks": url_checks,
+    }
+
+
+def _update_extract_coverage_state(
+    loop: _AgenticSearchLoop,
+    *,
+    action_result: dict[str, Any],
+) -> None:
+    extract_trace = action_result.get("extract_windows_trace")
+    if not isinstance(extract_trace, list):
+        extract_trace = []
+    for item in extract_trace:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        page_state = loop.extract_state.by_url.setdefault(url, {})
+        page_state["target_id"] = str(item.get("target_id") or page_state.get("target_id") or "")
+        page_state["segments_done"] = int(item.get("segments_done") or page_state.get("segments_done") or 0)
+        page_state["segment_total"] = int(item.get("segment_total") or page_state.get("segment_total") or 0)
+        page_state["coverage_has_more"] = bool(item.get("coverage_has_more"))
 
 
 def _refresh_agent_memory(loop: _AgenticSearchLoop) -> None:
@@ -2158,10 +2124,9 @@ def _finalize_extract_action(
     extracted_paper_candidates: list[dict[str, Any]],
     action_result: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    _update_paper_coverage(
+    _update_extract_coverage_state(
         loop=loop,
         action_result=action_result,
-        extracted_paper_candidates=extracted_paper_candidates,
     )
     return []
 

@@ -63,6 +63,7 @@ def _compact_result_payload(
     *,
     run_result: dict,
     paper_state: dict,
+    coverage_summary: dict | None,
     prompt: str,
     llm_model: str,
     display_top_n: int,
@@ -95,7 +96,7 @@ def _compact_result_payload(
         )
     if int(display_top_n or 0) > 0:
         papers = papers[: int(display_top_n)]
-    coverage = paper_state.get("coverage_summary") if isinstance(paper_state.get("coverage_summary"), dict) else {}
+    coverage = coverage_summary if isinstance(coverage_summary, dict) else {}
     return {
         "artifact_type": "agentic_result",
         "schema_version": "0.2.0",
