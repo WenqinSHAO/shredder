@@ -106,6 +106,52 @@ def _mock_search_web_empty(**kwargs):
 
 @unittest.skipUnless(HAS_PYYAML, "PyYAML is not installed in this environment")
 class TestAgenticRetrievalI1(unittest.TestCase):
+    def test_extract_json_object_accepts_fenced_json(self):
+        payload = agentic_mod._extract_json_object(
+            """```json
+            {"action": "search_web", "params": {"queries": ["nsdi 2025 accepted papers"]}}
+            ```"""
+        )
+        self.assertEqual(payload["action"], "search_web")
+        self.assertEqual(payload["params"]["queries"], ["nsdi 2025 accepted papers"])
+
+    def test_estimate_messages_metrics_coerces_list_content(self):
+        metrics = agentic_mod._estimate_messages_metrics(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"text": "hello"},
+                        {"content": "world"},
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(metrics["input_chars"], len("user") + len("hello\nworld"))
+        self.assertGreater(metrics["input_tokens_est"], 0)
+
+    def test_resolve_openai_model_and_base_url_supports_provider_prefix(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "DEEPSEEK_BASE_URL": "https://deepseek.example/v1",
+                "OPENAI_BASE_URL": "https://openai.example/v1",
+            },
+            clear=False,
+        ):
+            deepseek_model, deepseek_url = agentic_mod._resolve_openai_model_and_base_url(
+                model="deepseek/deepseek-chat",
+                api_key_env="DS_API_KEY",
+            )
+            openai_model, openai_url = agentic_mod._resolve_openai_model_and_base_url(
+                model="openai/gpt-4o-mini",
+                api_key_env="OPENAI_API_KEY",
+            )
+        self.assertEqual(deepseek_model, "deepseek-chat")
+        self.assertEqual(deepseek_url, "https://deepseek.example/v1")
+        self.assertEqual(openai_model, "gpt-4o-mini")
+        self.assertEqual(openai_url, "https://openai.example/v1")
+
     def test_generic_windows_robust_to_order_and_boilerplate_mutation(self):
         core = (
             "SimAI: Unifying Architecture Design and Performance Tuning for Large-Scale LLM Training. "
@@ -2298,9 +2344,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         "match": {"institution_any": ["Google", "Google LLC"], "year_gte": "2025"},
                         "filters": {"institution": "Google", "year_gte": 2025},
                     }
-                ],
-                "anchor_terms": ["Google", "Nandita Dukkipati"],
-                "filters": {"institution": "Google", "year_gte": 2025},
+                ]
             },
         )
 

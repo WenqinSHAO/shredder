@@ -426,8 +426,6 @@ def _sanitize_agent_action_params(action: str, params: dict) -> dict:
     if action == "extract_content":
         targets = [row for row in (raw.get("targets") or []) if isinstance(row, dict)]
         normalized_targets = []
-        merged_anchor_terms: list[str] = []
-        merged_filters: dict[str, Any] = {}
         for row in targets[:12]:
             url = str(row.get("url") or "").strip()
             if not url:
@@ -444,15 +442,9 @@ def _sanitize_agent_action_params(action: str, params: dict) -> dict:
             if isinstance(row.get("match"), dict):
                 normalized["match"] = dict(row.get("match") or {})
             normalized_targets.append(normalized)
-            merged_anchor_terms.extend(target_anchor_terms)
-            for key, value in target_filters.items():
-                if key not in merged_filters and value not in ("", None):
-                    merged_filters[key] = value
         if normalized_targets:
             return {
                 "targets": normalized_targets,
-                "anchor_terms": _normalize_anchor_terms(merged_anchor_terms),
-                "filters": merged_filters,
             }
         return {
             "target_ids": [str(v) for v in (raw.get("target_ids") or []) if str(v).strip()][:12],
