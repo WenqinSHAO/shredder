@@ -4,7 +4,7 @@ Last updated: 2026-03-23
 
 ## 0) Usage Contract
 
-This board is the persistent external memory for implementation tracking.
+This board is the persistent external memory for implementation tracking and the repository's task board / progress bar.
 
 Rules:
 - Read this file before coding.
