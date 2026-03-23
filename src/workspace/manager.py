@@ -63,9 +63,10 @@ def init_project(project_id: str, theme: str | None = None) -> Path:
                     "agentic": {
                         "enabled": True,
                         "top_n": 5,
-                        "max_cycles": 3,
-                        "queries_per_cycle": 4,
-                        "web_results_per_query": 8,
+                        "max_cycles": 5,
+                        "queries_per_cycle": 8,
+                        "web_results_per_query": 6,
+                        "searxng_timeout_s": 15.0,
                         "searxng_categories": "general",
                         "llm": {
                             "model": "deepseek/deepseek-chat",

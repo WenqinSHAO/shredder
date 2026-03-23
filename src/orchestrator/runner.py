@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from src.workspace.manager import init_project
 from .steps import run_discovery, run_parsing, run_extraction, run_render
-from .agentic import run_retrieve_agentic
+from .agentic import run_retrieve_agentic, run_extract_agentic_local
 from .retrieval import run_retrieve_open, run_retrieve_paper
 
 
@@ -38,6 +38,15 @@ def run_step(project_id: str, step: str, **kwargs):
             project_id,
             prompt=kwargs.get("prompt", ""),
             top_n=int(kwargs.get("top_n", 5)),
+            final_limit=int(kwargs.get("final_limit", 0)),
+            debug_retrieval=kwargs.get("debug_retrieval"),
             progress_callback=kwargs.get("progress_callback"),
+        )
+    if step == "extract-agentic-local":
+        return run_extract_agentic_local(
+            project_id,
+            institution=kwargs.get("institution", ""),
+            year_gte=int(kwargs.get("year_gte", 0)),
+            url_contains=kwargs.get("url_contains", ""),
         )
     raise ValueError(f"Unknown step: {step}")

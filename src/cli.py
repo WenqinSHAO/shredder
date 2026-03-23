@@ -141,16 +141,38 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
         return
     if name == "agentic_llm_planner_request" or name == "agentic_llm_agent_request":
         payload = event.get("payload") or {}
-        print(f"{prefix} agent request:", flush=True)
-        print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
+        print(
+            f"{prefix} agent request cycle={event.get('cycle_index')} action_id={event.get('action_id')} "
+            f"candidates={len(payload.get('current_candidates') or [])} raw_ref={event.get('raw_event_id')}",
+            flush=True,
+        )
         return
     if name == "agentic_llm_planner_response" or name == "agentic_llm_agent_response":
         payload = event.get("payload") or {}
-        print(f"{prefix} agent response:", flush=True)
-        print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
         planned = event.get("planned_queries") or []
         selected_action = event.get("selected_action")
-        print(f"{prefix} selected_action={selected_action} derived queries ({len(planned)}): {planned}", flush=True)
+        print(
+            f"{prefix} agent response cycle={event.get('cycle_index')} action_id={event.get('action_id')} "
+            f"selected_action={selected_action} query_count={len(planned)} raw_ref={event.get('raw_event_id')}",
+            flush=True,
+        )
+        if planned:
+            print(f"{prefix} queries={planned}", flush=True)
+        return
+    if name == "agentic_action_start":
+        print(
+            f"{prefix} action start cycle={event.get('cycle_index')} action_id={event.get('action_id')} "
+            f"step={event.get('active_step_id')} action={event.get('action')} raw_ref={event.get('raw_event_id')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_action_done":
+        print(
+            f"{prefix} action done cycle={event.get('cycle_index')} action_id={event.get('action_id')} "
+            f"action={event.get('action')} status={event.get('status')} note={event.get('notes')} "
+            f"raw_ref={event.get('raw_event_id')}",
+            flush=True,
+        )
         return
     if name == "agentic_web_search_query_start":
         print(
@@ -160,18 +182,78 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
         )
         return
     if name == "agentic_web_search_query_done":
+        error = str(event.get("error") or "")
+        extra = f" error={error}" if error else ""
         print(
             f"{prefix} search done query={event.get('query')} raw_results={event.get('raw_results')} "
-            f"used_results={event.get('used_results')}",
+            f"used_results={event.get('used_results')}{extra}",
+            flush=True,
+        )
+        return
+    if name == "agentic_extract_target_start":
+        print(
+            f"{prefix} extract start cycle={event.get('cycle_index')} target={event.get('target_id')} url={event.get('url')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_extract_batch_start":
+        print(
+            f"{prefix} llm extract batch start cycle={event.get('cycle_index')} target={event.get('target_id')} "
+            f"pass={event.get('pass_index')} batch={event.get('batch_start')}+{event.get('batch_size')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_extract_batch_done":
+        err = str(event.get("error") or "")
+        extra = f" error={err}" if err else ""
+        print(
+            f"{prefix} llm extract batch done cycle={event.get('cycle_index')} target={event.get('target_id')} "
+            f"extracted={event.get('extracted_count')} pass={event.get('pass_index')}{extra}",
+            flush=True,
+        )
+        return
+    if name == "agentic_extract_stage":
+        stage = str(event.get("stage") or "")
+        print(
+            f"{prefix} extract stage cycle={event.get('cycle_index')} target={event.get('target_id') or '-'} "
+            f"stage={stage} total={event.get('segments_total')} ranked={event.get('segments_ranked')} "
+            f"det={event.get('deterministic_listing_count')} llm={event.get('llm_count')} merged={event.get('merged_count')}",
+            flush=True,
+        )
+        return
+    if name == "agentic_extract_target_done":
+        done = event.get("segments_done")
+        total = event.get("segments_total")
+        coverage = f" segments={done}/{total}" if done is not None and total is not None else ""
+        print(
+            f"{prefix} extract done cycle={event.get('cycle_index')} target={event.get('target_id')} "
+            f"extracted={event.get('extracted_count')} coverage_has_more={event.get('coverage_has_more')}{coverage}",
             flush=True,
         )
         return
     if name == "agentic_condensed_summary":
         summary = event.get("summary") or {}
+        top_hits = summary.get("top_hits") if isinstance(summary.get("top_hits"), list) else []
+        top_preview = [str((row or {}).get("title") or "") for row in top_hits[:3] if isinstance(row, dict)]
+        extract_cov = summary.get("extract_coverage") if isinstance(summary.get("extract_coverage"), dict) else {}
+        cov_note = ""
+        if extract_cov:
+            cov_note = f" coverage={extract_cov}"
         print(
             f"{prefix} condensed summary cycle={event.get('cycle_index')} "
             f"result_count={summary.get('result_count')} venues={summary.get('venues')} "
-            f"keywords={summary.get('keywords')}",
+            f"top_hits={top_preview}{cov_note}",
+            flush=True,
+        )
+        return
+    if name == "agentic_progress_snapshot":
+        progress = event.get("progress") or {}
+        todo = progress.get("todo") if isinstance(progress.get("todo"), dict) else {}
+        print(
+            f"{prefix} progress cycle={event.get('cycle_index')} action={progress.get('action')} "
+            f"step={progress.get('active_step_id')} todo={todo.get('done', 0)}/{todo.get('total', 0)} "
+            f"doing={todo.get('doing', 0)} final_matches={progress.get('final_candidates', 0)} "
+            f"decision={progress.get('decision')}",
             flush=True,
         )
         return
@@ -187,9 +269,10 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
         return
     if name == "agentic_cycle_decision":
         print(
-            f"{prefix} cycle={event.get('cycle_index')} decision={event.get('decision')} "
+            f"{prefix} cycle={event.get('cycle_index')} action_id={event.get('action_id')} decision={event.get('decision')} "
             f"reason={event.get('decision_reason')} stop_reason={event.get('stop_reason')} "
-            f"raw={event.get('raw_candidates')} shortlisted={event.get('shortlisted')}",
+            f"raw={event.get('raw_candidates')} shortlisted={event.get('shortlisted')} "
+            f"final_matches={event.get('final_candidates')}",
             flush=True,
         )
         return
@@ -239,6 +322,14 @@ def main() -> None:
     p_retrieve_agentic.add_argument("project_id")
     p_retrieve_agentic.add_argument("--prompt", required=True)
     p_retrieve_agentic.add_argument("--top-n", type=int, default=5)
+    p_retrieve_agentic.add_argument("--final-limit", type=int, default=0)
+    p_retrieve_agentic.add_argument("--debug-retrieval", action="store_true")
+
+    p_extract_local = sub.add_parser("extract-agentic-local")
+    p_extract_local.add_argument("project_id")
+    p_extract_local.add_argument("--institution", default="")
+    p_extract_local.add_argument("--year-gte", type=int, default=0)
+    p_extract_local.add_argument("--url-contains", default="")
 
     args = parser.parse_args()
     try:
@@ -277,9 +368,20 @@ def main() -> None:
                 "retrieve-agentic",
                 prompt=args.prompt,
                 top_n=args.top_n,
+                final_limit=args.final_limit,
+                debug_retrieval=bool(args.debug_retrieval),
                 progress_callback=_print_retrieve_agentic_progress,
             )
             print(f"Agentic retrieval complete: {result}")
+        elif args.cmd == "extract-agentic-local":
+            result = run_step(
+                args.project_id,
+                "extract-agentic-local",
+                institution=args.institution,
+                year_gte=int(args.year_gte or 0),
+                url_contains=args.url_contains,
+            )
+            print(f"Local extraction complete: {result}")
     except YamlDependencyError as exc:
         raise SystemExit(f"YAML dependency error: {exc}") from exc
 
