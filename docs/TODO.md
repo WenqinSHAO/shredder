@@ -73,190 +73,130 @@ Deferred backlog:
 ### 3.2.1 Current Baseline
 
 Working:
-- iterative agent loop with `search_web`, `extract_content`
-- raw fetch artifact persistence
-- extractor LLM integration
-- plan/progress trajectory and CLI progress events
+- iterative loop with `search_web` and `extract_content`
+- compact planner contract (`decision`, `state_delta`, `progress`, `action`)
+- raw fetch artifact persistence and replay-friendly fixtures
+- typed loop records for `run_state`, config groups, URL/extract/paper state
+- user-facing result and trajectory artifacts generated from compact projections
 
-Main issues:
-- main loop still carries too much mixed state (`plan_state`, `plan_progress`, `timeline_moves`, `runtime_state`, `run_result`)
-- tool config still leaks into loop attributes instead of being grouped by agent/search/extract tool
-- final candidates still include noisy title variants in some runs (author/session leakage)
-- extraction quality still overly heuristic in parts
-- runtime dominated by LLM latency
-- traces still need clearer latency split (`main_agent` vs `extractor`)
-- extraction input/output contracts still need to be narrowed around a single URL-target path so debugging is not spread across `target_ids`/`urls`/coverage side paths
+Main problems to finish:
+- `src/orchestrator/agentic.py` is still too large and still mixes orchestration with runtime mutation details
+- the action/runtime bridge is still broader than necessary, especially around fetched-record exchange
+- fetch/cache ownership is still loop-adjacent rather than a clearly bounded mechanism subsystem
+- projection/normalization logic is still spread across multiple helpers and modules
+- extraction/runtime performance work is partially blocked by the remaining contract sprawl
 
-### 3.2.2 Big-Line Phases and Milestones
+### 3.2.2 Hardened Optimization Direction
 
-| Phase | Milestone | Significance | Goal | Status |
-|---|---|---|---|---|
-| P0 | `M-Agentic-P0` | Agent can plan and call web search iteratively. | Structured planning + actionable web-search loop works end-to-end. | Done |
-| P1 | `M-Agentic-P1` | End-to-end `search -> fetch -> extract` flow exists. | Agent can produce paper candidates via fetch and extraction actions. | Done |
-| P2 | `M-Agentic-Extract-QoS-v1` | Extraction quality and runtime become production-usable. | High precision/recall with stable normalization and operation-level timing observability. | Active |
-| P3 | `M-Agentic-Cache-v1` | Cross-run raw fetch reuse and artifact simplification. | Global raw-fetch cache and slim final result artifact contract. | Planned |
+Principle:
+- keep agentic behavior minimally structured
+- add structure only at exchange boundaries between:
+  - planner and app runtime
+  - search and shortlist mechanics
+  - fetch/cache and extraction mechanics
+  - runtime state and user-facing artifacts
 
-Phase goals:
-- `P2`: precision/recall quality hardening + LLM latency observability + extractor batching.
-- `P3`: global fetch cache + stable minimal user-facing result contract.
+Target layering:
+1. Agent semantic layer
+   - chooses next action, target URLs, anchor terms, minimal filters, stop/continue
+   - only sees compact `agent_memory`
+2. Runtime mechanism layer
+   - owns search, shortlist, fetch, extract, merge, dedup, coverage, cache
+   - owns mutable operational state
+3. Artifact/projection layer
+   - projects runtime state into stable result/trajectory artifacts
+   - does not feed extra operational detail back into the planner
 
-Milestone status notes:
-- `M-Agentic-P0`: achieved and stable.
-- `M-Agentic-P1`: achieved; quality/perf still being hardened in `P2`.
-- `M-Agentic-Extract-QoS-v1`: in progress; main blockers are consistent `papers by X` semantics, complementary official-page fetch coverage, and replay-backed validation.
-- `M-Agentic-Cache-v1`: not started.
+### 3.2.3 Minimum-Viable Finish Definition
 
-### 3.2.3 Active Phase (P2) Work Plan
+Agentic search is considered minimum-viable finished when:
+1. `agentic.py` is primarily a small coordinator for:
+   - planner turn
+   - action execution
+   - cycle finalize
+2. planner-facing memory is only `agent_memory`, kept compact and derived
+3. action executors exchange narrow runtime contracts, not broad ad hoc shared payloads
+4. fetch/cache handling is clearly separated from loop orchestration
+5. `cycle_trace` is the only loop-owned per-cycle debug ledger
+6. result and trajectory artifacts are pure projections from runtime state
+7. replay/targeted tests validate extraction, merge, and coverage behavior
+
+### 3.2.4 Hardened Work Board
 
 | ID | Task | Status | Notes |
 |---|---|---|---|
-| A1 | Split latency accounting (`main_agent`, `extractor`, fetch, preprocess, postprocess) | Done | Implemented generic paired op events (`op_start`/`op_end`) with shared `op_id` across agent/search/fetch/extractor. |
-| A2 | Stateless extractor schema-first row extraction (`paper_title_normalized`, authors, affiliations, abstract, evidence) | In progress | Schema extraction is live; row completeness is still being tracked for later enrichment and coverage reporting. |
-| A3 | Large-blob extractor batching (fewer, larger calls with token budget) | In progress | Moving from small char-budget segment passes to page-scale token-budgeted batches with lower retry amplification and explicit token accounting. |
-| A4 | Merge/dedup by normalized metadata (DOI/arXiv/title+author overlap) | In progress | Canonical merge exists; next tighten source-priority and author-aware merge without recall loss. |
-| A8 | Post-extract cleanup simplification | Deferred | Canonicalizer-specific cleanup is being removed from the active loop so extract coverage and shortlist completeness are easier to debug. |
-| A5 | Final artifact slimming: final result contains final matches only | In progress | Result artifact is slimmer; trajectory still needs better extract progress surfacing. |
-| A6 | Global raw-fetch cache outside project scope | Todo | Cross-run URL reuse to avoid refetching. |
-| A7 | Replay tests over saved fetch HTML to validate precision/recall | In progress | Expand fixtures and checks. |
-| A9 | Canonicalizer scope fix: cycle-local cleanup before global merge | In progress | Prevent later venue-local extraction intent from pruning valid papers found in earlier cycles. |
-| A10 | Match semantics alignment for `papers by X` | In progress | Default semantics should be at least one matching coauthor affiliation or author, not majority/first-author authorship. |
-| A11 | Preserve complementary official listing pages in fetch shortlist | In progress | Keep official `accepted-papers`/`program`/`technical sessions` style pages together when they provide complementary structure. |
-| A12 | Fast-path batch extraction prototype for authoritative pages | In progress | Defaulting authoritative/listing pages toward page-scale extraction batches to cut extractor latency. |
-| A13 | User-facing trajectory surfacing for extract progress | In progress | Show extract coverage and accumulated final-match progress in trajectory. |
-| A14 | External extractor spike (`langextract`-style grounding or adapter) | Todo | Evaluate whether external grounded extraction tooling helps long venue pages after the in-house page-batch path stabilizes. |
-| A18 | Draft and maintain compact agentic search spec | In progress | Minimal spec added at `docs/agentic-search-spec.md`; follow up with fetched-record minimization and final cycle-trace contract details as those stabilize. |
-| A19 | Extractor refactor for paper extraction + next-hop URL surfacing | Todo | Beyond extracting papers from current pages, the extractor/status path should surface candidate URLs that may carry more relevant search results and feed them back into shortlist/search decisions. |
-| A15 | Minimal loop-state refactor in `agentic.py` | In progress | `run_state` now owns `cycle_index/status/stop_reason`, is now a typed state record instead of a dict, `trace_state` is also now a typed record instead of a dict, `search_config` is now a typed tool-config record instead of a dict, `agent_config` and `extract_config` are now typed model/tool-config records instead of dicts, `result_config` is now a typed result-config record instead of a dict, `url_state` and `extract_state` are now typed loop-state records instead of dicts, `paper_state` is now a typed loop-state record that only owns final/fallback candidates, stale default helper functions for those typed state records are removed, extract coverage is now derived from `extract_state.by_url` at result-write time instead of being stored on `paper_state`, the loop/action runtime bridge is now localized behind a typed `_ActionRuntime` adapter instead of being built ad hoc at the call site, and `agent_plan` is now strict `active_step + todo` instead of cue summaries or step lists, `agent_memory` is the compact planner input, `plan_progress` is removed, the old compact-plan snapshot/delta side path is removed, dead previous-summary/candidate compaction helpers are removed from the view layer, the dead condensed-summary event path is removed, loop-side action views and cycle-commit calls are narrowed to only the fields the loop still consumes, `plan_result` / `action_ctx` no longer carry duplicate query/candidate payloads that can be read from normalized params or action results, `plan_result` now carries one normalized `agent_decision` record instead of split stop/reason fields, `plan_result` no longer carries `state_delta` or agent `latest_progress` just to seed the action trace, the loop boundary now uses small typed records instead of open dicts for the planner turn and action run, and the planner decision itself is now a typed record instead of a free-form dict, `run_retrieve_agentic(...)` now constructs typed loop state/config records directly, so the temporary dict-normalization bridge is removed, action context no longer carries a separate action-output raw id when that id is already the tail of `raw_event_ids`, action context no longer carries duplicate tool-progress state that can be derived from the action result, planner-call plumbing no longer threads duplicate prompt arguments, cycle summary/outcome helpers now take only the counts and metadata they actually consume, cycle action start/output trace plumbing is now localized behind `_start_cycle_action` / `_finish_cycle_action`, agent request/response raw-event plumbing is now localized behind `_start_agent_turn` / `_finish_agent_turn` / `_fail_agent_turn`, agent output normalization is now localized behind `_normalize_agent_turn_output`, cycle-trace initialization is now localized behind `_seed_cycle_trace`, the agent-response emit no longer repeats `selected_action` or `planned_queries` outside the payload itself, `cycle_trace` is the single append-only loop trace and now records per-cycle deltas, action inputs, minimal action outcomes, decisions, progress, and refs instead of full before/after state copies or duplicate counters, the trace no longer stores a duplicate `selected_action` field when the action is already present in `action_input`, cycle refs are finalized once at cycle end instead of being partially assembled in the summary path, the cycle-start trace row no longer seeds a partial `refs` snapshot, trajectory output now projects directly from that slimmer trace without a duplicate top-level `status_snapshot`, loop-side reads of `paper_state` are now localized behind small helpers for final/fallback candidates, and loop-side candidate writes are now localized behind helper functions; the current follow-up simplification path is to shrink `fetched_records` itself once the adapter boundary is stable. |
-| A16 | Move tool config out of loop attributes | In progress | Search knobs now live behind `search_config`, result display limit lives behind `result_config`, and main-agent/extractor LLM knobs now live behind `agent_config` / `extract_config`; old loop-level config aliases are no longer used inside the main loop path, and `request_id` / `workflow_name` are removed from the loop surface. |
-| A17 | Simplify agent-memory projection | In progress | Main agent now receives one compact `agent_memory` snapshot with `active_step`, `known_urls`, `matched_papers`, `blockers`, `last_step`, and `last_change`; old `previous_summary` / `previous_candidates` are no longer part of planner input, planner messages no longer duplicate `user_prompt` outside `working_state`, the loop now consumes only the new `decision/state_delta/progress/action` planner envelope, and `agent_plan` is now explicitly separated from the compact memory projection, but the current deterministic builder still needs major optimization/refactoring as loop state contracts stabilize. |
+| H1 | Shrink `agentic.py` into a coordinator-only loop | In progress | Keep only planner turn, action execution, and cycle finalize in the loop surface. |
+| H2 | Separate semantic planner state from operational runtime state | In progress | `agent_memory` remains planner-facing and derived; runtime state owns fetch/extract/search mutation. |
+| H3 | Narrow the action/runtime contract | In progress | `_ActionRuntime` should carry only action-execution state that truly crosses the loop boundary. |
+| H4 | Isolate fetch/cache into a dedicated mechanism boundary | Todo | Move fetched-record indexing/reuse and later global cache behavior behind a dedicated subsystem. |
+| H5 | Make extraction pipeline deterministic with agent-supplied hints only | In progress | Agent chooses URLs/anchor terms/filters; app owns batching, coverage, retries, and extraction mechanics. |
+| H6 | Collapse duplicate normalization/projection helpers into contract-focused modules | Todo | Centralize action-param normalization, state-apply paths, and projection builders. |
+| H7 | Keep `cycle_trace` as the single cycle debug ledger | In progress | Trajectory should project from `cycle_trace`, not parallel history structures. |
+| H8 | Keep user-facing artifacts minimal and stable | In progress | `agentic_result.yaml` / `agentic_trajectory.yaml` stay projection-only. |
+| H9 | Prefer replayable deterministic validation before more planner complexity | In progress | Continue using saved fetch HTML / targeted tests as the quality gate. |
 
-Milestone mapping for active phase:
-- `M-Agentic-Extract-QoS-v1` is achieved when `A1..A5`, `A8`, `A9`, `A10`, and `A11` are complete and validated on replay fixtures.
-- `A6` is a bridge task to `P3` and may start in parallel after `A1/A2`.
-- `A12` is a performance-track task and can proceed in parallel once correctness regressions are contained.
-- `A15..A17` are enabling refactors for faster troubleshooting and safer future extraction/runtime simplification.
+### 3.2.4.1 How to read `H*`, `Q*`, and `E*`
 
-### 3.2.4 Detailed Plan for Current Action (`A15`) Only
+Interpretation rules:
+- `H*` items in `3.2.4` are the higher-level outcome workstreams
+- `Q*` items in `3.2.5` are concrete execution slices that advance one or more `H*` items
+- completing a `Q*` item does **not** mean its related `H*` workstream is complete
+- `E*` items in `3.2.7` are the next-stage execution slices after the current `Q*` queue
 
-Problem statement (`A15`):
-- `agentic.py` still mixes loop orchestration, planner memory, tool runtime state, result assembly, and trace artifacts in one mutable surface.
-- Several loop attributes are not true loop state:
-  - `workflow_name`
-  - `request_id`
-  - loop-level `top_n`
-  - loop-level `final_limit`
-  - `web_results_per_query`
-  - `searxng_categories`
-- Planner context is still partly spread across:
-  - `agent_plan`
-  - derived `agent_memory`
-- Operational state is also mixed:
-  - `run_result`
-  - `paper_state`
-  - `cycle_trace`
-  - loop-local tool bridge payloads during action execution
-  - final-result bookkeeping that still sits in `run_result`
+Current mapping from completed/deferred queue slices to workstreams:
+- `Q1 -> H1, H2, H3`
+- `Q2 -> H1, H2, H5, H6`
+- `Q3 -> H1, H7, H8`
+- `Q4 -> H4` (currently deferred until extraction behavior is more stable)
+- `Q5 -> H9`
 
-Minimal target state:
-- `run_state`
-  - `cycle_index`
-  - `status`
-  - `stop_reason`
-- `agent_memory`
-  - compact semantic state passed back to the main agent each cycle
-  - minimum viable contents:
-    - active goal / active step
-    - compact todo summary
-    - investigated URL summary (`url`, `title/peek`, `status`)
-    - matched paper summary
-    - current blocker summary
-    - `last_step`
-    - `last_change`
-- `url_state`
-  - known URLs and investigation status
-  - minimum viable fields per URL:
-    - `url`
-    - `source`
-    - `status`
-    - `title`
-    - `peek`
-    - `discovered_in_cycle`
-    - `last_error`
-- `extract_state`
-  - per-URL fetch/extract operational state
-  - minimum viable fields per URL:
-    - `fetched`
-    - `completed`
-    - `failed`
-    - `segments_done`
-    - `last_error`
-- `papers`
-  - derived final output only
-  - emitted from `paper_state` during result compaction
-- `paper_state`
-  - runtime paper/candidate state before final result compaction
-  - minimum viable contents:
-    - `final_candidates`
-    - `fallback_candidates`
-- `cycle_trace`
-  - append-only per-cycle record for trajectory/debug/user-facing projection
+This means the queue is a delivery sequence for the workstreams rather than a second independent status board.
 
-Design direction:
-1. Keep the loop skeleton small first:
-   - planner turn
-   - tool action
-   - cycle finalize
-2. Replace loop attributes incrementally, not all at once:
-   - first fold `current_cycle` + `run_status` + `stop_reason` into `run_state`
-   - then remove `request_id` and `workflow_name`
-   - then move search config fields off the loop object
-3. Treat `agent_memory` as the only planner-facing persistent state:
-   - compose it at cycle end from `agent_plan`/URL summary/paper summary
-   - pass only `agent_memory` back to `_build_agent_messages(...)`
-   - keep it explicitly small: enough for next-step reasoning and duplicate-avoidance, not full trajectory replay
-   - current progress: `previous_summary` / `previous_candidates` are removed from planner input, `plan_progress` is removed, the old compact-plan snapshot/delta bookkeeping is removed, the stale cue-summary side path is removed from `agent_plan`, and planner state is now strict `active_step + todo`
-4. Separate app/tool state from planner state:
-   - `url_state` for discovery/investigation status
-   - `extract_state` for per-URL fetch/extract progress
-   - `paper_state` for runtime paper/candidate aggregation and coverage
-5. Keep `cycle_trace` as the only append-only trace structure:
-   - record per-cycle deltas, action inputs, minimal action outcomes, progress, and refs
-   - do not mirror full loop state (`status_snapshot`, full before/after state blobs) into each cycle row
-   - do not duplicate candidate counts inside both `decision` and `progress`
-   - trajectory output should project from `steps` / `user_view`, not maintain a second top-level snapshot of the latest step
-  - later user-facing trajectory can derive from it
-  - avoid parallel history structures where possible
-  - current progress: `plan_progress` is removed; progress snapshots now carry one explicit `latest_progress` record instead of a separate progress history list, and the loop now names this structure `cycle_trace`
-6. Keep `run_result` minimal:
-   - run/result metadata only
-   - final/fallback candidates and coverage belong in `paper_state`
-7. Defer deeper extraction/runtime behavior changes until the loop state model is simplified and stable
+### 3.2.5 Current Execution Queue
 
-Acceptance criteria (`A15`):
-1. `_AgenticSearchLoop` fields map clearly to:
-   - run state
-   - agent plan
-   - agent memory
-   - tool state
-   - paper state
-   - cycle trace
-2. `workflow_name` and `request_id` are removed.
-3. Search tool config no longer lives as ad hoc loop attributes.
-4. `plan_progress` is removed or fully subsumed by `cycle_trace`.
-5. `run_state` owns cycle index, status, and stop reason.
-6. The next-cycle main-agent context can be explained directly from `agent_memory` alone.
-7. `agent_memory` carries enough short-horizon continuity to avoid repeated work:
-   - `active_step`
-   - `last_step`
-   - `last_change`
+| Order | Slice | Status | Notes |
+|---|---:|---|---|
+| Q1 | Extract runtime bridge helpers from `agentic.py` into a dedicated module | Done | `src/orchestrator/agentic_runtime.py` now owns fetched-record indexing and the `_ActionRuntime` adapter so the loop no longer carries that mechanism code inline. |
+| Q2 | Extract state-apply helpers for search/extract finalize paths | Done | `src/orchestrator/agentic_state_apply.py` now owns coverage summary/update logic plus search/extract state-apply helpers used by the loop finalize path. |
+| Q3 | Extract artifact/projection helpers that do not belong in the loop | Done | `src/orchestrator/agentic_trace.py` now owns compact cycle-trace summary/ref helpers so loop finalization no longer formats those projection rows inline. |
+| Q4 | Tighten fetch-store ownership and prepare global raw-fetch cache path | Deferred | Revisit only after extraction behavior/contracts are stable enough that cache work is worth the extra surface area. |
+| Q5 | Re-run targeted replay/contract tests after each slice | Done | Full `tests/test_retrieval_agentic_i1.py` now passes after the runtime/state-apply/trace extraction slices. |
 
-### 3.2.5 Active Focus
+### 3.2.6 Progress Log
 
-Current action focus:
-1. Simplify `_AgenticSearchLoop` to minimum viable state.
-2. Move search/extract/LLM config out of loop attributes into tool-specific config groups.
-3. Collapse planner-facing memory into one `agent_memory` projection.
-4. Keep changes incremental and structurally safe before touching deeper extraction behavior again.
+- 2026-03-23: Replaced the older mixed active board with this hardened minimum-structure plan so the remaining work is organized around contract boundaries instead of more planner complexity.
+- 2026-03-23: Started Q1 to move runtime bridge responsibilities out of `agentic.py` before deeper fetch/cache or extraction changes.
+- 2026-03-23: Completed Q1 by extracting fetched-record indexing and the `_ActionRuntime` bridge into `src/orchestrator/agentic_runtime.py`; next safe slice is state-apply extraction (Q2).
+- 2026-03-23: Completed Q2 by extracting search/extract state-apply helpers into `src/orchestrator/agentic_state_apply.py` and adding targeted tests for the new boundary.
+- 2026-03-23: Completed Q3 by extracting compact cycle-trace projection helpers into `src/orchestrator/agentic_trace.py` and adding focused trace-helper tests.
+- 2026-03-23: Completed Q5 by running the full `tests/test_retrieval_agentic_i1.py` suite (78 passing tests) and deferred Q4 until extraction behavior stabilizes further.
+
+### 3.2.7 Next Big Stage
+
+Next stage focus: extraction behavior stabilization before fetch-store work.
+
+Why this comes next:
+- Q4 cache/fetch-store work has limited payoff until extraction coverage and candidate semantics are stable
+- current leverage is still in extraction correctness, replay confidence, and compact contracts
+- once extraction behavior is steady, cache boundaries can be designed against fewer moving targets
+
+Stage goals:
+1. stabilize extraction semantics for author/institution/venue matching on replay fixtures
+2. make coverage behavior and extract progress easier to inspect from compact artifacts
+3. remove remaining extraction-side ambiguity around target ids vs URLs vs fetched-record reuse
+4. only then reopen fetch-store/cache work with a smaller, more stable contract surface
+
+Next session checklist:
+- start with `E1`, using saved fetched raw HTML fixtures as the primary fast validation boundary
+- only change extraction interfaces where replay tests expose ambiguity or duplicated paths
+- keep `Q4` deferred unless extraction contracts become stable enough to justify reopening fetch/cache work
+- update this board after each meaningful extraction-contract or replay-fixture change
+
+Immediate queue for the next stage:
+- `E1 -> H5, H9`: replay-backed extraction behavior audit for author/institution/venue matching edge cases
+- `E2 -> H2, H5, H6`: narrow extraction target resolution around one canonical URL-target path
+- `E3 -> H5, H7, H8`: simplify remaining extraction progress/coverage reporting that still leaks mechanism detail into loop-adjacent code
+- `E4 -> H4`: reopen fetch-store/cache design only after E1-E3 are stable
 
 ## 4) Non-Active Modules (Summary Only)
 
