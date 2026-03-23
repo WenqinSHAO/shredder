@@ -437,43 +437,39 @@ def _sanitize_agent_action_params(action: str, params: dict) -> dict:
         }
     if action == "extract_content":
         targets = [row for row in (raw.get("targets") or []) if isinstance(row, dict)]
-        if targets:
-            normalized_targets = []
-            merged_anchor_terms: list[str] = []
-            merged_filters: dict[str, Any] = {}
-            for row in targets[:12]:
-                url = str(row.get("url") or "").strip()
-                if not url:
-                    continue
-                target_anchor_terms = _normalize_anchor_terms(row.get("anchor_terms"))
-                target_filters = _normalize_match(row.get("match"))
-                normalized = {
-                    "url": url,
-                    "title": str(row.get("title") or row.get("url_title") or "").strip(),
-                    "why": str(row.get("why") or "").strip(),
-                    "anchor_terms": target_anchor_terms,
-                    "match": dict(row.get("match") or {}),
-                }
-                if target_filters:
-                    normalized["filters"] = dict(target_filters)
-                normalized_targets.append(normalized)
-                merged_anchor_terms.extend(target_anchor_terms)
-                for key, value in target_filters.items():
-                    if key not in merged_filters and value not in ("", None):
-                        merged_filters[key] = value
-            out = {
+        normalized_targets = []
+        merged_anchor_terms: list[str] = []
+        merged_filters: dict[str, Any] = {}
+        for row in targets[:12]:
+            url = str(row.get("url") or "").strip()
+            if not url:
+                continue
+            target_anchor_terms = _normalize_anchor_terms(row.get("anchor_terms"))
+            target_filters = _normalize_match(row.get("filters") or row.get("match"))
+            normalized = {
+                "url": url,
+                "title": str(row.get("title") or row.get("url_title") or "").strip(),
+                "why": str(row.get("why") or "").strip(),
+                "anchor_terms": target_anchor_terms,
+                "filters": target_filters,
+            }
+            if isinstance(row.get("match"), dict):
+                normalized["match"] = dict(row.get("match") or {})
+            normalized_targets.append(normalized)
+            merged_anchor_terms.extend(target_anchor_terms)
+            for key, value in target_filters.items():
+                if key not in merged_filters and value not in ("", None):
+                    merged_filters[key] = value
+        if normalized_targets:
+            return {
                 "targets": normalized_targets,
                 "anchor_terms": _normalize_anchor_terms(merged_anchor_terms),
                 "filters": merged_filters,
             }
-            return out
-        out = {
+        return {
             "target_ids": [str(v) for v in (raw.get("target_ids") or []) if str(v).strip()][:12],
             "urls": [str(v) for v in (raw.get("urls") or []) if str(v).strip()][:12],
             "filters": dict(raw.get("filters") or {}),
             "anchor_terms": _normalize_anchor_terms(raw.get("anchor_terms")),
         }
-        if isinstance(raw.get("intent"), dict):
-            out["intent"] = dict(raw.get("intent") or {})
-        return out
     return {}

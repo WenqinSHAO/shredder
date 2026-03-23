@@ -33,11 +33,11 @@ def _agent_output_contract() -> dict[str, Any]:
                     {
                         "url": "str",
                         "anchor_terms": ["str"],
-                        "match": {
-                            "institution_any": ["str"],
-                            "author_any": ["str"],
-                            "venue_any": ["str"],
-                            "topic_any": ["str"],
+                        "filters": {
+                            "institution": "str?",
+                            "author": "str?",
+                            "venue": "str?",
+                            "topic": "str?",
                             "year_gte": "int?",
                         },
                     }
@@ -59,7 +59,7 @@ def _agent_system_prompt() -> str:
         "(5) update progress and continue until coverage is sufficient. "
         "Action Catalog: "
         "search_web(params.queries[]) => ranked URL hits with title/url/peek; "
-        "extract_content(params.targets[{url, anchor_terms[], match?}]) => fetch + narrow + extract paper facts for chosen URLs. "
+        "extract_content(params.targets[{url, anchor_terms[], filters?}]) => fetch + extract paper facts for chosen URLs. "
         "Rules: one search query per venue when multiple venues are in scope. "
         "Do not combine many venue names in one query. "
         "If venue cues exist, prioritize conference program/accepted/proceedings pages. "
@@ -68,8 +68,8 @@ def _agent_system_prompt() -> str:
         "The app decides result limits, fetch behavior, batching, retries, and extraction mechanics. "
         "For extract_content, choose URLs from prior search results and provide compact high-signal anchor_terms per URL. "
         "anchor_terms should be grep-like phrases or names that help the app isolate relevant text blocks. "
-        "Use match only for minimal semantic constraints such as institution/author/year; do not restate generic extraction schema or tool mechanics. "
-        "Do not pass low-level extraction controls such as batch size, coverage windows, or token budgets; the app decides those. "
+        "Use filters only for minimal semantic constraints such as institution/author/year; do not restate generic extraction schema or tool mechanics. "
+        "Do not pass low-level extraction controls such as batch size, coverage windows, target_ids, or token budgets; the app decides those. "
         "state_delta is delta-based: only send fields that changed, do not restate the full active_step/todo state every cycle. "
         "state_delta is the authoritative internal update; progress should summarize that update for the user. "
         "For long venue listing pages, prefer exhaustive extraction coverage before unrelated new searches. "
