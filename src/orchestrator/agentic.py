@@ -2129,95 +2129,18 @@ def _finalize_extract_candidates(
     extracted_paper_candidates: list[dict[str, Any]],
     raw_event_ids: list[str],
 ) -> dict[str, Any]:
-    extractor_model = str(loop.extract_config.llm_model or "deepseek/deepseek-chat")
-    extractor_api_key_env = str(loop.extract_config.api_key_env or "DS_API_KEY")
     cycle_candidates = [row for row in extracted_paper_candidates if isinstance(row, dict)]
-    canonicalize_info: dict[str, Any] = {}
+    canonicalize_info: dict[str, Any] = {
+        "status": "deterministic_only",
+        "reason": "minimal_debug_loop",
+        "input_count": len(cycle_candidates),
+        "output_count": len(cycle_candidates),
+        "scope": "cycle_local",
+    }
     if len(cycle_candidates) >= 2:
-        canon_op_id = _next_op_id(loop.trace_state, "canonicalize_llm")
-        action_output_raw_id = str(raw_event_ids[-1] or "") if raw_event_ids else ""
-        canon_raw_refs = [action_output_raw_id] if action_output_raw_id else []
-        raw_event_ids.append(
-            loop._append_raw(
-                action_id=action_id,
-                event_type="op_start",
-                payload={
-                    "op_id": canon_op_id,
-                    "op_type": "canonicalize_llm",
-                    "component": "post_extract",
-                    "model": extractor_model,
-                    "input_count": len(cycle_candidates),
-                    "scope": "cycle_local",
-                },
-                refs=canon_raw_refs,
-            )
-        )
-        try:
-            cycle_candidates, canonicalize_info = _canonicalize_candidates_with_llm(
-                candidates=cycle_candidates,
-                user_prompt=loop.prompt,
-                intent=dict(action_result.get("extract_intent") or {}),
-                model=extractor_model,
-                api_key_env=extractor_api_key_env,
-                timeout_s=35.0,
-                raw_event_fn=lambda event_type, payload: loop._append_raw(
-                    action_id=action_id,
-                    event_type=event_type,
-                    payload=payload,
-                    refs=canon_raw_refs,
-                ),
-                llm_op_id=canon_op_id,
-            )
-            raw_event_ids.append(
-                loop._append_raw(
-                    action_id=action_id,
-                    event_type="op_end",
-                    payload={
-                        "op_id": canon_op_id,
-                        "op_type": "canonicalize_llm",
-                        "component": "post_extract",
-                        "model": extractor_model,
-                        "status": "ok",
-                        "input_count": int(canonicalize_info.get("input_count") or len(extracted_paper_candidates)),
-                        "output_count": len(cycle_candidates),
-                        "dropped": int(canonicalize_info.get("dropped") or 0),
-                        "mode": str(canonicalize_info.get("status") or ""),
-                        "scope": "cycle_local",
-                    },
-                    refs=canon_raw_refs,
-                )
-            )
-        except Exception as exc:
-            cycle_candidates, fallback_info = _deterministic_canonicalize_candidates(cycle_candidates)
-            canonicalize_info = dict(fallback_info)
-            canonicalize_info.update({"status": "fallback_error", "error": f"{type(exc).__name__}:{exc}"})
-            raw_event_ids.append(
-                loop._append_raw(
-                    action_id=action_id,
-                    event_type="op_end",
-                    payload={
-                        "op_id": canon_op_id,
-                        "op_type": "canonicalize_llm",
-                        "component": "post_extract",
-                        "model": extractor_model,
-                        "status": "error",
-                        "error": f"{type(exc).__name__}:{exc}",
-                        "input_count": len(extracted_paper_candidates),
-                        "output_count": len(cycle_candidates),
-                        "mode": "deterministic_fallback",
-                        "scope": "cycle_local",
-                    },
-                    refs=canon_raw_refs,
-                )
-            )
-    elif cycle_candidates:
-        canonicalize_info = {
-            "status": "skipped",
-            "reason": "single_candidate",
-            "input_count": len(cycle_candidates),
-            "output_count": len(cycle_candidates),
-            "scope": "cycle_local",
-        }
+        cycle_candidates, canonicalize_info = _deterministic_canonicalize_candidates(cycle_candidates)
+        canonicalize_info["status"] = "deterministic_only"
+        canonicalize_info["reason"] = "minimal_debug_loop"
 
     cycle_candidates = list(cycle_candidates)
     requires_venue = _requires_venue_evidence(loop.prompt, loop.agent_plan)
@@ -2285,20 +2208,6 @@ def _decide_cycle_outcome(
             "decision": "stop",
             "decision_reason": "llm_converged",
             "stop_reason": agent_decision_reason or "llm_converged",
-        }
-    if selected_action == "extract_content" and bool(action_result.get("coverage_has_more", False)) and cycle_index < loop.max_cycles:
-        timeout_errors = int(action_result.get("extract_timeout_errors") or 0)
-        existing_final = len(_paper_final_candidates(loop))
-        if timeout_errors > 0 and not extracted_paper_candidates and existing_final > 0:
-            return {
-                "decision": "stop",
-                "decision_reason": "extract_timeout_stalled",
-                "stop_reason": "extract_timeout_stalled",
-            }
-        return {
-            "decision": "continue",
-            "decision_reason": "extract_coverage_incomplete",
-            "stop_reason": "",
         }
     if cycle_index >= loop.max_cycles:
         return {

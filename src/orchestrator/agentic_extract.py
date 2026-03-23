@@ -1098,25 +1098,72 @@ def _resolve_extract_request(
     reuse_fetched_record_for_target_fn = deps["reuse_fetched_record_for_target_fn"]
     fetch_target_record_fn = deps["fetch_target_record_fn"]
     merge_fetched_records_fn = deps["merge_fetched_records_fn"]
-    filter_records_by_urls_fn = deps["filter_records_by_urls_fn"]
     next_op_id_fn = deps["next_op_id_fn"]
     params_targets = params.get("targets") if isinstance(params.get("targets"), list) else []
-    requested_target_ids = {str(v).strip() for v in (params.get("target_ids") or []) if str(v).strip()}
-    requested_urls = {str(v).strip() for v in (params.get("urls") or []) if str(v).strip()}
+    requested_target_ids = [str(v).strip() for v in (params.get("target_ids") or []) if str(v).strip()]
+    requested_urls_from_params = [str(v).strip() for v in (params.get("urls") or []) if str(v).strip()]
     target_scope_by_url: dict[str, dict[str, Any]] = {}
+    requested_urls: list[str] = []
+    normalized_targets: list[dict[str, Any]] = []
     for idx, item in enumerate(params_targets, start=1):
         if not isinstance(item, dict):
             continue
         normalized = normalize_fetch_target_fn(item, idx)
         if not normalized["url"]:
             continue
+        normalized_targets.append(normalized)
         target_scope_by_url[normalized["url"]] = {
             "filters": extract_target_filters_fn(item),
             "anchor_terms": deps["normalize_anchor_terms_fn"](item.get("anchor_terms")),
         }
-        requested_urls.add(normalized["url"])
+        requested_urls.append(normalized["url"])
+
+    hit_id_to_url = {
+        str(row.get("hit_id") or "").strip(): str(row.get("url") or "").strip()
+        for row in (runtime_state.get("url_hits") or [])
+        if isinstance(row, dict)
+    }
+    mapped_urls = [hit_id_to_url.get(target_id, "") for target_id in requested_target_ids]
+    for url in requested_urls_from_params + mapped_urls:
+        if url and url not in requested_urls:
+            requested_urls.append(url)
+
+    if not normalized_targets and requested_urls:
+        shared_filters = extract_target_filters_fn({"filters": params.get("filters")})
+        shared_anchor_terms = deps["normalize_anchor_terms_fn"](params.get("anchor_terms"))
+        for idx, url in enumerate(requested_urls, start=1):
+            normalized = {
+                "target_id": f"auto-fetch-{idx}",
+                "url": url,
+                "title": "",
+                "why": "extract_auto_fetch",
+                "status": "todo",
+            }
+            normalized_targets.append(normalized)
+            target_scope_by_url[url] = {
+                "filters": dict(shared_filters),
+                "anchor_terms": list(shared_anchor_terms),
+            }
+
+    if not normalized_targets:
+        return {
+            "target_scope_by_url": {},
+            "filters": {},
+            "extract_intent": {},
+            "anchor_terms": [],
+            "records": [],
+            "requested_urls": [],
+            "auto_fetched_records": [],
+        }
 
     filters = extract_target_filters_fn({"filters": params.get("filters")})
+    if not filters:
+        for target in normalized_targets:
+            scoped = target_scope_by_url.get(str(target.get("url") or ""), {})
+            scoped_filters = scoped.get("filters") if isinstance(scoped.get("filters"), dict) else {}
+            for key, value in scoped_filters.items():
+                if key not in filters and value not in ("", None):
+                    filters[key] = value
     extract_intent = resolve_extract_intent_fn(params=params, filters=filters, user_prompt=user_prompt)
     anchor_terms = resolve_extract_anchor_terms_fn(
         params=params,
@@ -1130,34 +1177,12 @@ def _resolve_extract_request(
             filters["year_gte"] = intent_year
 
     records = [row for row in (runtime_state.get("fetched_records") or []) if isinstance(row, dict)]
-    hit_id_to_url = {
-        str(row.get("hit_id") or "").strip(): str(row.get("url") or "").strip()
-        for row in (runtime_state.get("url_hits") or [])
-        if isinstance(row, dict)
-    }
-    mapped_urls = {hit_id_to_url.get(target_id, "") for target_id in requested_target_ids}
-    mapped_urls = {url for url in mapped_urls if url}
-    resolved_urls = set(requested_urls) | mapped_urls
-    direct_target_id_matches = [row for row in records if str(row.get("target_id") or "").strip() in requested_target_ids]
+    requested_url_set = {url for url in requested_urls if url}
 
     auto_fetched_records: list[dict] = []
     if bool(params.get("auto_fetch", True)):
-        auto_targets: list[dict] = []
-        if params_targets:
-            for idx, item in enumerate(params_targets, start=1):
-                if not isinstance(item, dict):
-                    continue
-                normalized = normalize_fetch_target_fn(item, idx)
-                if normalized["url"]:
-                    auto_targets.append(normalized)
-        elif resolved_urls:
-            auto_targets = [
-                {"target_id": f"auto-fetch-{idx}", "url": url, "title": "", "why": "extract_auto_fetch", "status": "todo"}
-                for idx, url in enumerate(sorted(resolved_urls), start=1)
-            ]
-
         fetched_now: list[dict] = []
-        for idx, target in enumerate(auto_targets, start=1):
+        for idx, target in enumerate(normalized_targets, start=1):
             reused = reuse_fetched_record_for_target_fn(records, target, idx)
             if reused is not None:
                 fetched_now.append(reused)
@@ -1180,15 +1205,10 @@ def _resolve_extract_request(
             records = merge_fetched_records_fn(records, fetched_now)
             runtime_state["fetched_records"] = records
 
-    if requested_target_ids:
-        if direct_target_id_matches:
-            records = [row for row in records if str(row.get("target_id") or "").strip() in requested_target_ids]
-        elif resolved_urls:
-            records = filter_records_by_urls_fn(records, resolved_urls)
-        else:
-            records = []
-    elif resolved_urls:
-        records = filter_records_by_urls_fn(records, resolved_urls)
+    records = [
+        row for row in records
+        if isinstance(row, dict) and str(row.get("url") or "").strip() in requested_url_set
+    ]
 
     return {
         "target_scope_by_url": target_scope_by_url,
@@ -1196,10 +1216,7 @@ def _resolve_extract_request(
         "extract_intent": extract_intent,
         "anchor_terms": anchor_terms,
         "records": records,
-        "requested_target_ids": requested_target_ids,
         "requested_urls": requested_urls,
-        "mapped_urls": mapped_urls,
-        "resolved_urls": resolved_urls,
         "auto_fetched_records": auto_fetched_records,
     }
 
@@ -1208,9 +1225,7 @@ def _build_extract_action_result(
     *,
     facts: list[dict[str, Any]],
     paper_candidates: list[dict[str, Any]],
-    requested_target_ids: set[str],
-    resolved_urls: set[str],
-    mapped_urls: set[str],
+    requested_urls: list[str],
     llm_extract_attempted: int,
     llm_extract_applied: int,
     llm_timeout_errors: int,
@@ -1230,8 +1245,7 @@ def _build_extract_action_result(
         "stop": False,
         "stop_reason": "",
         "notes": (
-            f"extracted_targets={len(facts)} requested_target_ids={len(requested_target_ids)} "
-            f"resolved_urls={len(resolved_urls)} mapped_target_ids={len(mapped_urls)} "
+            f"requested_urls={len(requested_urls)} extracted_rows={len(facts)} "
             f"llm_extract_attempted={llm_extract_attempted} llm_extract_applied={llm_extract_applied} "
             f"llm_timeout_errors={llm_timeout_errors} llm_empty_semantic={llm_empty_semantic} "
             f"coverage_has_more={coverage_has_more} coverage_passes={coverage_passes}"
@@ -1770,18 +1784,31 @@ def execute_extract_content_action(
     extract_intent = dict(request["extract_intent"])
     anchor_terms = list(request["anchor_terms"])
     records = list(request["records"])
-    requested_target_ids = set(request["requested_target_ids"])
-    requested_urls = set(request["requested_urls"])
-    mapped_urls = set(request["mapped_urls"])
-    resolved_urls = set(request["resolved_urls"])
+    requested_urls = list(request["requested_urls"])
     auto_fetched_records = list(request["auto_fetched_records"])
 
     if not records:
-        return _block_extract_requires_fetched_content(
-            requested_target_ids=requested_target_ids,
-            requested_urls=requested_urls,
-            mapped_urls=mapped_urls,
-        )
+        requested_count = len([url for url in requested_urls if str(url).strip()])
+        return {
+            "status": "error",
+            "tool_calls": "extract:0",
+            "web_rows": [],
+            "raw_candidates": [],
+            "paper_candidates": [],
+            "stop": False,
+            "stop_reason": "",
+            "notes": f"extract_failed_no_fetched_records requested_urls={requested_count}",
+            "extracted_records": [],
+            "coverage_has_more": False,
+            "coverage_passes": 0,
+            "extract_timeout_errors": 0,
+            "extract_empty_semantic": 0,
+            "extract_windows_trace": [],
+            "extract_intent": extract_intent,
+            "auto_fetched_count": len(auto_fetched_records),
+            "auto_fetched_ok": sum(1 for row in auto_fetched_records if str(row.get('status') or '') == 'ok'),
+            "auto_fetched_error": sum(1 for row in auto_fetched_records if str(row.get('status') or '') != 'ok'),
+        }
 
     coverage_batch_size = 32
     context_limit_tokens = int(deps["context_limit_tokens"])
@@ -1877,9 +1904,7 @@ def execute_extract_content_action(
     return _build_extract_action_result(
         facts=facts,
         paper_candidates=paper_candidates,
-        requested_target_ids=requested_target_ids,
-        resolved_urls=resolved_urls,
-        mapped_urls=mapped_urls,
+        requested_urls=requested_urls,
         llm_extract_attempted=llm_extract_attempted,
         llm_extract_applied=llm_extract_applied,
         llm_timeout_errors=llm_timeout_errors,
