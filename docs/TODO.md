@@ -171,6 +171,8 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-23: Completed Q3 by extracting compact cycle-trace projection helpers into `src/orchestrator/agentic_trace.py` and adding focused trace-helper tests.
 - 2026-03-23: Completed Q5 by running the full `tests/test_retrieval_agentic_i1.py` suite (78 passing tests) and deferred Q4 until extraction behavior stabilizes further.
 - 2026-03-23: Re-reviewed the agentic search code against this board and refined the next-stage queue: canonical URL-target hardening and mechanism-boundary extraction should come before a broad replay audit, because the current leverage is still in ownership cleanup and alias/canonicalization correctness.
+- 2026-03-23: Completed the first `E1` slice by making extract request resolution reuse fetched records through alias-aware URL matching instead of exact-URL-only filtering, and by strengthening redirected-URL / hit-id remap tests to assert positive extracted outputs. `tests/test_retrieval_agentic_i1.py` now passes with 79 tests.
+- 2026-03-23: Completed the main `E2` slice by moving raw fetch / retry / save / pagination-fetch implementation into `src/orchestrator/agentic_fetch.py` while keeping patch-compatible wrappers in `agentic.py`. Full `pytest` now passes (`125 passed, 27 subtests passed`).
 
 ### 3.2.7 Next Big Stage
 
@@ -190,7 +192,8 @@ Stage goals:
 5. keep Q4 fetch-store/cache design deferred until the above contracts are small enough to design against confidently
 
 Next session checklist:
-- start with `E1`, because alias/canonical URL handling is a sharper correctness risk than another broad extraction audit
+- treat remaining `E1` work as compact request-shape cleanup, not another alias-matching bug hunt
+- continue with `E3` once the current fetch boundary stays stable
 - prefer slices that reduce coordinator ownership or remove duplicated canonicalization/projection paths
 - keep `Q4` deferred unless the request-resolution and fetch/extract boundaries become stable enough to justify cache design work
 - when adding tests, strengthen them to assert positive extracted outputs and artifact state, not just the absence of one stop reason
@@ -198,12 +201,9 @@ Next session checklist:
 
 Immediate queue for the next stage:
 - `E1 -> H2, H5, H6, H9`: canonical URL-target path hardening
-  - make extract request resolution use alias-aware fetched-record selection rather than exact-URL-only filtering
-  - tighten redirected-URL and hit-id remap tests so they assert actual extracted results / artifact state
-  - keep planner-facing extract params compact while app-side resolution owns canonical URL, alias, and fetched-record reuse
-- `E2 -> H1, H4, H6`: extract fetch mechanism ownership out of `agentic.py`
-  - move raw fetch / retry / save / pagination-fetch helpers into a dedicated mechanism module
-  - leave the loop with only planner turn, action dispatch, and cycle finalize responsibilities
+  - done: extract request resolution now uses alias-aware fetched-record selection rather than exact-URL-only filtering
+  - done: redirected-URL and hit-id remap tests now assert actual extracted results / artifact state
+  - next: keep planner-facing extract params compact while app-side resolution owns canonical URL, alias, and fetched-record reuse
 - `E3 -> H1, H3, H6`: extract LLM transport / JSON completion helpers out of `agentic.py`
   - move OpenAI-compatible request/response parsing and message-metric helpers behind a dedicated boundary shared by planner and extractor calls
   - keep action contracts unchanged while reducing coordinator-local mechanism code

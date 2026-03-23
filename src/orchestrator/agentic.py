@@ -4,13 +4,10 @@ import hashlib
 import json
 import os
 import re
-from io import BytesIO
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse, urlunparse
-from urllib.request import Request, urlopen
 
 from src.connectors.http import get_json, normalize_arxiv_id, normalize_doi
 from src.orchestrator.agentic_contracts import (
@@ -35,6 +32,16 @@ from src.orchestrator.agentic_extract import (
     slice_segments_by_token_budget as _slice_segments_by_token_budget_impl,
     to_paper_candidates_from_facts as _to_paper_candidates_from_facts_impl,
     execute_extract_content_action as _execute_extract_content_action_impl,
+)
+from src.orchestrator.agentic_fetch import (
+    build_extraction_windows as _build_extraction_windows_impl,
+    decode_bytes as _decode_bytes_impl,
+    extract_text_from_pdf_bytes as _extract_text_from_pdf_bytes_impl,
+    fetch_retry_urls as _fetch_retry_urls_impl,
+    fetch_target_record as _fetch_target_record_impl,
+    fetch_url_raw as _fetch_url_raw_impl,
+    safe_name as _safe_name_impl,
+    save_raw_fetch as _save_raw_fetch_impl,
 )
 from src.orchestrator.agentic_search import (
     _apply_shortlist_hints,
@@ -455,108 +462,34 @@ def _safe_int(value: Any) -> int | None:
 
 
 def _decode_bytes(raw: Any) -> str:
-    if isinstance(raw, str):
-        return raw
-    try:
-        return raw.decode("utf-8", errors="ignore")
-    except Exception:
-        try:
-            return raw.decode("latin-1", errors="ignore")
-        except Exception:
-            return str(raw or "")
+    return _decode_bytes_impl(raw)
 
 
 def _extract_text_from_pdf_bytes(raw: bytes, *, max_chars: int) -> str:
-    try:
-        import pypdf  # type: ignore
-
-        reader = pypdf.PdfReader(BytesIO(raw))
-        parts: list[str] = []
-        for page in reader.pages:
-            text = page.extract_text() or ""
-            if text:
-                parts.append(text)
-            if sum(len(p) for p in parts) >= max_chars:
-                break
-        if parts:
-            return _clean_text("\n".join(parts), limit_chars=max_chars)
-    except Exception:
-        pass
-    return _clean_text(_decode_bytes(raw), limit_chars=max_chars)
+    return _extract_text_from_pdf_bytes_impl(raw, max_chars=max_chars)
 
 
 def _fetch_url_raw(url: str, *, timeout_s: float, max_bytes: int) -> tuple[bytes, str]:
-    req = Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (compatible; ShredderAgentic/0.1; +https://example.org)",
-            "Accept": "text/html,application/xhtml+xml,application/xml,text/plain;q=0.9,*/*;q=0.8",
-        },
-    )
-    with urlopen(req, timeout=timeout_s) as response:
-        ctype = str(response.headers.get("Content-Type") or "").lower()
-        content_length = _safe_int(response.headers.get("Content-Length"))
-        hard_limit = int(max_bytes or 0)
-        if hard_limit > 0 and content_length is not None and content_length > hard_limit:
-            raise RuntimeError(f"content_length_exceeds_limit:{content_length}>{hard_limit}")
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = response.read(64 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if hard_limit > 0 and total > hard_limit:
-                raise RuntimeError(f"response_exceeds_limit:{total}>{hard_limit}")
-            chunks.append(chunk)
-        raw = b"".join(chunks)
-        if content_length is not None and len(raw) < content_length:
-            raise RuntimeError(f"incomplete_response:{len(raw)}<{content_length}")
-    return raw, ctype
+    return _fetch_url_raw_impl(url, timeout_s=timeout_s, max_bytes=max_bytes)
 
 
 def _safe_name(value: str, default: str = "item") -> str:
-    text = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-")
-    return text or default
+    return _safe_name_impl(value, default)
 
 
 def _fetch_retry_urls(url: str) -> list[str]:
-    text = str(url or "").strip()
-    if not text:
-        return []
-    parsed = urlparse(text)
-    path = parsed.path or ""
-    out: list[str] = []
-    if path.endswith(".html"):
-        base_path = path[: -len(".html")]
-        if base_path:
-            retry = parsed._replace(path=base_path + "/", query="", fragment="")
-            out.append(urlunparse(retry))
-    return _unique_queries(out, 3)
+    return _fetch_retry_urls_impl(url)
 
 
 def _save_raw_fetch(paths: dict[str, Path], *, cycle_index: int, target_id: str, url: str, raw: Any, content_type: str) -> str:
-    base = paths["result"].parent / "fetch_raw"
-    base.mkdir(parents=True, exist_ok=True)
-    url_tail = _safe_name((urlparse(url).path or "").split("/")[-1], default="page")
-    ext = ".bin"
-    ctype = str(content_type or "").lower()
-    if "html" in ctype:
-        ext = ".html"
-    elif "pdf" in ctype:
-        ext = ".pdf"
-    elif "json" in ctype:
-        ext = ".json"
-    fname = f"cycle{cycle_index:02d}-{_safe_name(target_id)}-{url_tail}{ext}"
-    path = base / fname
-    if isinstance(raw, str):
-        data = raw.encode("utf-8", errors="ignore")
-    elif isinstance(raw, bytes):
-        data = raw
-    else:
-        data = str(raw or "").encode("utf-8", errors="ignore")
-    path.write_bytes(data)
-    return str(path.relative_to(paths["result"].parent))
+    return _save_raw_fetch_impl(
+        paths,
+        cycle_index=cycle_index,
+        target_id=target_id,
+        url=url,
+        raw=raw,
+        content_type=content_type,
+    )
 
 
 def _fetch_target_record(
@@ -571,233 +504,32 @@ def _fetch_target_record(
     raw_event_fn: Callable[[str, Any, list[str] | None], str] | None = None,
     new_op_id_fn: Callable[[str], str] | None = None,
 ) -> dict:
-    url = str(target.get("url") or "").strip()
-    title = str(target.get("title") or target.get("url_title") or "").strip()
-    if not url:
-        return {
-            "session_id": session_id,
-            "cycle_index": cycle_index,
-            "target_id": str(target.get("target_id") or f"fetch-{idx}"),
-            "requested_url": url,
-            "url": "",
-            "url_aliases": [],
-            "url_title": title,
-            "why": str(target.get("why") or ""),
-            "status": "error",
-            "error": "missing_url",
-            "text_chars": 0,
-            "text": "",
-            "peek": "",
-            "page_count": 0,
-            "page_urls": [],
-            "raw_path": "",
-        }
-    fetch_op_id = new_op_id_fn("web_fetch") if new_op_id_fn is not None else ""
-    if raw_event_fn is not None and fetch_op_id:
-        raw_event_fn(
-            "op_start",
-            {
-                "op_id": fetch_op_id,
-                "op_type": "web_fetch",
-                "component": "fetch_content",
-                "target_id": str(target.get("target_id") or f"fetch-{idx}"),
-                "url": url,
-            },
-        )
-    try:
-        hard_limit = _read_int(params.get("max_bytes_hard"), 0)
-        if hard_limit is None:
-            hard_limit = 0
-        if hard_limit < 0:
-            hard_limit = 0
-        max_chars = max(500_000, _read_int(params.get("max_chars"), 8_000_000))
-        fetch_url = url
-        try:
-            raw, content_type = _fetch_url_raw(fetch_url, timeout_s=timeout_s, max_bytes=hard_limit)
-        except Exception:
-            raw = b""
-            content_type = ""
-            resolved = False
-            for alt_url in _fetch_retry_urls(url):
-                try:
-                    raw, content_type = _fetch_url_raw(alt_url, timeout_s=timeout_s, max_bytes=hard_limit)
-                    fetch_url = alt_url
-                    resolved = True
-                    break
-                except Exception:
-                    continue
-            if not resolved:
-                raise
-        raw_path = ""
-        raw_path = _save_raw_fetch(
-            paths,
-            cycle_index=cycle_index,
-            target_id=str(target.get("target_id") or f"fetch-{idx}"),
-            url=fetch_url,
-            raw=raw,
-            content_type=content_type,
-        )
-        url_lower = str(fetch_url or "").lower()
-        segments: list[str] = []
-        if "pdf" in str(content_type).lower() or url_lower.endswith(".pdf"):
-            text = _extract_text_from_pdf_bytes(raw, max_chars=max_chars)
-            raw_html = ""
-            segments = _extract_text_segments(text, max_chars=1800)
-        else:
-            raw_html = _decode_bytes(raw)
-            if _is_listing_page(title=title, url=fetch_url):
-                text = _extract_listing_text_with_fallback(raw_html, max_chars=max_chars)
-            else:
-                text = _extract_main_text_from_html(raw_html, max_chars=max_chars)
-            segments = _extract_text_segments(text, max_chars=1800)
-        page_urls = [fetch_url]
-        if _is_listing_page(title=title, url=fetch_url) and raw_html:
-            extra_urls = _discover_pagination_urls(raw_html, fetch_url, max_extra_pages=max(0, min(8, _read_int(params.get("max_extra_pages"), 6))))
-            for extra_url in extra_urls:
-                page_op_id = new_op_id_fn("web_fetch_page") if new_op_id_fn is not None else ""
-                if raw_event_fn is not None and page_op_id:
-                    raw_event_fn(
-                        "op_start",
-                        {
-                            "op_id": page_op_id,
-                            "op_type": "web_fetch_page",
-                            "component": "fetch_content",
-                            "target_id": str(target.get("target_id") or f"fetch-{idx}"),
-                            "url": extra_url,
-                            "parent_op_id": fetch_op_id,
-                        },
-                    )
-                try:
-                    extra_raw, extra_ctype = _fetch_url_raw(extra_url, timeout_s=timeout_s, max_bytes=hard_limit)
-                    _save_raw_fetch(
-                        paths,
-                        cycle_index=cycle_index,
-                        target_id=f"{target.get('target_id') or f'fetch-{idx}'}-extra",
-                        url=extra_url,
-                        raw=extra_raw,
-                        content_type=extra_ctype,
-                    )
-                    extra_raw_html = _decode_bytes(extra_raw)
-                    if _is_listing_page(title=title, url=extra_url):
-                        extra_text = _extract_listing_text_with_fallback(extra_raw_html, max_chars=max_chars)
-                    else:
-                        extra_text = _extract_main_text_from_html(extra_raw_html, max_chars=max_chars)
-                    if extra_text:
-                        text = f"{text}\n\n{extra_text}" if text else extra_text
-                        page_urls.append(extra_url)
-                    extra_segments = _extract_text_segments(extra_text, max_chars=1800)
-                    if extra_segments:
-                        segments.extend(extra_segments)
-                    if raw_event_fn is not None and page_op_id:
-                        raw_event_fn(
-                            "op_end",
-                            {
-                                "op_id": page_op_id,
-                                "op_type": "web_fetch_page",
-                                "component": "fetch_content",
-                                "target_id": str(target.get("target_id") or f"fetch-{idx}"),
-                                "url": extra_url,
-                                "parent_op_id": fetch_op_id,
-                                "status": "ok",
-                                "bytes_read": len(extra_raw),
-                                "content_type": str(extra_ctype or ""),
-                            },
-                        )
-                except Exception:
-                    if raw_event_fn is not None and page_op_id:
-                        raw_event_fn(
-                            "op_end",
-                            {
-                                "op_id": page_op_id,
-                                "op_type": "web_fetch_page",
-                                "component": "fetch_content",
-                                "target_id": str(target.get("target_id") or f"fetch-{idx}"),
-                                "url": extra_url,
-                                "parent_op_id": fetch_op_id,
-                                "status": "error",
-                            },
-                        )
-                    continue
-        text = _clean_text(text, limit_chars=max_chars)
-        if not segments:
-            segments = _build_extraction_windows(text, _extract_target_filters(target), max_windows=30, radius=2, max_chars=1200)
-        selected_segments = [str(seg) for seg in segments if str(seg).strip()]
-        output = {
-            "session_id": session_id,
-            "cycle_index": cycle_index,
-            "target_id": str(target.get("target_id") or f"fetch-{idx}"),
-            "requested_url": url,
-            "url": fetch_url,
-            "url_aliases": _unique_nonempty([url, fetch_url, *page_urls], limit=16),
-            "url_title": title,
-            "why": str(target.get("why") or ""),
-            "status": "ok",
-            "content_type": content_type,
-            "bytes_read": len(raw),
-            "fetch_hard_limit_bytes": hard_limit,
-            "text_chars": len(text),
-            "text": text,
-            "peek": _peek_text(text, 320),
-            "page_count": len(page_urls),
-            "page_urls": page_urls,
-            "segments": selected_segments,
-            "segment_count": len(selected_segments),
-            "raw_path": raw_path,
-        }
-        if raw_event_fn is not None and fetch_op_id:
-            refs = [str(output.get("raw_path") or "")] if str(output.get("raw_path") or "") else None
-            raw_event_fn(
-                "op_end",
-                {
-                    "op_id": fetch_op_id,
-                    "op_type": "web_fetch",
-                    "component": "fetch_content",
-                    "target_id": str(output.get("target_id") or ""),
-                    "url": str(output.get("url") or ""),
-                    "status": "ok",
-                    "bytes_read": int(output.get("bytes_read") or 0),
-                    "content_type": str(output.get("content_type") or ""),
-                    "page_count": int(output.get("page_count") or 0),
-                    "segment_count": int(output.get("segment_count") or 0),
-                },
-                refs,
-            )
-        return output
-    except Exception as exc:
-        output = {
-            "session_id": session_id,
-            "cycle_index": cycle_index,
-            "target_id": str(target.get("target_id") or f"fetch-{idx}"),
-            "requested_url": url,
-            "url": url,
-            "url_aliases": _unique_nonempty([url], limit=4),
-            "url_title": title,
-            "why": str(target.get("why") or ""),
-            "status": "error",
-            "error": f"{type(exc).__name__}:{exc}",
-            "text_chars": 0,
-            "text": "",
-            "peek": "",
-            "page_count": 0,
-            "page_urls": [],
-            "segments": [],
-            "segment_count": 0,
-            "raw_path": "",
-        }
-        if raw_event_fn is not None and fetch_op_id:
-            raw_event_fn(
-                "op_end",
-                {
-                    "op_id": fetch_op_id,
-                    "op_type": "web_fetch",
-                    "component": "fetch_content",
-                    "target_id": str(output.get("target_id") or ""),
-                    "url": url,
-                    "status": "error",
-                    "error": f"{type(exc).__name__}:{exc}",
-                },
-            )
-        return output
+    return _fetch_target_record_impl(
+        session_id=session_id,
+        cycle_index=cycle_index,
+        target=target,
+        idx=idx,
+        timeout_s=timeout_s,
+        params=params,
+        paths=paths,
+        raw_event_fn=raw_event_fn,
+        new_op_id_fn=new_op_id_fn,
+        deps={
+            "read_int_fn": _read_int,
+            "fetch_url_raw_fn": _fetch_url_raw,
+            "fetch_retry_urls_fn": _fetch_retry_urls,
+            "save_raw_fetch_fn": _save_raw_fetch,
+            "extract_text_from_pdf_bytes_fn": _extract_text_from_pdf_bytes,
+            "decode_bytes_fn": _decode_bytes,
+            "build_extraction_windows_fn": _build_extraction_windows,
+            "clean_text_fn": _clean_text,
+            "discover_pagination_urls_fn": _discover_pagination_urls,
+            "extract_listing_text_with_fallback_fn": _extract_listing_text_with_fallback,
+            "extract_main_text_from_html_fn": _extract_main_text_from_html,
+            "extract_text_segments_fn": _extract_text_segments,
+            "is_listing_page_fn": _is_listing_page,
+        },
+    )
 
 
 def _normalize_fetch_target(item: dict, idx: int) -> dict:
@@ -858,80 +590,13 @@ def _extract_segment_token_budget(
 
 
 def _build_extraction_windows(text: str, filters: dict, *, max_windows: int = 6, radius: int = 2, max_chars: int = 1400) -> list[str]:
-    if not text:
-        return []
-    lines = [part.strip() for part in re.split(r"\n+|(?<=\.)\s+", text) if part.strip()]
-    if not lines:
-        return []
-
-    terms: list[str] = []
-    institution_terms: list[str] = []
-    for key in ("institution", "institution_contains", "author", "author_contains", "topic"):
-        raw = str(filters.get(key) or "").strip()
-        if raw:
-            toks = [tok for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]{1,}", raw) if len(tok) >= 3]
-            terms.extend(toks)
-            if key.startswith("institution"):
-                institution_terms.extend(toks)
-    terms.extend(["doi", "arxiv", "accepted", "proceedings", "conference", "paper", "papers"])
-    terms_l = {term.lower() for term in terms}
-    inst_l = {term.lower() for term in institution_terms}
-    year_gte = _safe_int(filters.get("year_gte"))
-
-    scored_hits: list[tuple[int, int]] = []
-    for idx, line in enumerate(lines):
-        lowered = line.lower()
-        score = 0
-        if inst_l and any(term in lowered for term in inst_l):
-            score += 5
-        if any(term in lowered for term in terms_l):
-            score += 2
-        if year_gte is not None:
-            years = [int(v) for v in re.findall(r"\b(?:19|20)\d{2}\b", lowered)]
-            if any(v >= year_gte for v in years):
-                score += 1
-        if score > 0:
-            scored_hits.append((idx, score))
-    if not scored_hits:
-        scored_hits = [(idx, 1) for idx in range(min(len(lines), max_windows))]
-
-    windows: list[str] = []
-    seen: set[str] = set()
-    selected_indexes: list[int] = []
-
-    # Ensure spread across document to avoid only top/front matter windows.
-    total = len(lines)
-    if total > 0:
-        boundaries = [0, total // 4, total // 2, (3 * total) // 4, total]
-        for i in range(4):
-            lo, hi = boundaries[i], boundaries[i + 1]
-            seg_hits = [(idx, score) for idx, score in scored_hits if lo <= idx < hi]
-            if not seg_hits:
-                continue
-            best = sorted(seg_hits, key=lambda p: (p[1], -p[0]), reverse=True)[0]
-            selected_indexes.append(best[0])
-
-    for idx, _score in sorted(scored_hits, key=lambda p: (p[1], -p[0]), reverse=True):
-        if idx not in selected_indexes:
-            selected_indexes.append(idx)
-        if len(selected_indexes) >= max_windows * 2:
-            break
-
-    for idx in selected_indexes:
-        start = max(0, idx - radius)
-        end = min(len(lines), idx + radius + 1)
-        block = " ".join(lines[start:end]).strip()
-        if not block:
-            continue
-        block = _peek_text(block, max_chars)
-        key = block.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        windows.append(block)
-        if len(windows) >= max_windows:
-            break
-    return windows
+    return _build_extraction_windows_impl(
+        text,
+        filters,
+        max_windows=max_windows,
+        radius=radius,
+        max_chars=max_chars,
+    )
 
 
 def _slice_segments_by_token_budget(

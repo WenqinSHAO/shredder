@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.orchestrator import agentic as agentic_mod
+from src.orchestrator import agentic_extract as extract_mod
 from src.orchestrator import agentic_state_apply as state_apply_mod
 from src.orchestrator import agentic_trace as trace_mod
 from src.orchestrator.runner import run_step
@@ -607,6 +608,53 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             {"https://conferences.sigcomm.org/sigcomm/2025/program.html"},
         )
         self.assertEqual(len(matched), 1)
+
+    def test_resolve_extract_request_matches_fetched_record_by_url_alias(self):
+        redirected_url = "https://conferences.sigcomm.org/sigcomm/2025/program/"
+        requested_url = "https://conferences.sigcomm.org/sigcomm/2025/program.html"
+        request = extract_mod._resolve_extract_request(
+            session_id="s1",
+            cycle_index=1,
+            params={
+                "urls": [requested_url],
+                "filters": {"institution": "Google", "year_gte": 2025},
+                "auto_fetch": False,
+            },
+            paths={"result": Path("workspace/demo/artifacts/retrieval/agentic_result.yaml")},
+            user_prompt="papers by google at SIGCOMM and NSDI in 2025",
+            timeout_s=8.0,
+            runtime_state={
+                "url_hits": [],
+                "fetched_records": [
+                    {
+                        "target_id": "fetch-1",
+                        "requested_url": requested_url,
+                        "url": redirected_url,
+                        "url_aliases": [requested_url, redirected_url],
+                        "url_title": "SIGCOMM 2025 program",
+                        "status": "ok",
+                        "segments": ["Preventing Network Bottlenecks ... Google"],
+                    }
+                ],
+            },
+            raw_event_fn=None,
+            deps={
+                "normalize_fetch_target_fn": extract_mod.normalize_fetch_target,
+                "extract_target_filters_fn": extract_mod.extract_target_filters,
+                "resolve_extract_intent_fn": extract_mod.resolve_extract_intent,
+                "resolve_extract_anchor_terms_fn": agentic_mod._resolve_extract_anchor_terms,
+                "safe_int_fn": agentic_mod._safe_int,
+                "reuse_fetched_record_for_target_fn": agentic_mod._reuse_fetched_record_for_target,
+                "fetch_target_record_fn": lambda **kwargs: (_ for _ in ()).throw(AssertionError("unexpected auto-fetch")),
+                "merge_fetched_records_fn": agentic_mod._merge_fetched_records,
+                "filter_records_by_urls_fn": agentic_mod._filter_records_by_urls,
+                "next_op_id_fn": lambda _state, prefix="op": f"{prefix}-000001",
+                "normalize_anchor_terms_fn": agentic_mod._normalize_anchor_terms,
+            },
+        )
+        self.assertEqual(request["requested_urls"], [requested_url])
+        self.assertEqual(len(request["records"]), 1)
+        self.assertEqual(str(request["records"][0].get("url") or ""), redirected_url)
 
     def test_extract_candidates_accept_bool_llm_institution_match(self):
         facts = [
@@ -1645,7 +1693,12 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             result = yamlx.load(rdir / "agentic_result.yaml")
             self.assertEqual(result["status"], "completed")
             self.assertGreaterEqual(len(result.get("papers") or []), 1)
-            self.assertNotEqual(result.get("stop_reason"), "extract_requires_fetched_content")
+            first = (result.get("papers") or [])[0]
+            self.assertIn("to pri or not to pri", str(first.get("title") or "").lower())
+            self.assertEqual(
+                str(first.get("source_url") or ""),
+                "https://www.usenix.org/conference/osdi25/technical-sessions",
+            )
 
     def test_agentic_search_fetch_extract_promotes_final_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1826,17 +1879,47 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                             )
 
                         with patch("src.orchestrator.agentic._fetch_url_raw", side_effect=_fetch_side_effect):
-                            run_step(
-                                "demo",
-                                "retrieve-agentic",
-                                prompt="papers by google at SIGCOMM and NSDI in 2025",
-                                top_n=3,
-                            )
+                            with patch(
+                                "src.orchestrator.agentic._extract_facts_with_llm",
+                                return_value=(
+                                    [
+                                        {
+                                            "session_id": "s1",
+                                            "cycle_index": 1,
+                                            "target_id": "auto-fetch-1",
+                                            "url": "https://conferences.sigcomm.org/sigcomm/2025/program/",
+                                            "url_title": "",
+                                            "paper_title": "Preventing Network Bottlenecks: Accelerating Datacenter Services with Hotspot-Aware Placement for Compute and Storage",
+                                            "doi": "",
+                                            "arxiv_id": "",
+                                            "year": "2025",
+                                            "filters": {"institution": "Google", "year_gte": 2025},
+                                            "evidence": "Preventing Network Bottlenecks ... Google",
+                                            "score": 0.9,
+                                            "status": "ok",
+                                            "extract_source": "llm",
+                                        }
+                                    ],
+                                    {"response_items_count": 1},
+                                ),
+                            ):
+                                run_step(
+                                    "demo",
+                                    "retrieve-agentic",
+                                    prompt="papers by google at SIGCOMM and NSDI in 2025",
+                                    top_n=3,
+                                )
 
             rdir = ws / "demo" / "artifacts" / "retrieval"
             result = yamlx.load(rdir / "agentic_result.yaml")
             self.assertEqual(result["status"], "completed")
-            self.assertNotEqual(result.get("stop_reason"), "extract_requires_fetched_content")
+            self.assertGreaterEqual(len(result.get("papers") or []), 1)
+            first = (result.get("papers") or [])[0]
+            self.assertIn("preventing network bottlenecks", str(first.get("title") or "").lower())
+            self.assertEqual(
+                str(first.get("source_url") or ""),
+                "https://conferences.sigcomm.org/sigcomm/2025/program/",
+            )
 
     def test_agentic_extract_content_does_not_fallback_to_deterministic_rows(self):
         with tempfile.TemporaryDirectory() as tmp:

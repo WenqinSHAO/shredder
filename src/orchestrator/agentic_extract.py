@@ -1098,6 +1098,7 @@ def _resolve_extract_request(
     reuse_fetched_record_for_target_fn = deps["reuse_fetched_record_for_target_fn"]
     fetch_target_record_fn = deps["fetch_target_record_fn"]
     merge_fetched_records_fn = deps["merge_fetched_records_fn"]
+    filter_records_by_urls_fn = deps["filter_records_by_urls_fn"]
     next_op_id_fn = deps["next_op_id_fn"]
     params_targets = params.get("targets") if isinstance(params.get("targets"), list) else []
     requested_target_ids = [str(v).strip() for v in (params.get("target_ids") or []) if str(v).strip()]
@@ -1206,8 +1207,8 @@ def _resolve_extract_request(
             runtime_state["fetched_records"] = records
 
     records = [
-        row for row in records
-        if isinstance(row, dict) and str(row.get("url") or "").strip() in requested_url_set
+        row for row in filter_records_by_urls_fn(records, requested_url_set)
+        if isinstance(row, dict)
     ]
 
     return {
