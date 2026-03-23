@@ -9,6 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.orchestrator import agentic as agentic_mod
+from src.orchestrator import agentic_state_apply as state_apply_mod
+from src.orchestrator import agentic_trace as trace_mod
 from src.orchestrator.runner import run_step
 from src.utils import yamlx
 
@@ -2050,6 +2052,111 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             result = yamlx.load(rdir / "agentic_result.yaml")
             self.assertEqual(result["status"], "failed")
             self.assertIn("missing_api_key:DS_API_KEY", result["stop_reason"])
+
+    # Verify the extracted trace helper writes compact action results and extract debug data.
+    def test_trace_record_cycle_summary_adds_extract_debug(self):
+        cycle_trace = [{"action_result": {}, "delta": {}}]
+        delta = trace_mod._record_cycle_summary(
+            cycle_trace,
+            selected_action="extract_content",
+            action_result={
+                "status": "ok",
+                "notes": "finished extraction",
+                "extract_windows_trace": [
+                    {
+                        "target_id": "t1",
+                        "url": "https://conf.example/program",
+                        "segments_done": 3,
+                        "segments_pending": 1,
+                        "segment_total": 4,
+                        "llm_requests": 2,
+                        "llm_items": [{"paper_title": "Paper A"}],
+                    }
+                ],
+            },
+            raw_candidates=[],
+            extracted_paper_candidates=[{"title": "Paper A"}],
+            url_shortlisted=[],
+        )
+        self.assertEqual(delta["shortlisted_count"], 1)
+        self.assertEqual(cycle_trace[-1]["action_result"]["status"], "ok")
+        self.assertEqual(cycle_trace[-1]["action_debug"]["targets"][0]["llm_items"], ["Paper A"])
+
+    # Verify the extracted trace helper attaches raw-event and fetch-artifact refs for downstream UI/debug views.
+    def test_trace_record_cycle_refs_attaches_fetch_paths(self):
+        cycle_trace = [{}]
+        trace_mod._record_cycle_refs(
+            cycle_trace,
+            fetched_records=[{"raw_path": "fetch_raw/cycle01-page.html"}, {"raw_path": ""}],
+            raw_event_ids=["raw-000001", "raw-000002"],
+        )
+        self.assertEqual(cycle_trace[-1]["refs"]["raw_event_ids"], ["raw-000001", "raw-000002"])
+        self.assertEqual(cycle_trace[-1]["refs"]["fetch_raw_paths"], ["fetch_raw/cycle01-page.html"])
+
+    def test_state_apply_build_extract_coverage_summary_counts_completion(self):
+        summary = state_apply_mod._build_extract_coverage_summary(
+            {
+                "https://a.example": {"target_id": "t1", "segments_done": 3, "segment_total": 3, "coverage_has_more": False},
+                "https://b.example": {"target_id": "t2", "segments_done": 1, "segment_total": 4, "coverage_has_more": True},
+            }
+        )
+        self.assertEqual(summary["shortlisted_urls_total"], 2)
+        self.assertEqual(summary["shortlisted_urls_complete"], 1)
+        self.assertEqual(summary["shortlisted_urls_with_more_results"], 1)
+
+    def test_state_apply_search_action_result_merges_hits(self):
+        raw_candidates = [
+            {
+                "source": "searxng",
+                "source_id": "https://conf.example/program",
+                "title": "NSDI 2025 Accepted Papers",
+                "venue": "NSDI",
+                "year": "2025",
+                "url": "https://conf.example/program",
+                "abstract": "Official program page.",
+                "keywords": [],
+                "categories": [],
+                "score": 2.0,
+                "reason": "searxng_search",
+                "query_used": "NSDI 2025 accepted papers",
+                "_snippet": "Official program page.",
+            }
+        ]
+        finalized = state_apply_mod._apply_search_action_result(
+            session_id="sess-1",
+            cycle_index=1,
+            raw_candidates=raw_candidates,
+            shortlist_hints={"prefer": ["venue_program_pages"]},
+            existing_url_hits=[],
+            shortlist_size=2,
+            max_cycles=3,
+        )
+        self.assertEqual(len(finalized["url_shortlisted"]), 1)
+        self.assertEqual(finalized["url_hits"][0]["url"], "https://conf.example/program")
+
+    def test_state_apply_extract_candidate_results_splits_venue_scoped_candidates(self):
+        finalized = state_apply_mod._apply_extract_candidate_results(
+            prompt="papers at NSDI 2025",
+            agent_plan={"cue_breakdown": ["venue:NSDI"]},
+            existing_final_candidates=[],
+            existing_fallback_candidates=[],
+            extracted_paper_candidates=[
+                {
+                    "title": "Paper On The Program",
+                    "url": "https://conf.example/accepted",
+                    "score": 0.9,
+                    "abstract": "Accepted papers at the conference.",
+                },
+                {
+                    "title": "Loose Candidate",
+                    "url": "https://author.example/profile",
+                    "score": 0.3,
+                    "abstract": "Author profile page with no venue cues.",
+                },
+            ],
+        )
+        self.assertEqual(len(finalized["final_candidates"]), 1)
+        self.assertEqual(len(finalized["fallback_candidates"]), 1)
 
     def test_resolve_extract_anchor_terms_prefers_agent_supplied_terms(self):
         terms = agentic_mod._resolve_extract_anchor_terms(
