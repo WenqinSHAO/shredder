@@ -41,7 +41,7 @@ This document tracks:
 | Module | Progress | Status |
 |---|---:|---|
 | Meta Info Retrieval (deterministic) | `86%` (`████████░░`) | Stabilized |
-| Agentic Meta Info Retrieval | `72%` (`███████░░░`) | Active (extraction quality + performance + trace contracts) |
+| Agentic Meta Info Retrieval | `72%` (`███████░░░`) | Active (extraction simplification + quality + follow-up URL contract) |
 | Data Backend and RAG | `22%` (`██░░░░░░░░`) | Planned |
 | Paper Context Retrieval | `8%` (`░░░░░░░░░░`) | Not started |
 | Paper Context Formatted Extraction | `12%` (`█░░░░░░░░░`) | Not started |
@@ -80,11 +80,11 @@ Working:
 - user-facing result and trajectory artifacts generated from compact projections
 
 Main problems to finish:
-- `src/orchestrator/agentic.py` is still too large and still mixes orchestration with runtime mutation details
-- the action/runtime bridge is still broader than necessary, especially around fetched-record exchange
-- fetch/cache ownership is still loop-adjacent rather than a clearly bounded mechanism subsystem
-- projection/normalization logic is still spread across multiple helpers and modules
-- extraction/runtime performance work is partially blocked by the remaining contract sprawl
+- `src/orchestrator/agentic.py` is smaller than before, but extraction is still too fact-filter-heavy instead of being centered on one per-page result contract
+- the extractor still lacks a first-class page result shape such as `papers[]`, `candidate_urls[]`, and `page_status`
+- complementary URL discovery is still partial and indirect, mostly coming from pagination/search side effects rather than page extraction output
+- fallback extraction policy is still heavier than the naive goal and should only grow through narrow replay-backed corrections
+- fetch-store/cache work is still deferred until the page-result contract is smaller and clearer
 
 ### 3.2.2 Hardened Optimization Direction
 
@@ -95,6 +95,7 @@ Principle:
   - search and shortlist mechanics
   - fetch/cache and extraction mechanics
   - runtime state and user-facing artifacts
+- keep extraction page-centric: every fetched page should ideally project to `papers[]`, `candidate_urls[]`, and `page_status`
 
 Target layering:
 1. Agent semantic layer
@@ -115,11 +116,16 @@ Agentic search is considered minimum-viable finished when:
    - action execution
    - cycle finalize
 2. planner-facing memory is only `agent_memory`, kept compact and derived
-3. action executors exchange narrow runtime contracts, not broad ad hoc shared payloads
-4. fetch/cache handling is clearly separated from loop orchestration
-5. `cycle_trace` is the only loop-owned per-cycle debug ledger
-6. result and trajectory artifacts are pure projections from runtime state
-7. replay/targeted tests validate extraction, merge, and coverage behavior
+3. page extraction returns a small, explicit contract:
+   - `papers[]`
+   - `candidate_urls[]`
+   - `page_status`
+4. candidate URL discovery is a first-class extractor output, not only a pagination/search side effect
+5. action executors exchange narrow runtime contracts, not broad ad hoc shared payloads
+6. fetch/cache handling is clearly separated from loop orchestration
+7. `cycle_trace` is the only loop-owned per-cycle debug ledger
+8. result and trajectory artifacts are pure projections from runtime state
+9. replay/targeted tests validate extraction, merge, coverage, and follow-up URL discovery behavior
 
 ### 3.2.4 Hardened Work Board
 
@@ -178,29 +184,30 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-23: Completed `E4` by introducing a shared per-URL extract projection in `src/orchestrator/agentic_projection.py`, preserving `coverage_has_more` / failure / completion state through extract trace and state-apply, and switching planner memory, trajectory user-view, and result coverage to that shared shape. Full `pytest` now passes (`130 passed, 27 subtests passed`).
 - 2026-03-23: Completed the first `E5` replay-backed correction by enforcing venue evidence on the local/structured candidate-filter path when `match_decision` is absent, while still allowing explicit `match` decisions to pass. Added focused venue-edge-case tests and re-ran full `pytest` (`132 passed, 27 subtests passed`).
 - 2026-03-23: Completed the second `E5` replay-backed correction by requiring full multi-token author-name evidence on the fallback candidate-filter path when `match_decision` is absent, reducing same-name-author overmatches while keeping structured full-name rows valid. Added focused author-edge-case tests and re-ran full `pytest` (`134 passed, 27 subtests passed`).
+- 2026-03-25: Reframed the next-stage guidance around a simpler page-result contract after reviewing extraction complexity against the actual goal. The next developer should optimize for `papers[]`, `candidate_urls[]`, and `page_status`, and avoid growing fallback policy unless replay evidence clearly demands it.
 
 ### 3.2.7 Next Big Stage
 
-Next stage focus: harden canonical extract request resolution and continue shrinking coordinator ownership before reopening fetch-store/cache work.
+Next stage focus: finish simplifying extraction around a small page-result contract before reopening fetch-store/cache work.
 
 Why this comes next:
-- the broad extraction heuristics already have a large replay/unit test surface, but canonical URL-target resolution still has weak seams
-- current extract request resolution still mixes requested URLs, hit ids, redirected URLs, and fetched-record aliases without one clearly enforced canonical path
-- `agentic.py` is still too large because it still owns fetch/raw-trace/LLM transport helpers in addition to loop coordination
-- fetch-store/cache work will be easier to design after the canonical request path and coordinator ownership boundaries are tighter
+- the current extractor is stronger at paper-row filtering than at returning one direct per-page result
+- complementary URL discovery is still not a first-class extractor output, even though it is part of the actual product goal
+- the remaining replay work should be used to trim or justify policy, not to keep expanding fallback heuristics
+- fetch-store/cache work will be easier to design after the page-result contract and follow-up URL flow are smaller and clearer
 
 Stage goals:
-1. enforce one canonical path from planner-selected targets to fetched records, including redirected and alias URLs
-2. move remaining fetch and LLM mechanism helpers out of `agentic.py` so the coordinator surface keeps shrinking
-3. unify per-URL extract progress / coverage projection so agent memory, trajectory, and result artifacts read from the same compact state shape
-4. only after those seams stabilize, run a narrower replay audit for the remaining author/institution/venue extraction edge cases
-5. keep Q4 fetch-store/cache design deferred until the above contracts are small enough to design against confidently
+1. keep extraction centered on a per-page contract: `papers[]`, `candidate_urls[]`, and `page_status`
+2. finish the remaining narrow replay-backed institution correction only if it materially improves paper extraction correctness
+3. add first-class complementary URL extraction for obvious detail / proceedings / author / PDF links that are not already planned or covered
+4. keep candidate URL discovery lightweight and evidence-based; avoid broad new heuristic layers unless replay evidence demands them
+5. keep Q4 fetch-store/cache design deferred until the page-result contract and follow-up URL flow are stable enough to design against confidently
 
 Next session checklist:
-- start with `E5`, because the remaining leverage is now in replay-backed extraction correctness rather than coordinator/mechanism ownership
-- treat `E5` as a sequence of narrow replay-backed corrections; avoid broad heuristic rewrites
-- next narrow `E5` target is institution evidence overmatch, not a broader extract-policy rewrite
-- prefer slices that reduce coordinator ownership or remove duplicated canonicalization/projection paths
+- before adding extraction logic, ask whether it improves `papers[]`, `candidate_urls[]`, or `page_status`
+- finish the remaining narrow `E5` institution-evidence audit before adding broader behavior
+- then add minimal `candidate_urls[]` extraction plus dedupe/canonicalization against already planned or covered URLs
+- prefer page-local evidence (anchors, titles, nearby text) over broader global policy
 - keep `Q4` deferred unless the request-resolution and fetch/extract boundaries become stable enough to justify cache design work
 - when adding tests, strengthen them to assert positive extracted outputs and artifact state, not just the absence of one stop reason
 - update this board after each meaningful boundary change or replay-backed correction
@@ -210,7 +217,11 @@ Immediate queue for the next stage:
   - done: require venue evidence on the fallback candidate-filter path when venue intent exists and `match_decision` is not explicit
   - done: require full multi-token author-name evidence on the fallback candidate-filter path when `match_decision` is absent
   - next: audit remaining institution edge cases where structured row-local evidence may still be under- or over-enforced
-  - avoid reopening broader fetch-store/cache design until these replay-backed contracts are stable
+  - avoid broader heuristic rewrites unless replay evidence clearly justifies them
+- `E6 -> H5, H9`: make complementary page-local URL discovery a first-class extraction output
+  - start with obvious detail / proceedings / author / PDF links that may add title, author affiliation, or abstract evidence
+  - dedupe and canonicalize against already planned / covered URLs before surfacing candidates
+  - keep ranking simple and evidence-based; do not build a broad URL taxonomy yet
 
 ## 4) Non-Active Modules (Summary Only)
 
