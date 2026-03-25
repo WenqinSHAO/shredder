@@ -322,20 +322,24 @@ def to_paper_candidates_from_facts(
             return _first_two_sentences(evidence)
         return _first_two_sentences(evidence[anchor:])
 
-    def _subject_filters(fact: dict) -> tuple[list[str], list[str], list[str], list[str], int | None]:
+    def _subject_filters(fact: dict) -> tuple[list[str], list[str], list[str], list[str], list[str], int | None]:
         filters = fact.get("filters") if isinstance(fact.get("filters"), dict) else {}
         intent = fact.get("extract_intent") if isinstance(fact.get("extract_intent"), dict) else {}
         must_match = intent.get("must_match") if isinstance(intent.get("must_match"), dict) else {}
         institution_terms: list[str] = []
+        institution_phrases: list[str] = []
         author_terms: list[str] = []
         author_phrases: list[str] = []
         venue_terms: list[str] = []
         for key in ("institution", "institution_contains"):
             raw = str(filters.get(key) or "").strip()
             if raw:
+                institution_phrases.extend(_normalize_filter_phrases(raw))
                 institution_terms.extend(_tokenize_filter(raw))
-        if not institution_terms:
-            institution_terms.extend(_tokenize_filter(" ".join(_as_list(must_match.get("institution_any")))))
+        if not institution_terms and not institution_phrases:
+            institution_any = _as_list(must_match.get("institution_any"))
+            institution_phrases.extend(_normalize_filter_phrases(institution_any))
+            institution_terms.extend(_tokenize_filter(" ".join(institution_any)))
         for key in ("author", "author_contains"):
             raw = str(filters.get(key) or "").strip()
             if raw:
@@ -356,6 +360,7 @@ def to_paper_candidates_from_facts(
             year_gte = _safe_int(must_match.get("year_gte"))
         return (
             _unique_nonempty(institution_terms, limit=16),
+            _unique_nonempty(institution_phrases, limit=12),
             _unique_nonempty(author_terms, limit=16),
             _unique_nonempty(author_phrases, limit=12),
             _unique_nonempty(venue_terms, limit=16),
@@ -383,7 +388,7 @@ def to_paper_candidates_from_facts(
             llm_match = str(llm_extract.get("match_decision") or "").strip().lower()
         if llm_match == "non_match":
             return False
-        institution_terms, author_terms, author_phrases, venue_terms, year_gte = _subject_filters(fact)
+        institution_terms, institution_phrases, author_terms, author_phrases, venue_terms, year_gte = _subject_filters(fact)
         if year_gte is not None:
             year = _safe_int(fact.get("year"))
             if year is None or year < year_gte:
@@ -392,7 +397,13 @@ def to_paper_candidates_from_facts(
             return True
         structured = _structured_match_text(fact)
         local = _local_evidence_text(fact)
-        if institution_terms and not (
+        if institution_phrases:
+            if not any(
+                _matches_filter_phrase(structured, phrase) or _matches_filter_phrase(local, phrase)
+                for phrase in institution_phrases
+            ):
+                return False
+        elif institution_terms and not (
             any(term in structured for term in institution_terms)
             or any(term in local for term in institution_terms)
         ):

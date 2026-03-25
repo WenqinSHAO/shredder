@@ -923,6 +923,59 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertIn("Alibaba Stellar: A New Generation RDMA Network for Cloud AI", titles)
         self.assertNotIn("SCX: Scheduler Extension for Linux", titles)
 
+    def test_extract_candidates_require_full_institution_name_when_match_decision_missing(self):
+        facts = [
+            {
+                "status": "ok",
+                "paper_title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                "year": "2025",
+                "doi": "",
+                "arxiv_id": "",
+                "url": "https://example.org/program",
+                "url_title": "Research Systems Program",
+                "evidence": "Falcon: A Reliable, Low Latency Hardware Transport. Authors: Alice Roe, Bob Poe. Affiliation: Google.",
+                "score": 0.9,
+                "filters": {"institution": "Google DeepMind", "year_gte": 2025},
+                "extract_source": "llm",
+                "extract_intent": {"must_match": {"institution_any": ["Google DeepMind"], "year_gte": 2025}},
+                "llm_extract": {
+                    "match_decision": "",
+                    "authors": ["Alice Roe", "Bob Poe"],
+                    "affiliations": ["Google"],
+                    "institution_hits": ["Google"],
+                },
+            }
+        ]
+        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        self.assertEqual(candidates, [])
+
+    def test_extract_candidates_accept_full_institution_name_from_structured_fields(self):
+        facts = [
+            {
+                "status": "ok",
+                "paper_title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                "year": "2025",
+                "doi": "",
+                "arxiv_id": "",
+                "url": "https://example.org/program",
+                "url_title": "Research Systems Program",
+                "evidence": "Falcon: A Reliable, Low Latency Hardware Transport. Authors: Alice Roe, Bob Poe.",
+                "score": 0.9,
+                "filters": {"institution": "Google DeepMind", "year_gte": 2025},
+                "extract_source": "llm",
+                "extract_intent": {"must_match": {"institution_any": ["Google DeepMind"], "year_gte": 2025}},
+                "llm_extract": {
+                    "match_decision": "",
+                    "authors": ["Alice Roe", "Bob Poe"],
+                    "affiliations": ["Google DeepMind", "University College London"],
+                    "institution_hits": ["Google DeepMind"],
+                },
+            }
+        ]
+        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["title"], "Falcon: A Reliable, Low Latency Hardware Transport")
+
     def test_deterministic_canonicalize_candidates_merges_malformed_aliases(self):
         candidates = [
             {

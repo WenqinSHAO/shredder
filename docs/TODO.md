@@ -185,6 +185,7 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-23: Completed the first `E5` replay-backed correction by enforcing venue evidence on the local/structured candidate-filter path when `match_decision` is absent, while still allowing explicit `match` decisions to pass. Added focused venue-edge-case tests and re-ran full `pytest` (`132 passed, 27 subtests passed`).
 - 2026-03-23: Completed the second `E5` replay-backed correction by requiring full multi-token author-name evidence on the fallback candidate-filter path when `match_decision` is absent, reducing same-name-author overmatches while keeping structured full-name rows valid. Added focused author-edge-case tests and re-ran full `pytest` (`134 passed, 27 subtests passed`).
 - 2026-03-25: Reframed the next-stage guidance around a simpler page-result contract after reviewing extraction complexity against the actual goal. The next developer should optimize for `papers[]`, `candidate_urls[]`, and `page_status`, and avoid growing fallback policy unless replay evidence clearly demands it.
+- 2026-03-25: Completed the third `E5` replay-backed correction by requiring full institution-phrase evidence on the fallback candidate-filter path when `match_decision` is absent, so multi-token organization filters no longer overmatch on one token alone. Added focused institution edge-case tests and re-ran full `pytest`.
 
 ### 3.2.7 Next Big Stage
 
@@ -205,8 +206,7 @@ Stage goals:
 
 Next session checklist:
 - before adding extraction logic, ask whether it improves `papers[]`, `candidate_urls[]`, or `page_status`
-- finish the remaining narrow `E5` institution-evidence audit before adding broader behavior
-- then add minimal `candidate_urls[]` extraction plus dedupe/canonicalization against already planned or covered URLs
+- start with minimal `candidate_urls[]` extraction plus dedupe/canonicalization against already planned or covered URLs
 - prefer page-local evidence (anchors, titles, nearby text) over broader global policy
 - keep `Q4` deferred unless the request-resolution and fetch/extract boundaries become stable enough to justify cache design work
 - when adding tests, strengthen them to assert positive extracted outputs and artifact state, not just the absence of one stop reason
@@ -216,9 +216,10 @@ Immediate queue for the next stage:
 - `E5 -> H5, H9`: replay-backed extraction audit after the above seams settle
   - done: require venue evidence on the fallback candidate-filter path when venue intent exists and `match_decision` is not explicit
   - done: require full multi-token author-name evidence on the fallback candidate-filter path when `match_decision` is absent
-  - next: audit remaining institution edge cases where structured row-local evidence may still be under- or over-enforced
+  - done: require full institution-phrase evidence on the fallback candidate-filter path when `match_decision` is absent
   - avoid broader heuristic rewrites unless replay evidence clearly justifies them
 - `E6 -> H5, H9`: make complementary page-local URL discovery a first-class extraction output
+  - next: add a small page-local candidate URL projection alongside extracted papers
   - start with obvious detail / proceedings / author / PDF links that may add title, author affiliation, or abstract evidence
   - dedupe and canonicalize against already planned / covered URLs before surfacing candidates
   - keep ranking simple and evidence-based; do not build a broad URL taxonomy yet
