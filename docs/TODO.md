@@ -41,7 +41,7 @@ This document tracks:
 | Module | Progress | Status |
 |---|---:|---|
 | Meta Info Retrieval (deterministic) | `86%` (`████████░░`) | Stabilized |
-| Agentic Meta Info Retrieval | `72%` (`███████░░░`) | Active (extraction simplification + quality + follow-up URL contract) |
+| Agentic Meta Info Retrieval | `72%` (`███████░░░`) | Active (extraction simplification + debuggability + follow-up URL contract) |
 | Data Backend and RAG | `22%` (`██░░░░░░░░`) | Planned |
 | Paper Context Retrieval | `8%` (`░░░░░░░░░░`) | Not started |
 | Paper Context Formatted Extraction | `12%` (`█░░░░░░░░░`) | Not started |
@@ -80,10 +80,12 @@ Working:
 - user-facing result and trajectory artifacts generated from compact projections
 
 Main problems to finish:
-- `src/orchestrator/agentic.py` is smaller than before, but extraction is still too fact-filter-heavy instead of being centered on one per-page result contract
+- `src/orchestrator/agentic.py` is still far too large for a coordinator module and remains expensive to troubleshoot end-to-end
+- `src/orchestrator/agentic_extract.py` is also too large and still mixes prompt/schema helpers, candidate filtering, and extract runtime orchestration
+- current decomposition still leaves too much behavior hidden behind compatibility wrappers and giant helper files, which risks recreating the previous un-debuggable implementation
 - the extractor still lacks a first-class page result shape such as `papers[]`, `candidate_urls[]`, and `page_status`
-- complementary URL discovery is still partial and indirect, mostly coming from pagination/search side effects rather than page extraction output
 - fallback extraction policy is still heavier than the naive goal and should only grow through narrow replay-backed corrections
+- each refactor slice now needs to reduce file ownership and troubleshooting scope, not only move code across files
 - fetch-store/cache work is still deferred until the page-result contract is smaller and clearer
 
 ### 3.2.2 Hardened Optimization Direction
@@ -126,6 +128,7 @@ Agentic search is considered minimum-viable finished when:
 7. `cycle_trace` is the only loop-owned per-cycle debug ledger
 8. result and trajectory artifacts are pure projections from runtime state
 9. replay/targeted tests validate extraction, merge, coverage, and follow-up URL discovery behavior
+10. no single agentic module remains a mixed-purpose troubleshooting bottleneck; `agentic.py` is coordinator-only and extraction runtime semantics are no longer bundled into one giant file
 
 ### 3.2.4 Hardened Work Board
 
@@ -140,6 +143,7 @@ Agentic search is considered minimum-viable finished when:
 | H7 | Keep `cycle_trace` as the single cycle debug ledger | In progress | Trajectory should project from `cycle_trace`, not parallel history structures. |
 | H8 | Keep user-facing artifacts minimal and stable | In progress | `agentic_result.yaml` / `agentic_trajectory.yaml` stay projection-only. |
 | H9 | Prefer replayable deterministic validation before more planner complexity | In progress | Continue using saved fetch HTML / targeted tests as the quality gate. |
+| H10 | Keep module ownership debuggable and bounded | In progress | Refactors must reduce giant-file ownership and wrapper bloat, not just relocate code. |
 
 ### 3.2.4.1 How to read `H*`, `Q*`, and `E*`
 
@@ -187,13 +191,16 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-25: Reframed the next-stage guidance around a simpler page-result contract after reviewing extraction complexity against the actual goal. The next developer should optimize for `papers[]`, `candidate_urls[]`, and `page_status`, and avoid growing fallback policy unless replay evidence clearly demands it.
 - 2026-03-25: Completed the third `E5` replay-backed correction by requiring full institution-phrase evidence on the fallback candidate-filter path when `match_decision` is absent, so multi-token organization filters no longer overmatch on one token alone. Added focused institution edge-case tests and re-ran full `pytest`.
 - 2026-03-25: Reworked the first `E6` slice to keep complementary-URL discovery simple: the app now only collects page-local link candidates and asks the LLM to propose which URLs look complementary and still relevant to the query. Those proposals stay planner-facing as suggested URLs instead of being auto-merged into `url_hits`.
+- 2026-03-25: Re-reviewed the refactor after the `E6` rework and explicitly raised debuggability as the next gate: `src/orchestrator/agentic.py` and `src/orchestrator/agentic_extract.py` are still both >2k lines, so the next stage must shrink giant-module ownership rather than adding more features or compatibility wrappers.
 
 ### 3.2.7 Next Big Stage
 
-Next stage focus: finish simplifying extraction around a small page-result contract before reopening fetch-store/cache work.
+Next stage focus: restore debuggability by shrinking the remaining giant agentic modules before reopening fetch-store/cache work or adding more planner behavior.
 
 Why this comes next:
-- the page contract now emits both `papers[]` and a first `candidate_urls[]` path, but the follow-up URL side should stay LLM-proposed rather than growing local classification logic
+- `src/orchestrator/agentic.py` is still over 2k lines and is not yet a true coordinator-only file
+- `src/orchestrator/agentic_extract.py` is also over 2k lines and still bundles extract contract, prompt/schema helpers, candidate shaping, and target-run orchestration
+- if the next slices only add behavior, or only move code behind compatibility shims, troubleshooting will drift back toward the previous terrible state
 - the remaining replay work should be used to trim or justify policy, not to keep expanding fallback heuristics
 - fetch-store/cache work will be easier to design after the page-result contract and follow-up URL flow are smaller and clearer
 
@@ -201,14 +208,18 @@ Stage goals:
 1. keep extraction centered on a per-page contract: `papers[]`, `candidate_urls[]`, and `page_status`
 2. keep candidate URL discovery lightweight: deterministic code should collect/normalize candidate links, while the LLM chooses which ones are complementary
 3. keep planner ownership clear: discovered URLs should remain suggestions until the main agent decides whether to fetch/extract them
-4. only reopen replay-backed extraction corrections if new evidence shows a remaining precision gap
-5. keep Q4 fetch-store/cache design deferred until the page-result contract and follow-up URL flow are stable enough to design against confidently
+4. make `agentic.py` a true coordinator shell by moving the remaining loop-engine and compatibility-heavy helper surface into focused modules
+5. split `agentic_extract.py` into smaller extraction-contract / extraction-runtime / candidate-shaping modules so each can be tested and debugged independently
+6. only reopen replay-backed extraction corrections if new evidence shows a remaining precision gap
+7. keep Q4 fetch-store/cache design deferred until the page-result contract and follow-up URL flow are stable enough to design against confidently
 
 Next session checklist:
 - before adding extraction logic, ask whether it improves `papers[]`, `candidate_urls[]`, or `page_status`
 - do not add local URL classification/ranking heuristics unless replay evidence clearly justifies them
 - if candidate URL discovery is hard, move more of the decision into the stateless LLM prompt instead of inventing new code rules
 - keep discovered URLs planner-facing as suggestions, not auto-adopted known URLs
+- each refactor slice must meaningfully shrink one giant file or remove one compatibility facade; avoid “module extraction” that leaves the same bulk mirrored in `agentic.py`
+- prefer boundaries that can be replay-tested in isolation over broad churn across multiple modules at once
 - prefer page-local evidence (anchors, titles, nearby text) over broader global policy
 - keep `Q4` deferred unless the request-resolution and fetch/extract boundaries become stable enough to justify cache design work
 - when adding tests, strengthen them to assert positive extracted outputs and artifact state, not just the absence of one stop reason
@@ -226,6 +237,20 @@ Immediate queue for the next stage:
   - done: keep discovered URLs planner-facing as suggestions rather than auto-merging them into `url_hits`
   - next: refine the complementary-URL LLM prompt/schema using replay fixtures if proposal quality is weak
   - avoid broad URL taxonomies or hard-coded ranking/classification rules
+- `E7 -> H1, H3, H6, H10`: extract the loop engine out of `agentic.py`
+  - move cycle-start/run/finalize/decision helpers into a dedicated loop module
+  - keep `agentic.py` as entrypoint and wiring shell, not the place where the state machine lives
+  - success check: reading `agentic.py` should no longer be required to trace every cycle transition
+- `E8 -> H1, H5, H6, H10`: split `agentic_extract.py` by ownership, not by convenience
+  - separate extract contract/prompt/schema helpers from extract target-run / coverage orchestration
+  - separate candidate shaping / canonicalization from fetch-target and extract-run mechanics
+  - success check: extraction contract bugs and extraction runtime bugs can be debugged in different modules
+- `E9 -> H1, H6, H10`: burn down temporary compatibility wrappers after each boundary move
+  - avoid keeping large forwarding layers in `agentic.py` once callers/tests can move
+  - success check: wrapper count and line count both decrease, not just file count
+- `E10 -> H9, H10`: require replay/targeted validation after each refactor slice that moved ownership
+  - each slice should leave behind focused tests for the new boundary before the next move
+  - do not batch multiple ownership moves together if it makes regressions harder to localize
 
 ## 4) Non-Active Modules (Summary Only)
 
