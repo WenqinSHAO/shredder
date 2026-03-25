@@ -16,7 +16,9 @@ from src.orchestrator.agentic_contracts import (
 )
 from src.orchestrator.agentic_extract import (
     canonicalize_candidate_title as _canonicalize_candidate_title_impl,
+    collect_candidate_url_inputs_from_records as _collect_candidate_url_inputs_from_records_impl,
     extract_facts_with_llm as _extract_facts_with_llm_impl,
+    extract_candidate_urls_with_llm as _extract_candidate_urls_with_llm_impl,
     extract_listing_candidates_from_segments as _extract_listing_candidates_from_segments_impl,
     extract_segment_token_budget as _extract_segment_token_budget_impl,
     extract_target_filters as _extract_target_filters_impl,
@@ -32,6 +34,7 @@ from src.orchestrator.agentic_extract import (
     slice_segments_by_token_budget as _slice_segments_by_token_budget_impl,
     to_paper_candidates_from_facts as _to_paper_candidates_from_facts_impl,
     execute_extract_content_action as _execute_extract_content_action_impl,
+    canonicalize_discovered_url as _canonicalize_discovered_url_impl,
 )
 from src.orchestrator.agentic_fetch import (
     build_extraction_windows as _build_extraction_windows_impl,
@@ -619,6 +622,60 @@ def _to_paper_candidates_from_facts(facts: list[dict]) -> list[dict]:
         canonicalize_candidate_title_fn=_canonicalize_candidate_title,
     )
 
+
+def _canonicalize_discovered_url(url: str) -> str:
+    return _canonicalize_discovered_url_impl(url)
+
+
+def _collect_candidate_url_inputs_from_records(
+    records: list[dict],
+    *,
+    paths: dict[str, Path],
+    known_urls: list[str],
+) -> list[dict]:
+    return _collect_candidate_url_inputs_from_records_impl(
+        records,
+        paths=paths,
+        known_urls=known_urls,
+    )
+
+
+def _extract_candidate_urls_with_llm(
+    *,
+    user_prompt: str,
+    intent: dict,
+    paper_candidates: list[dict],
+    anchor_terms: list[str],
+    known_urls: list[str],
+    link_candidates: list[dict],
+    model: str,
+    api_key_env: str,
+    timeout_s: float = 45.0,
+    max_retries: int = 0,
+    raw_event_fn: Callable[[str, Any], str] | None = None,
+    llm_op_id: str = "",
+) -> tuple[list[dict], dict]:
+    return _extract_candidate_urls_with_llm_impl(
+        user_prompt=user_prompt,
+        intent=intent,
+        paper_candidates=paper_candidates,
+        anchor_terms=anchor_terms,
+        known_urls=known_urls,
+        link_candidates=link_candidates,
+        model=model,
+        api_key_env=api_key_env,
+        timeout_s=timeout_s,
+        max_retries=max_retries,
+        raw_event_fn=raw_event_fn,
+        llm_op_id=llm_op_id,
+        deps={
+            "estimate_messages_metrics_fn": _estimate_messages_metrics,
+            "openai_complete_json_fn": _openai_complete_json,
+            "peek_text_fn": _peek_text,
+        },
+    )
+
+
 def _canonicalize_candidate_title(row: dict) -> str:
     return _canonicalize_candidate_title_impl(row)
 
@@ -1096,6 +1153,11 @@ def _execute_extract_content_action(
             "extract_facts_with_llm_fn": _extract_facts_with_llm,
             "candidate_dedup_key_fn": _candidate_dedup_key,
             "to_paper_candidates_from_facts_fn": _to_paper_candidates_from_facts,
+            "collect_candidate_url_inputs_from_records_fn": _collect_candidate_url_inputs_from_records,
+            "extract_candidate_urls_with_llm_fn": _extract_candidate_urls_with_llm,
+            "estimate_messages_metrics_fn": _estimate_messages_metrics,
+            "openai_complete_json_fn": _openai_complete_json,
+            "peek_text_fn": _peek_text,
             "context_limit_tokens": DEFAULT_EXTRACTOR_CONTEXT_LIMIT_TOKENS,
             "safety_margin": DEFAULT_EXTRACTOR_SAFETY_MARGIN,
             "output_token_reserve": DEFAULT_EXTRACTOR_OUTPUT_TOKEN_RESERVE,
@@ -1162,6 +1224,7 @@ def _execute_agent_action(
         "web_rows": [],
         "raw_candidates": [],
         "paper_candidates": [],
+        "candidate_urls": [],
         "stop": True,
         "stop_reason": f"unsupported_action:{action}",
         "notes": f"unsupported action params={json.dumps(params, ensure_ascii=True)}",
@@ -1598,6 +1661,7 @@ def _finalize_extract_action(
     extracted_paper_candidates: list[dict[str, Any]],
     action_result: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    _ = extracted_paper_candidates
     _apply_extract_coverage_update(loop.extract_state.by_url, action_result=action_result)
     return []
 

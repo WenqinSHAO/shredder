@@ -286,6 +286,35 @@ def _compact_matched_papers_for_agent(papers: list[dict], *, max_items: int = 6)
     return out
 
 
+def _compact_suggested_urls_for_agent(cycle_trace: list[dict], *, max_items: int = 6) -> list[dict]:
+    recent_trace = [item for item in cycle_trace if isinstance(item, dict)]
+    for tail in reversed(recent_trace):
+        action_input = tail.get("action_input") if isinstance(tail.get("action_input"), dict) else {}
+        action_debug = tail.get("action_debug") if isinstance(tail.get("action_debug"), dict) else {}
+        if str(action_input.get("action") or tail.get("selected_action") or "") != "extract_content":
+            continue
+        candidate_urls = action_debug.get("candidate_urls") if isinstance(action_debug.get("candidate_urls"), list) else []
+        out: list[dict] = []
+        for row in candidate_urls:
+            if not isinstance(row, dict):
+                continue
+            url = str(row.get("url") or "").strip()
+            if not url:
+                continue
+            out.append(
+                {
+                    "url": url,
+                    "title": _peek_text(str(row.get("title") or ""), 120),
+                    "why": _peek_text(str(row.get("why") or ""), 140),
+                    "source_url": str(row.get("source_url") or ""),
+                }
+            )
+            if len(out) >= max_items:
+                break
+        return out
+    return []
+
+
 def _build_agent_memory(
     *,
     user_prompt: str,
@@ -340,6 +369,10 @@ def _build_agent_memory(
         ),
         "matched_papers": _compact_matched_papers_for_agent(
             [item for item in papers if isinstance(item, dict)],
+            max_items=6,
+        ),
+        "suggested_urls": _compact_suggested_urls_for_agent(
+            [item for item in cycle_trace if isinstance(item, dict)],
             max_items=6,
         ),
         "blockers": _unique_nonempty(blockers, limit=6),

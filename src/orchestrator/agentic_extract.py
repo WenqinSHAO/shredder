@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from src.connectors.http import normalize_arxiv_id, normalize_doi
 from src.orchestrator.agentic_search import (
@@ -541,6 +542,89 @@ def to_paper_candidates_from_facts(
     return _rank_candidates(deduped)
 
 
+def canonicalize_discovered_url(url: str) -> str:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return ""
+    path = re.sub(r"/{2,}", "/", parsed.path or "/")
+    if path != "/":
+        path = path.rstrip("/")
+    normalized = parsed._replace(
+        scheme=parsed.scheme.lower(),
+        netloc=parsed.netloc.lower(),
+        path=path or "/",
+        fragment="",
+    )
+    return urlunparse(normalized)
+
+
+def collect_candidate_url_inputs_from_records(
+    records: list[dict],
+    *,
+    paths: dict[str, Path],
+    known_urls: list[str],
+    max_links: int = 80,
+) -> list[dict[str, Any]]:
+    known_url_set = {
+        canonicalize_discovered_url(value).lower()
+        for value in known_urls
+        if canonicalize_discovered_url(value)
+    }
+    result_parent = paths["result"].parent
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        base_url = str(record.get("url") or "").strip()
+        raw_path = str(record.get("raw_path") or "").strip()
+        if not base_url or not raw_path.lower().endswith(".html"):
+            continue
+        raw_file = result_parent / raw_path
+        if not raw_file.exists():
+            continue
+        raw_html = raw_file.read_text(encoding="utf-8", errors="ignore")
+        if not raw_html:
+            continue
+        current_page_urls = {
+            canonicalize_discovered_url(value).lower()
+            for value in [
+                str(record.get("url") or ""),
+                str(record.get("requested_url") or ""),
+                *[str(v) for v in (record.get("page_urls") or []) if str(v).strip()],
+                *[str(v) for v in (record.get("url_aliases") or []) if str(v).strip()],
+            ]
+            if canonicalize_discovered_url(value)
+        }
+        for match in re.finditer(r'(?is)<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', raw_html):
+            href = str(match.group(1) or "").strip()
+            lowered_href = href.lower()
+            if lowered_href.startswith(("mailto:", "javascript:", "#")):
+                continue
+            resolved = canonicalize_discovered_url(urljoin(base_url, href))
+            if not resolved:
+                continue
+            lowered_url = resolved.lower()
+            if lowered_url in seen or lowered_url in known_url_set or lowered_url in current_page_urls:
+                continue
+            seen.add(lowered_url)
+            label = _clean_text(str(match.group(2) or ""), limit_chars=240).strip()
+            context = _clean_text(raw_html[max(0, match.start() - 180) : min(len(raw_html), match.end() + 240)], limit_chars=320)
+            out.append(
+                {
+                    "url": resolved,
+                    "label": label,
+                    "context": _peek_text(context, 240),
+                    "source_url": base_url,
+                    "source_title": str(record.get("url_title") or ""),
+                }
+            )
+            if len(out) >= max(1, int(max_links or 1)):
+                return out
+    return out
+
+
 def canonicalize_candidate_title(row: dict) -> str:
     title = _strip_listing_author_tail(str(row.get("title") or "").strip())
     if not title:
@@ -794,6 +878,85 @@ def extract_llm_messages(
     )
     messages = [
         {"role": "system", "content": extract_llm_system_prompt()},
+        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
+    ]
+    return messages, user_payload
+
+
+def extract_candidate_urls_llm_system_prompt() -> str:
+    return (
+        "You identify complementary URLs already present on fetched pages. "
+        "Return JSON only with key `candidate_urls` as a list of objects with keys: "
+        "url, title, why. "
+        "Only choose URLs from the supplied link_candidates list. "
+        "Suggest URLs that may provide complementary paper metadata, author affiliation, abstract, "
+        "or venue/proceedings context relevant to the overall query. "
+        "Do not invent, rewrite, or normalize URLs beyond choosing from the provided candidates. "
+        "Exclude links that are already known or already covered."
+    )
+
+
+def extract_candidate_urls_llm_user_payload(
+    *,
+    user_prompt: str,
+    intent: dict[str, Any],
+    paper_candidates: list[dict[str, Any]],
+    anchor_terms: list[str],
+    known_urls: list[str],
+    link_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    compact_papers: list[dict[str, Any]] = []
+    for row in paper_candidates[:16]:
+        if not isinstance(row, dict):
+            continue
+        compact_papers.append(
+            {
+                "title": str(row.get("title") or ""),
+                "authors": str(row.get("authors") or ""),
+                "affiliations": str(row.get("affiliations") or ""),
+                "source_url": str(row.get("url") or ""),
+            }
+        )
+    return {
+        "task": "identify_complementary_urls",
+        "user_prompt": user_prompt,
+        "intent": intent,
+        "anchor_terms": [str(v) for v in anchor_terms if str(v).strip()][:16],
+        "known_urls": [str(v) for v in known_urls if str(v).strip()][:48],
+        "paper_candidates": compact_papers,
+        "link_candidates": [
+            {
+                "url": str(row.get("url") or ""),
+                "label": str(row.get("label") or ""),
+                "context": str(row.get("context") or ""),
+                "source_url": str(row.get("source_url") or ""),
+                "source_title": str(row.get("source_title") or ""),
+            }
+            for row in link_candidates[:80]
+            if isinstance(row, dict) and str(row.get("url") or "").strip()
+        ],
+    }
+
+
+def extract_candidate_urls_llm_messages(
+    *,
+    user_prompt: str,
+    intent: dict[str, Any],
+    paper_candidates: list[dict[str, Any]],
+    anchor_terms: list[str],
+    known_urls: list[str],
+    link_candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    user_payload = extract_candidate_urls_llm_user_payload(
+        user_prompt=user_prompt,
+        intent=intent,
+        paper_candidates=paper_candidates,
+        anchor_terms=anchor_terms,
+        known_urls=known_urls,
+        link_candidates=link_candidates,
+    )
+    messages = [
+        {"role": "system", "content": extract_candidate_urls_llm_system_prompt()},
         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
     ]
     return messages, user_payload
@@ -1067,6 +1230,116 @@ def extract_facts_with_llm(
     }
 
 
+def extract_candidate_urls_with_llm(
+    *,
+    user_prompt: str,
+    intent: dict[str, Any],
+    paper_candidates: list[dict[str, Any]],
+    anchor_terms: list[str],
+    known_urls: list[str],
+    link_candidates: list[dict[str, Any]],
+    model: str,
+    api_key_env: str,
+    timeout_s: float = 45.0,
+    max_retries: int = 0,
+    raw_event_fn: Callable[[str, Any], str] | None = None,
+    llm_op_id: str = "",
+    deps: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    estimate_messages_metrics_fn = deps["estimate_messages_metrics_fn"]
+    openai_complete_json_fn = deps["openai_complete_json_fn"]
+    peek_text_fn = deps["peek_text_fn"]
+
+    cleaned_links = [row for row in link_candidates if isinstance(row, dict) and str(row.get("url") or "").strip()]
+    if not cleaned_links:
+        return [], {
+            "link_candidates_count": 0,
+            "response_candidate_urls_count": 0,
+            "response_candidate_urls": [],
+        }
+
+    messages, user_payload = extract_candidate_urls_llm_messages(
+        user_prompt=user_prompt,
+        intent=intent,
+        paper_candidates=paper_candidates,
+        anchor_terms=anchor_terms,
+        known_urls=known_urls,
+        link_candidates=cleaned_links,
+    )
+    message_metrics = estimate_messages_metrics_fn(messages)
+    max_completion_tokens = min(4_000, max(800, int((message_metrics.get("input_tokens_est") or 0) * 0.2)))
+    if raw_event_fn is not None:
+        raw_event_fn(
+            "extract_candidate_urls_request",
+            {
+                "model": model,
+                "api_key_env": api_key_env,
+                "op_id": llm_op_id,
+                "messages": messages,
+                "input_chars": int(message_metrics.get("input_chars") or 0),
+                "input_tokens_est": int(message_metrics.get("input_tokens_est") or 0),
+                "max_completion_tokens": max_completion_tokens,
+                "link_candidates_count": len(cleaned_links),
+            },
+        )
+    payload = openai_complete_json_fn(
+        model=model,
+        api_key_env=api_key_env,
+        messages=messages,
+        timeout_s=timeout_s,
+        max_tokens=max_completion_tokens,
+        max_retries=max_retries,
+    )
+    if raw_event_fn is not None:
+        response_payload: dict[str, Any]
+        if isinstance(payload, dict):
+            response_payload = dict(payload)
+            response_payload["op_id"] = llm_op_id
+        else:
+            response_payload = {"op_id": llm_op_id, "payload": payload}
+        payload_text = json.dumps(response_payload, ensure_ascii=False)
+        response_payload["output_chars"] = len(payload_text)
+        response_payload["output_tokens_est"] = _estimate_text_tokens(payload_text)
+        raw_event_fn("extract_candidate_urls_response", response_payload)
+
+    by_url = {
+        canonicalize_discovered_url(str(row.get("url") or "")).lower(): dict(row)
+        for row in cleaned_links
+        if canonicalize_discovered_url(str(row.get("url") or ""))
+    }
+    rows = payload.get("candidate_urls") if isinstance(payload, dict) else []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in (rows if isinstance(rows, list) else []):
+        if not isinstance(item, dict):
+            continue
+        url = canonicalize_discovered_url(str(item.get("url") or ""))
+        if not url:
+            continue
+        key = url.lower()
+        source = by_url.get(key)
+        if source is None or key in seen:
+            continue
+        seen.add(key)
+        title = str(item.get("title") or source.get("label") or url).strip()
+        why = peek_text_fn(str(item.get("why") or source.get("context") or ""), 220)
+        out.append(
+            {
+                "url": url,
+                "title": title or url,
+                "why": why,
+                "source_url": str(source.get("source_url") or ""),
+                "source_title": str(source.get("source_title") or ""),
+            }
+        )
+    return out[:8], {
+        "link_candidates_count": len(cleaned_links),
+        "response_candidate_urls_count": len(rows if isinstance(rows, list) else []),
+        "response_candidate_urls": rows if isinstance(rows, list) else [],
+        "user_payload": user_payload,
+    }
+
+
 def _block_extract_requires_fetched_content(
     *,
     requested_target_ids: set[str],
@@ -1079,6 +1352,7 @@ def _block_extract_requires_fetched_content(
         "web_rows": [],
         "raw_candidates": [],
         "paper_candidates": [],
+        "candidate_urls": [],
         "stop": True,
         "stop_reason": "extract_requires_fetched_content",
         "notes": (
@@ -1290,6 +1564,7 @@ def _build_extract_action_result(
     *,
     facts: list[dict[str, Any]],
     paper_candidates: list[dict[str, Any]],
+    candidate_urls: list[dict[str, Any]],
     requested_urls: list[str],
     llm_extract_attempted: int,
     llm_extract_applied: int,
@@ -1307,13 +1582,15 @@ def _build_extract_action_result(
         "web_rows": [],
         "raw_candidates": [],
         "paper_candidates": paper_candidates,
+        "candidate_urls": candidate_urls,
         "stop": False,
         "stop_reason": "",
         "notes": (
             f"requested_urls={len(requested_urls)} extracted_rows={len(facts)} "
             f"llm_extract_attempted={llm_extract_attempted} llm_extract_applied={llm_extract_applied} "
             f"llm_timeout_errors={llm_timeout_errors} llm_empty_semantic={llm_empty_semantic} "
-            f"coverage_has_more={coverage_has_more} coverage_passes={coverage_passes}"
+            f"coverage_has_more={coverage_has_more} coverage_passes={coverage_passes} "
+            f"candidate_urls={len(candidate_urls)}"
         ),
         "extracted_records": facts,
         "coverage_has_more": coverage_has_more,
@@ -1879,6 +2156,7 @@ def execute_extract_content_action(
             "web_rows": [],
             "raw_candidates": [],
             "paper_candidates": [],
+            "candidate_urls": [],
             "stop": False,
             "stop_reason": "",
             "notes": f"extract_failed_no_fetched_records requested_urls={requested_count}",
@@ -1985,9 +2263,49 @@ def execute_extract_content_action(
         coverage_passes = int(extract_run["coverage_passes"])
 
     paper_candidates = deps["to_paper_candidates_from_facts_fn"](facts)
+    known_urls = [
+        str(row.get("url") or "")
+        for row in (runtime_state.get("url_hits") or [])
+        if isinstance(row, dict) and str(row.get("url") or "").strip()
+    ]
+    known_urls.extend(str(url or "") for url in dict(runtime_state.get("extract_state_by_url") or {}).keys() if str(url or "").strip())
+    known_urls.extend(str(url or "") for url in requested_urls if str(url or "").strip())
+    known_urls.extend(str(row.get("url") or "") for row in records if isinstance(row, dict) and str(row.get("url") or "").strip())
+    link_candidates = deps["collect_candidate_url_inputs_from_records_fn"](
+        records,
+        paths=paths,
+        known_urls=known_urls,
+    )
+    candidate_urls = []
+    if link_candidates:
+        candidate_url_op_id = deps["next_op_id_fn"](runtime_state, "extract_candidate_urls")
+        candidate_urls, _candidate_url_trace = deps["extract_candidate_urls_with_llm_fn"](
+            user_prompt=user_prompt,
+            intent=extract_intent,
+            paper_candidates=paper_candidates,
+            anchor_terms=anchor_terms,
+            known_urls=known_urls,
+            link_candidates=link_candidates,
+            model=llm_extractor_model,
+            api_key_env=llm_api_key_env,
+            timeout_s=timeout_s,
+            max_retries=0,
+            raw_event_fn=(
+                (lambda event_type, payload: raw_event_fn(event_type, payload, None))
+                if raw_event_fn is not None
+                else None
+            ),
+            llm_op_id=candidate_url_op_id,
+            deps={
+                "estimate_messages_metrics_fn": deps["estimate_messages_metrics_fn"],
+                "openai_complete_json_fn": deps["openai_complete_json_fn"],
+                "peek_text_fn": deps["peek_text_fn"],
+            },
+        )
     return _build_extract_action_result(
         facts=facts,
         paper_candidates=paper_candidates,
+        candidate_urls=candidate_urls,
         requested_urls=requested_urls,
         llm_extract_attempted=llm_extract_attempted,
         llm_extract_applied=llm_extract_applied,

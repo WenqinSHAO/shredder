@@ -186,27 +186,29 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-23: Completed the second `E5` replay-backed correction by requiring full multi-token author-name evidence on the fallback candidate-filter path when `match_decision` is absent, reducing same-name-author overmatches while keeping structured full-name rows valid. Added focused author-edge-case tests and re-ran full `pytest` (`134 passed, 27 subtests passed`).
 - 2026-03-25: Reframed the next-stage guidance around a simpler page-result contract after reviewing extraction complexity against the actual goal. The next developer should optimize for `papers[]`, `candidate_urls[]`, and `page_status`, and avoid growing fallback policy unless replay evidence clearly demands it.
 - 2026-03-25: Completed the third `E5` replay-backed correction by requiring full institution-phrase evidence on the fallback candidate-filter path when `match_decision` is absent, so multi-token organization filters no longer overmatch on one token alone. Added focused institution edge-case tests and re-ran full `pytest`.
+- 2026-03-25: Reworked the first `E6` slice to keep complementary-URL discovery simple: the app now only collects page-local link candidates and asks the LLM to propose which URLs look complementary and still relevant to the query. Those proposals stay planner-facing as suggested URLs instead of being auto-merged into `url_hits`.
 
 ### 3.2.7 Next Big Stage
 
 Next stage focus: finish simplifying extraction around a small page-result contract before reopening fetch-store/cache work.
 
 Why this comes next:
-- the current extractor is stronger at paper-row filtering than at returning one direct per-page result
-- complementary URL discovery is still not a first-class extractor output, even though it is part of the actual product goal
+- the page contract now emits both `papers[]` and a first `candidate_urls[]` path, but the follow-up URL side should stay LLM-proposed rather than growing local classification logic
 - the remaining replay work should be used to trim or justify policy, not to keep expanding fallback heuristics
 - fetch-store/cache work will be easier to design after the page-result contract and follow-up URL flow are smaller and clearer
 
 Stage goals:
 1. keep extraction centered on a per-page contract: `papers[]`, `candidate_urls[]`, and `page_status`
-2. finish the remaining narrow replay-backed institution correction only if it materially improves paper extraction correctness
-3. add first-class complementary URL extraction for obvious detail / proceedings / author / PDF links that are not already planned or covered
-4. keep candidate URL discovery lightweight and evidence-based; avoid broad new heuristic layers unless replay evidence demands them
+2. keep candidate URL discovery lightweight: deterministic code should collect/normalize candidate links, while the LLM chooses which ones are complementary
+3. keep planner ownership clear: discovered URLs should remain suggestions until the main agent decides whether to fetch/extract them
+4. only reopen replay-backed extraction corrections if new evidence shows a remaining precision gap
 5. keep Q4 fetch-store/cache design deferred until the page-result contract and follow-up URL flow are stable enough to design against confidently
 
 Next session checklist:
 - before adding extraction logic, ask whether it improves `papers[]`, `candidate_urls[]`, or `page_status`
-- start with minimal `candidate_urls[]` extraction plus dedupe/canonicalization against already planned or covered URLs
+- do not add local URL classification/ranking heuristics unless replay evidence clearly justifies them
+- if candidate URL discovery is hard, move more of the decision into the stateless LLM prompt instead of inventing new code rules
+- keep discovered URLs planner-facing as suggestions, not auto-adopted known URLs
 - prefer page-local evidence (anchors, titles, nearby text) over broader global policy
 - keep `Q4` deferred unless the request-resolution and fetch/extract boundaries become stable enough to justify cache design work
 - when adding tests, strengthen them to assert positive extracted outputs and artifact state, not just the absence of one stop reason
@@ -219,10 +221,11 @@ Immediate queue for the next stage:
   - done: require full institution-phrase evidence on the fallback candidate-filter path when `match_decision` is absent
   - avoid broader heuristic rewrites unless replay evidence clearly justifies them
 - `E6 -> H5, H9`: make complementary page-local URL discovery a first-class extraction output
-  - next: add a small page-local candidate URL projection alongside extracted papers
-  - start with obvious detail / proceedings / author / PDF links that may add title, author affiliation, or abstract evidence
-  - dedupe and canonicalize against already planned / covered URLs before surfacing candidates
-  - keep ranking simple and evidence-based; do not build a broad URL taxonomy yet
+  - done: add a small page-local candidate URL proposal path alongside extracted papers
+  - done: keep deterministic code limited to link collection / normalization / dedupe against already known URLs
+  - done: keep discovered URLs planner-facing as suggestions rather than auto-merging them into `url_hits`
+  - next: refine the complementary-URL LLM prompt/schema using replay fixtures if proposal quality is weak
+  - avoid broad URL taxonomies or hard-coded ranking/classification rules
 
 ## 4) Non-Active Modules (Summary Only)
 

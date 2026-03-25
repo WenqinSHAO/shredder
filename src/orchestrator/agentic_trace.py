@@ -9,6 +9,7 @@ from src.orchestrator.agentic_search import _peek_text, _unique_nonempty
 # Build the compact extract debug payload that downstream trajectory views can project.
 def _summarize_extract_action_debug(action_result: dict[str, Any]) -> dict[str, Any]:
     extract_trace = action_result.get("extract_windows_trace") if isinstance(action_result.get("extract_windows_trace"), list) else []
+    candidate_urls = action_result.get("candidate_urls") if isinstance(action_result.get("candidate_urls"), list) else []
     targets = [
         {
             "target_id": str(item.get("target_id") or ""),
@@ -40,6 +41,16 @@ def _summarize_extract_action_debug(action_result: dict[str, Any]) -> dict[str, 
     ]
     return {
         "targets": targets,
+        "candidate_urls": [
+            {
+                "url": str(row.get("url") or ""),
+                "title": _peek_text(str(row.get("title") or ""), 120),
+                "why": _peek_text(str(row.get("why") or ""), 160),
+                "source_url": str(row.get("source_url") or ""),
+            }
+            for row in candidate_urls[:8]
+            if isinstance(row, dict) and str(row.get("url") or "").strip()
+        ],
         "url_checks": [
             {
                 "url": str(row.get("url") or ""),

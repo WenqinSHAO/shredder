@@ -1314,6 +1314,103 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertIn("https://www.usenix.org/conference/osdi25/technical-sessions?page=3", urls)
         self.assertTrue(all(url.startswith("https://www.usenix.org/") for url in urls))
 
+    def test_collect_candidate_url_inputs_from_records_keeps_page_links_and_skips_known_urls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fetch_raw = root / "fetch_raw"
+            fetch_raw.mkdir(parents=True, exist_ok=True)
+            raw_path = fetch_raw / "cycle01-program.html"
+            raw_path.write_text(
+                """
+                <html><body>
+                  <ul>
+                    <li>
+                      <a href="/paper/falcon">Falcon: A Reliable, Low Latency Hardware Transport</a>
+                      <a href="/paper/falcon.pdf">PDF</a>
+                      <a href="/authors/alice-roe">Alice Roe</a>
+                    </li>
+                    <li><a href="/program?page=2">Next</a></li>
+                  </ul>
+                </body></html>
+                """,
+                encoding="utf-8",
+            )
+            discovered = agentic_mod._collect_candidate_url_inputs_from_records(
+                [
+                    {
+                        "url": "https://conf.example/program",
+                        "requested_url": "https://conf.example/program",
+                        "url_aliases": ["https://conf.example/program"],
+                        "page_urls": ["https://conf.example/program"],
+                        "url_title": "Conference Program",
+                        "raw_path": "fetch_raw/cycle01-program.html",
+                    }
+                ],
+                paths={"result": root / "agentic_result.yaml"},
+                known_urls=["https://conf.example/program"],
+            )
+        urls = [str(row.get("url") or "") for row in discovered]
+        self.assertIn("https://conf.example/paper/falcon", urls)
+        self.assertIn("https://conf.example/paper/falcon.pdf", urls)
+        self.assertIn("https://conf.example/authors/alice-roe", urls)
+        self.assertIn("https://conf.example/program?page=2", urls)
+        self.assertNotIn("https://conf.example/program", urls)
+
+    def test_extract_candidate_urls_with_llm_keeps_only_supplied_links(self):
+        with patch(
+            "src.orchestrator.agentic._openai_complete_json",
+            return_value={
+                "candidate_urls": [
+                    {
+                        "url": "https://conf.example/paper/falcon",
+                        "title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                        "why": "Paper detail page likely contains abstract and metadata.",
+                    },
+                    {
+                        "url": "https://invented.example/ghost",
+                        "title": "Ghost",
+                        "why": "Should be ignored because it was not supplied.",
+                    },
+                ]
+            },
+        ):
+            discovered, trace = agentic_mod._extract_candidate_urls_with_llm(
+                user_prompt="papers by Google at SIGCOMM in 2025",
+                intent={"query_goal": "papers by Google at SIGCOMM in 2025"},
+                paper_candidates=[
+                    {
+                        "title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                        "authors": "Alice Roe; Bob Poe",
+                        "affiliations": "Google",
+                        "url": "https://conf.example/program",
+                    }
+                ],
+                anchor_terms=["Falcon", "Google"],
+                known_urls=["https://conf.example/program"],
+                link_candidates=[
+                    {
+                        "url": "https://conf.example/paper/falcon",
+                        "label": "Falcon: A Reliable, Low Latency Hardware Transport",
+                        "context": "Paper detail page for Falcon.",
+                        "source_url": "https://conf.example/program",
+                        "source_title": "Conference Program",
+                    },
+                    {
+                        "url": "https://conf.example/authors/alice-roe",
+                        "label": "Alice Roe",
+                        "context": "Author page for Alice Roe.",
+                        "source_url": "https://conf.example/program",
+                        "source_title": "Conference Program",
+                    },
+                ],
+                model="dummy",
+                api_key_env="DS_API_KEY",
+            )
+        self.assertEqual(len(discovered), 1)
+        self.assertEqual(discovered[0]["url"], "https://conf.example/paper/falcon")
+        self.assertIn("abstract", str(discovered[0].get("why") or "").lower())
+        self.assertEqual(int(trace.get("response_candidate_urls_count") or 0), 2)
+
     def test_extract_year_best_prefers_recent_year(self):
         text = "Bio 2016 and 2020. Proceedings 2025. Session notes."
         self.assertEqual(agentic_mod._extract_year_best(text, year_gte=2025), "2025")
@@ -2602,6 +2699,37 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(memory["last_step"]["action"], "search_web")
         self.assertEqual(memory["last_change"]["retrieved_count"], 12)
         self.assertTrue(any("timeout" in item for item in memory["blockers"]))
+
+    def test_build_agent_memory_includes_suggested_urls_from_last_extract_action(self):
+        memory = agentic_mod._build_agent_memory(
+            user_prompt="papers by Google at SIGCOMM in 2025",
+            plan_state={},
+            url_hits=[],
+            extract_state_by_url={},
+            papers=[],
+            cycle_trace=[
+                {
+                    "cycle_index": 1,
+                    "selected_action": "extract_content",
+                    "action_input": {"action": "extract_content"},
+                    "action_result": {"status": "ok", "notes": "found follow-up urls"},
+                    "action_debug": {
+                        "candidate_urls": [
+                            {
+                                "url": "https://conf.example/paper/falcon",
+                                "title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                                "why": "Paper detail page likely contains abstract.",
+                                "source_url": "https://conf.example/program",
+                            }
+                        ]
+                    },
+                    "delta": {},
+                }
+            ],
+            stop_reason="",
+        )
+        self.assertEqual(memory["suggested_urls"][0]["url"], "https://conf.example/paper/falcon")
+        self.assertIn("abstract", str(memory["suggested_urls"][0]["why"] or "").lower())
 
     def test_write_agentic_trajectory_user_view_keeps_url_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
