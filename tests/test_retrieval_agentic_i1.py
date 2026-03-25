@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.orchestrator import agentic as agentic_mod
+from src.orchestrator import agentic_extract_candidates as candidate_mod
 from src.orchestrator import agentic_extract as extract_mod
 from src.orchestrator import agentic_state_apply as state_apply_mod
 from src.orchestrator import agentic_trace as trace_mod
@@ -54,6 +55,13 @@ def _read_raw_events(path: Path) -> list[dict]:
         if isinstance(payload, dict):
             rows.append(payload)
     return rows
+
+
+def _papers_from_facts(facts: list[dict]) -> list[dict]:
+    return candidate_mod.to_paper_candidates_from_facts(
+        facts,
+        canonicalize_candidate_title_fn=candidate_mod.canonicalize_candidate_title,
+    )
 
 
 def _mock_search_web_cycle1(**kwargs):
@@ -557,7 +565,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "llm_extract": {"match_decision": "non_match", "institution_match": False},
             },
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         titles = [str(row.get("title") or "") for row in candidates]
         self.assertIn("Falcon: A Reliable, Low Latency Hardware Transport", titles)
         self.assertNotIn(
@@ -583,7 +591,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "llm_extract": {"match_decision": "match", "institution_match": True},
             }
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         self.assertEqual(len(candidates), 1)
         self.assertIn("NDD", str(candidates[0].get("title") or ""))
 
@@ -610,7 +618,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 },
             }
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         self.assertEqual(candidates, [])
 
     def test_extract_candidates_require_full_author_name_when_match_decision_missing(self):
@@ -635,7 +643,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 },
             }
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         self.assertEqual(candidates, [])
 
     def test_extract_candidates_accept_full_author_name_from_structured_fields(self):
@@ -660,7 +668,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 },
             }
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         self.assertEqual(len(candidates), 1)
         self.assertIn("Learnings from Deploying Network QoS", str(candidates[0].get("title") or ""))
 
@@ -687,7 +695,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 },
             }
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         self.assertEqual(len(candidates), 1)
         self.assertIn("Learnings from Deploying Network QoS", str(candidates[0].get("title") or ""))
 
@@ -823,7 +831,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "extract_source": "llm",
             }
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         self.assertEqual(len(candidates), 1)
         self.assertIn("ParserHawk", str(candidates[0].get("title") or ""))
 
@@ -844,22 +852,22 @@ class TestAgenticRetrievalI1(unittest.TestCase):
 
     def test_authorish_title_fragment_is_rejected(self):
         self.assertTrue(
-            agentic_mod._is_authorish_title_fragment(
+            candidate_mod.is_authorish_title_fragment(
                 "Zhejiang University and Alibaba Cloud); Ju Zhang, Bowen Yang, Yi Wang"
             )
         )
         self.assertTrue(
-            agentic_mod._is_authorish_title_fragment(
+            candidate_mod.is_authorish_title_fragment(
                 "Shenzhen Institutes of Advanced Technology, Chinese Academy of Sciences"
             )
         )
         self.assertTrue(
-            agentic_mod._is_authorish_title_fragment(
+            candidate_mod.is_authorish_title_fragment(
                 "Hangzhou Feitian Cloud and Alibaba Cloud"
             )
         )
         self.assertFalse(
-            agentic_mod._is_authorish_title_fragment(
+            candidate_mod.is_authorish_title_fragment(
                 "Alibaba Stellar: A New Generation RDMA Network for Cloud AI"
             )
         )
@@ -918,7 +926,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "llm_extract": {"institution_match": "Alibaba Cloud"},
             },
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         titles = [str(row.get("title") or "") for row in candidates]
         self.assertIn("Alibaba Stellar: A New Generation RDMA Network for Cloud AI", titles)
         self.assertNotIn("SCX: Scheduler Extension for Linux", titles)
@@ -946,7 +954,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 },
             }
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         self.assertEqual(candidates, [])
 
     def test_extract_candidates_accept_full_institution_name_from_structured_fields(self):
@@ -972,7 +980,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 },
             }
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["title"], "Falcon: A Reliable, Low Latency Hardware Transport")
 
@@ -1235,7 +1243,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         # Mirrors merge preference logic in extract path: listing_deterministic rows
         # from targets with llm facts are dropped before candidate assembly.
         merged_facts = [llm]
-        candidates = agentic_mod._to_paper_candidates_from_facts(merged_facts)
+        candidates = _papers_from_facts(merged_facts)
         titles = [str(row.get("title") or "") for row in candidates]
         self.assertIn("ParserHawk: Hardware-aware parser generator using program synthesis", titles)
         self.assertNotIn("Zhejiang University and Alibaba Cloud); Ju Zhang, Bowen Yang", titles)
@@ -1259,7 +1267,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 },
             }
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["title"], "Learnings from Deploying Network QoS Alignment to Application Priorities for Storage Services")
 
@@ -1293,7 +1301,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "extract_source": "listing_deterministic",
             },
         ]
-        candidates = agentic_mod._to_paper_candidates_from_facts(facts)
+        candidates = _papers_from_facts(facts)
         titles = [str(row.get("title") or "") for row in candidates]
         self.assertEqual(sum(1 for t in titles if t.startswith("Nezha: SmartNIC-based Virtual Switch Load Sharing")), 1)
 
@@ -1335,7 +1343,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 """,
                 encoding="utf-8",
             )
-            discovered = agentic_mod._collect_candidate_url_inputs_from_records(
+            discovered = candidate_mod.collect_candidate_url_inputs_from_records(
                 [
                     {
                         "url": "https://conf.example/program",
@@ -1413,8 +1421,8 @@ class TestAgenticRetrievalI1(unittest.TestCase):
 
     def test_extract_year_best_prefers_recent_year(self):
         text = "Bio 2016 and 2020. Proceedings 2025. Session notes."
-        self.assertEqual(agentic_mod._extract_year_best(text, year_gte=2025), "2025")
-        self.assertEqual(agentic_mod._extract_year_best(text, year_gte=2026), "2025")
+        self.assertEqual(candidate_mod.extract_year_best(text, year_gte=2025), "2025")
+        self.assertEqual(candidate_mod.extract_year_best(text, year_gte=2026), "2025")
 
     def test_shortlist_hints_pipe_format_is_normalized(self):
         normalized = agentic_mod._normalize_shortlist_hints(
@@ -1503,7 +1511,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(rejected, {})
 
     def test_non_paper_fact_is_dropped(self):
-        candidates = agentic_mod._to_paper_candidates_from_facts(
+        candidates = _papers_from_facts(
             [
                 {
                     "status": "ok",
@@ -1521,7 +1529,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(candidates, [])
 
     def test_single_candidate_title_is_canonicalized(self):
-        candidates = agentic_mod._to_paper_candidates_from_facts(
+        candidates = _papers_from_facts(
             [
                 {
                     "status": "ok",
@@ -1545,7 +1553,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         )
 
     def test_llm_decision_false_excludes_candidate(self):
-        candidates = agentic_mod._to_paper_candidates_from_facts(
+        candidates = _papers_from_facts(
             [
                 {
                     "status": "ok",
@@ -1564,7 +1572,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(candidates, [])
 
     def test_llm_decision_true_can_include_candidate(self):
-        candidates = agentic_mod._to_paper_candidates_from_facts(
+        candidates = _papers_from_facts(
             [
                 {
                     "status": "ok",
