@@ -80,8 +80,8 @@ Working:
 - user-facing result and trajectory artifacts generated from compact projections
 
 Main problems to finish:
-- `src/orchestrator/agentic.py` is still far too large for a coordinator module and remains expensive to troubleshoot end-to-end
-- `src/orchestrator/agentic_extract.py` is also too large and still mixes prompt/schema helpers, candidate filtering, and extract runtime orchestration
+- `src/orchestrator/agentic.py` is no longer the loop engine, but it still carries too much wrapper and wiring surface for a coordinator-only module
+- `src/orchestrator/agentic_extract.py` is smaller now, but it still mixes candidate filtering and extract runtime orchestration in one file
 - current decomposition still leaves too much behavior hidden behind compatibility wrappers and giant helper files, which risks recreating the previous un-debuggable implementation
 - the extractor still lacks a first-class page result shape such as `papers[]`, `candidate_urls[]`, and `page_status`
 - fallback extraction policy is still heavier than the naive goal and should only grow through narrow replay-backed corrections
@@ -192,14 +192,16 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-25: Completed the third `E5` replay-backed correction by requiring full institution-phrase evidence on the fallback candidate-filter path when `match_decision` is absent, so multi-token organization filters no longer overmatch on one token alone. Added focused institution edge-case tests and re-ran full `pytest`.
 - 2026-03-25: Reworked the first `E6` slice to keep complementary-URL discovery simple: the app now only collects page-local link candidates and asks the LLM to propose which URLs look complementary and still relevant to the query. Those proposals stay planner-facing as suggested URLs instead of being auto-merged into `url_hits`.
 - 2026-03-25: Re-reviewed the refactor after the `E6` rework and explicitly raised debuggability as the next gate: `src/orchestrator/agentic.py` and `src/orchestrator/agentic_extract.py` are still both >2k lines, so the next stage must shrink giant-module ownership rather than adding more features or compatibility wrappers.
+- 2026-03-25: Completed `E7` by extracting the cycle state machine into `src/orchestrator/agentic_loop.py`, reducing `src/orchestrator/agentic.py` to entrypoint/action wiring plus compatibility helpers. Preserved patchable search-finalize behavior through an injected wrapper boundary and re-ran targeted plus full tests (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
+- 2026-03-25: Completed the first `E8` slice by moving the stateless extract prompt/schema, token-budget scaffolding, and LLM exchange helpers into `src/orchestrator/agentic_extract_llm.py`. `src/orchestrator/agentic_extract.py` is now below 2k lines (`1999`), and full tests still pass (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
 
 ### 3.2.7 Next Big Stage
 
 Next stage focus: restore debuggability by shrinking the remaining giant agentic modules before reopening fetch-store/cache work or adding more planner behavior.
 
 Why this comes next:
-- `src/orchestrator/agentic.py` is still over 2k lines and is not yet a true coordinator-only file
-- `src/orchestrator/agentic_extract.py` is also over 2k lines and still bundles extract contract, prompt/schema helpers, candidate shaping, and target-run orchestration
+- the loop engine now lives in `src/orchestrator/agentic_loop.py`, but `src/orchestrator/agentic.py` is still larger than it should be because compatibility wrappers and action wiring have not been burned down yet
+- `src/orchestrator/agentic_extract.py` is now below 2k lines, but it still bundles candidate shaping and target-run orchestration tightly enough to remain a debugging bottleneck
 - if the next slices only add behavior, or only move code behind compatibility shims, troubleshooting will drift back toward the previous terrible state
 - the remaining replay work should be used to trim or justify policy, not to keep expanding fallback heuristics
 - fetch-store/cache work will be easier to design after the page-result contract and follow-up URL flow are smaller and clearer
@@ -208,7 +210,7 @@ Stage goals:
 1. keep extraction centered on a per-page contract: `papers[]`, `candidate_urls[]`, and `page_status`
 2. keep candidate URL discovery lightweight: deterministic code should collect/normalize candidate links, while the LLM chooses which ones are complementary
 3. keep planner ownership clear: discovered URLs should remain suggestions until the main agent decides whether to fetch/extract them
-4. make `agentic.py` a true coordinator shell by moving the remaining loop-engine and compatibility-heavy helper surface into focused modules
+4. make `agentic.py` a true coordinator shell by burning down the remaining compatibility-heavy helper surface now that the loop engine lives elsewhere
 5. split `agentic_extract.py` into smaller extraction-contract / extraction-runtime / candidate-shaping modules so each can be tested and debugged independently
 6. only reopen replay-backed extraction corrections if new evidence shows a remaining precision gap
 7. keep Q4 fetch-store/cache design deferred until the page-result contract and follow-up URL flow are stable enough to design against confidently
@@ -238,12 +240,12 @@ Immediate queue for the next stage:
   - next: refine the complementary-URL LLM prompt/schema using replay fixtures if proposal quality is weak
   - avoid broad URL taxonomies or hard-coded ranking/classification rules
 - `E7 -> H1, H3, H6, H10`: extract the loop engine out of `agentic.py`
-  - move cycle-start/run/finalize/decision helpers into a dedicated loop module
-  - keep `agentic.py` as entrypoint and wiring shell, not the place where the state machine lives
-  - success check: reading `agentic.py` should no longer be required to trace every cycle transition
+  - done: move cycle-start/run/finalize/decision helpers into `src/orchestrator/agentic_loop.py`
+  - done: keep `agentic.py` as entrypoint and wiring shell instead of the place where the state machine lives
+  - next: reduce the remaining compatibility/wrapper surface now that the loop engine no longer lives there
 - `E8 -> H1, H5, H6, H10`: split `agentic_extract.py` by ownership, not by convenience
-  - separate extract contract/prompt/schema helpers from extract target-run / coverage orchestration
-  - separate candidate shaping / canonicalization from fetch-target and extract-run mechanics
+  - done: separate the stateless extract contract/prompt/schema and LLM exchange helpers into `src/orchestrator/agentic_extract_llm.py`
+  - next: separate candidate shaping / canonicalization from fetch-target and extract-run mechanics
   - success check: extraction contract bugs and extraction runtime bugs can be debugged in different modules
 - `E9 -> H1, H6, H10`: burn down temporary compatibility wrappers after each boundary move
   - avoid keeping large forwarding layers in `agentic.py` once callers/tests can move
