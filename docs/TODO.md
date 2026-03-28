@@ -80,7 +80,7 @@ Working:
 - user-facing result and trajectory artifacts generated from compact projections
 
 Main problems to finish:
-- `src/orchestrator/agentic.py` is no longer the loop engine, but it still carries too much wrapper and wiring surface for a coordinator-only module
+- `src/orchestrator/agentic.py` is now under 1k lines and no longer owns the loop or action execution, but it still carries more compatibility/helper surface than a coordinator-only module should
 - `src/orchestrator/agentic_extract.py` is now mostly runtime/orchestration code, but the surrounding compatibility wrappers still hide ownership more than they should
 - current decomposition still leaves too much behavior hidden behind compatibility wrappers and giant helper files, which risks recreating the previous un-debuggable implementation
 - the extractor still lacks a first-class page result shape such as `papers[]`, `candidate_urls[]`, and `page_status`
@@ -195,6 +195,9 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-25: Completed `E7` by extracting the cycle state machine into `src/orchestrator/agentic_loop.py`, reducing `src/orchestrator/agentic.py` to entrypoint/action wiring plus compatibility helpers. Preserved patchable search-finalize behavior through an injected wrapper boundary and re-ran targeted plus full tests (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
 - 2026-03-25: Completed the first `E8` slice by moving the stateless extract prompt/schema, token-budget scaffolding, and LLM exchange helpers into `src/orchestrator/agentic_extract_llm.py`. `src/orchestrator/agentic_extract.py` is now below 2k lines (`1999`), and full tests still pass (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
 - 2026-03-25: Completed the second `E8` slice by moving pure candidate shaping / canonicalization into `src/orchestrator/agentic_extract_candidates.py` and retargeting the pure-function tests to that module instead of `agentic.py`. `src/orchestrator/agentic_extract.py` is now `1499` lines, and full tests still pass (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
+- 2026-03-28: Completed the first `E9` slice by removing the candidate-only forwarding helpers from `src/orchestrator/agentic.py`, wiring coordinator-local callers directly to the extracted implementation modules, and keeping tests focused on the real module boundaries. `src/orchestrator/agentic.py` is now `1355` lines, and full tests still pass (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
+- 2026-03-28: Completed the second `E9` slice by removing the target-normalization and extract-budget forwarding helpers from `src/orchestrator/agentic.py`, rewiring the extract action deps directly to implementation modules, and retargeting the remaining pure tests to `src/orchestrator/agentic_extract.py`. `src/orchestrator/agentic.py` is now `1288` lines, and full tests still pass (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
+- 2026-03-28: Completed the third `E9` slice by moving action execution into `src/orchestrator/agentic_actions.py`, deleting the remaining fetch/search/extract execution facade from `src/orchestrator/agentic.py`, and retargeting runtime tests to the real action/view/text ownership seams. `src/orchestrator/agentic.py` is now `920` lines, and full tests still pass (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
 
 ### 3.2.7 Next Big Stage
 
@@ -249,7 +252,10 @@ Immediate queue for the next stage:
   - done: separate candidate shaping / canonicalization into `src/orchestrator/agentic_extract_candidates.py`
   - done: extraction contract bugs, candidate-shaping bugs, and extraction runtime bugs can now be debugged in different modules
 - `E9 -> H1, H6, H10`: burn down temporary compatibility wrappers after each boundary move
-  - avoid keeping large forwarding layers in `agentic.py` once callers/tests can move
+  - done: remove the candidate-only forwarding helpers from `src/orchestrator/agentic.py` once callers/tests moved to the extracted modules
+  - done: remove the target-normalization and extract-budget forwarding helpers from `src/orchestrator/agentic.py`
+  - done: move search/fetch/extract action execution into `src/orchestrator/agentic_actions.py` and retarget runtime tests to that boundary
+  - next: audit the remaining stable compatibility helpers in `agentic.py` and either move ownership to focused modules or delete dead wrappers instead of letting them become a second long tail
   - success check: wrapper count and line count both decrease, not just file count
 - `E10 -> H9, H10`: require replay/targeted validation after each refactor slice that moved ownership
   - each slice should leave behind focused tests for the new boundary before the next move

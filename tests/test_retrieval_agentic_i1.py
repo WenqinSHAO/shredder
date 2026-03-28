@@ -9,9 +9,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.orchestrator import agentic as agentic_mod
+from src.orchestrator import agentic_actions as actions_mod
 from src.orchestrator import agentic_extract_candidates as candidate_mod
 from src.orchestrator import agentic_extract as extract_mod
 from src.orchestrator import agentic_state_apply as state_apply_mod
+from src.orchestrator import agentic_view as view_mod
 from src.orchestrator import agentic_trace as trace_mod
 from src.orchestrator.runner import run_step
 from src.utils import yamlx
@@ -292,7 +294,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             "text": "dummy",
         }
         with patch(
-            "src.orchestrator.agentic._openai_complete_json",
+            "src.orchestrator.agentic_actions.llm_mod.openai_complete_json",
             return_value={
                 "items": [
                     {
@@ -319,7 +321,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 ]
             },
         ):
-            facts, _trace = agentic_mod._extract_facts_with_llm(
+            facts, _trace = actions_mod._extract_facts_with_llm(
                 record=record,
                 filters={"institution": "Alibaba", "year_gte": 2025},
                 user_prompt="papers by Alibaba at SIGCOMM in 2025",
@@ -346,7 +348,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             "text": "SimAI paper by Alibaba Cloud. Learning Production-Optimized Congestion Control Selection for Alibaba Cloud CDN.",
         }
         with patch(
-            "src.orchestrator.agentic._openai_complete_json",
+            "src.orchestrator.agentic_actions.llm_mod.openai_complete_json",
             return_value={
                 "items": [
                     {
@@ -374,7 +376,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 ]
             },
         ):
-            facts, trace = agentic_mod._extract_facts_with_llm(
+            facts, trace = actions_mod._extract_facts_with_llm(
                 record=record,
                 filters={"institution": "Alibaba", "year_gte": 2025},
                 user_prompt="papers by Alibaba at NSDI in 2025",
@@ -398,7 +400,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             "text": "Falcon: A Reliable, Low Latency Hardware Transport",
         }
         with patch(
-            "src.orchestrator.agentic._openai_complete_json",
+            "src.orchestrator.agentic_actions.llm_mod.openai_complete_json",
             return_value={
                 "items": [
                     {
@@ -415,7 +417,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 ]
             },
         ):
-            facts, _trace = agentic_mod._extract_facts_with_llm(
+            facts, _trace = actions_mod._extract_facts_with_llm(
                 record=record,
                 filters={"institution": "Google", "year_gte": 2025},
                 user_prompt="papers by google at SIGCOMM and NSDI in 2025",
@@ -439,7 +441,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             "text": "ParserHawk listing text",
         }
         with patch(
-            "src.orchestrator.agentic._openai_complete_json",
+            "src.orchestrator.agentic_actions.llm_mod.openai_complete_json",
             return_value={
                 "items": [
                     {
@@ -457,7 +459,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 ]
             },
         ):
-            facts, _trace = agentic_mod._extract_facts_with_llm(
+            facts, _trace = actions_mod._extract_facts_with_llm(
                 record=record,
                 filters={"institution": "Google", "year_gte": 2025},
                 user_prompt="papers by google at SIGCOMM in 2025",
@@ -479,7 +481,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             "text": "ParserHawk: Hardware-aware parser generator using program synthesis ... Alibaba Cloud.",
         }
         with patch(
-            "src.orchestrator.agentic._openai_complete_json",
+            "src.orchestrator.agentic_actions.llm_mod.openai_complete_json",
             return_value={
                 "items": [
                     {
@@ -492,7 +494,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 ]
             },
         ):
-            facts, _trace = agentic_mod._extract_facts_with_llm(
+            facts, _trace = actions_mod._extract_facts_with_llm(
                 record=record,
                 filters={"institution": "Alibaba", "year_gte": 2025},
                 user_prompt="papers by Alibaba at SIGCOMM in 2025",
@@ -505,7 +507,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertIn("ParserHawk", str(facts[0].get("paper_title") or ""))
 
     def test_resolve_extract_intent_infers_year_from_prompt(self):
-        intent = agentic_mod._resolve_extract_intent(
+        intent = extract_mod.resolve_extract_intent(
             params={},
             filters={"institution": "Google"},
             user_prompt="papers by google at SIGCOMM and NSDI in 2025",
@@ -515,7 +517,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertIn("Google", must.get("institution_any") or [])
 
     def test_resolve_extract_intent_treats_org_by_subject_as_institution(self):
-        intent = agentic_mod._resolve_extract_intent(
+        intent = extract_mod.resolve_extract_intent(
             params={},
             filters={},
             user_prompt="papers by Google at SIGCOMM in 2025",
@@ -525,7 +527,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(must.get("author_any") or [], [])
 
     def test_resolve_extract_intent_treats_person_by_subject_as_author(self):
-        intent = agentic_mod._resolve_extract_intent(
+        intent = extract_mod.resolve_extract_intent(
             params={},
             filters={},
             user_prompt="papers by Alice Smith at SIGCOMM in 2025",
@@ -701,7 +703,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
 
     def test_slice_segments_by_token_budget(self):
         segments = ["a" * 8000, "b" * 8000, "c" * 8000]
-        batch = agentic_mod._slice_segments_by_token_budget(
+        batch = extract_mod.slice_segments_by_token_budget(
             segments,
             start=0,
             max_segments=10,
@@ -712,7 +714,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertLessEqual(sum(agentic_mod._estimate_text_tokens(x) for x in batch), 5200)
 
     def test_extract_segment_token_budget_leaves_headroom(self):
-        budget = agentic_mod._extract_segment_token_budget(
+        budget = extract_mod.extract_segment_token_budget(
             record={"url": "https://example.org/listing", "url_title": "Listing"},
             filters={"institution": "Google", "year_gte": 2025},
             user_prompt="papers by google at SIGCOMM in 2025",
@@ -720,6 +722,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             context_limit_tokens=128000,
             safety_margin=0.18,
             output_token_reserve=6000,
+            deps={"estimate_messages_metrics_fn": agentic_mod._estimate_messages_metrics},
         )
         self.assertGreaterEqual(budget, 4000)
         self.assertLess(budget, 128000)
@@ -1425,7 +1428,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(candidate_mod.extract_year_best(text, year_gte=2026), "2025")
 
     def test_shortlist_hints_pipe_format_is_normalized(self):
-        normalized = agentic_mod._normalize_shortlist_hints(
+        normalized = view_mod._normalize_shortlist_hints(
             {"prefer": ["venue_program_pages|author_sources|avoid_detail_pages", "unknown_hint"]}
         )
         self.assertEqual(
@@ -1444,7 +1447,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertIn("Technical Sessions", str((reranked[0] or {}).get("title") or ""))
 
     def test_multi_venue_query_is_split_into_one_venue_per_query(self):
-        queries = agentic_mod._normalize_search_queries(
+        queries = actions_mod.normalize_search_queries(
             ["Bytedance 2025 OSDI SOSP ASPLOS ISCA MICRO EuroSys"],
             max_total=16,
         )
@@ -1632,7 +1635,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         ),
                     ):
                         with patch(
-                            "src.orchestrator.agentic.get_json",
+                            "src.orchestrator.agentic_actions.get_json",
                             side_effect=[
                                 {
                                     "results": [
@@ -1686,7 +1689,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                             stop=True,
                         ),
                     ):
-                        with patch("src.orchestrator.agentic._search_web_queries", side_effect=_mock_search_web_cycle1):
+                        with patch("src.orchestrator.agentic_actions._search_web_queries", side_effect=_mock_search_web_cycle1):
                             result_path = run_step(
                                 "demo",
                                 "retrieve-agentic",
@@ -1738,7 +1741,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         ],
                     ):
                         with patch(
-                            "src.orchestrator.agentic.get_json",
+                            "src.orchestrator.agentic_actions.get_json",
                             return_value={
                                 "results": [
                                     {
@@ -1751,7 +1754,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                             },
                         ):
                             with patch(
-                                "src.orchestrator.agentic._fetch_url_raw",
+                                "src.orchestrator.agentic_actions._fetch_url_raw",
                                 return_value=(
                                     "<html><body>ParserHawk: Hardware-aware parser generator using program synthesis (Alibaba Cloud).</body></html>",
                                     "text/html",
@@ -1768,7 +1771,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                                     ],
                                 ):
                                     with patch(
-                                        "src.orchestrator.agentic._extract_facts_with_llm",
+                                        "src.orchestrator.agentic_actions._extract_facts_with_llm",
                                         return_value=(
                                             [
                                                 {
@@ -1836,7 +1839,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                             stop=True,
                         ),
                     ):
-                        with patch("src.orchestrator.agentic._search_web_queries", side_effect=_mock_search_web_cycle1):
+                        with patch("src.orchestrator.agentic_actions._search_web_queries", side_effect=_mock_search_web_cycle1):
                             run_step(
                                 "demo",
                                 "retrieve-agentic",
@@ -1864,7 +1867,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                             stop=True,
                         ),
                     ):
-                        with patch("src.orchestrator.agentic._search_web_queries", side_effect=_mock_search_web_empty):
+                        with patch("src.orchestrator.agentic_actions._search_web_queries", side_effect=_mock_search_web_empty):
                             run_step(
                                 "demo",
                                 "retrieve-agentic",
@@ -1932,7 +1935,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         ],
                     ):
                         with patch(
-                            "src.orchestrator.agentic._search_web_queries",
+                            "src.orchestrator.agentic_actions._search_web_queries",
                             return_value=(
                                 [],
                                 [
@@ -1960,14 +1963,14 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         ):
                             with patch("src.orchestrator.agentic._make_hit_id", return_value="abc123hitid"):
                                 with patch(
-                                    "src.orchestrator.agentic._fetch_url_raw",
+                                    "src.orchestrator.agentic_actions._fetch_url_raw",
                                     return_value=(
                                         "<html><body>To PRI or Not To PRI, That's the question. Alibaba Group and Bytedance mention. OSDI 2025.</body></html>",
                                         "text/html",
                                     ),
                                 ):
                                     with patch(
-                                        "src.orchestrator.agentic._extract_facts_with_llm",
+                                        "src.orchestrator.agentic_actions._extract_facts_with_llm",
                                         return_value=(
                                             [
                                                 {
@@ -2040,9 +2043,9 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                             ),
                         ],
                     ):
-                        with patch("src.orchestrator.agentic._search_web_queries", side_effect=_mock_search_web_cycle1):
+                        with patch("src.orchestrator.agentic_actions._search_web_queries", side_effect=_mock_search_web_cycle1):
                             with patch(
-                                "src.orchestrator.agentic._fetch_url_raw",
+                                "src.orchestrator.agentic_actions._fetch_url_raw",
                                 return_value=(
                                     "<html><body>ACM SIGCOMM 2024 accepted papers. Alibaba HPN: A Data Center Network for Large Language Model Training. "
                                     "Authors from Alibaba Cloud. DOI 10.1145/3651890.3672265.</body></html>",
@@ -2050,7 +2053,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                                 ),
                             ):
                                 with patch(
-                                    "src.orchestrator.agentic._extract_facts_with_llm",
+                                    "src.orchestrator.agentic_actions._extract_facts_with_llm",
                                     return_value=(
                                         [
                                             {
@@ -2112,7 +2115,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         ],
                     ):
                         with patch(
-                            "src.orchestrator.agentic._fetch_url_raw",
+                            "src.orchestrator.agentic_actions._fetch_url_raw",
                             return_value=(
                                 "<html><body>Alibaba HPN: A Data Center Network for Large Language Model Training. "
                                 "ACM SIGCOMM 2024. DOI 10.1145/3651890.3672265. Alibaba Cloud.</body></html>",
@@ -2120,7 +2123,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                             ),
                         ):
                             with patch(
-                                "src.orchestrator.agentic._extract_facts_with_llm",
+                                "src.orchestrator.agentic_actions._extract_facts_with_llm",
                                 return_value=(
                                     [
                                         {
@@ -2186,9 +2189,9 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                                 "text/html",
                             )
 
-                        with patch("src.orchestrator.agentic._fetch_url_raw", side_effect=_fetch_side_effect):
+                        with patch("src.orchestrator.agentic_actions._fetch_url_raw", side_effect=_fetch_side_effect):
                             with patch(
-                                "src.orchestrator.agentic._extract_facts_with_llm",
+                                "src.orchestrator.agentic_actions._extract_facts_with_llm",
                                 return_value=(
                                     [
                                         {
@@ -2252,7 +2255,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         ],
                     ):
                         with patch(
-                            "src.orchestrator.agentic._fetch_url_raw",
+                            "src.orchestrator.agentic_actions._fetch_url_raw",
                             return_value=(
                                 "<html><body><ul><li>ParserHawk: Hardware-aware parser generator using program synthesis "
                                 "Xiangyu Gao; Bili Dong (Google)</li></ul></body></html>",
@@ -2260,7 +2263,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                             ),
                         ):
                             with patch(
-                                "src.orchestrator.agentic._extract_facts_with_llm",
+                                "src.orchestrator.agentic_actions._extract_facts_with_llm",
                                 side_effect=TimeoutError("timed out"),
                             ):
                                 run_step(
@@ -2309,14 +2312,14 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         ],
                     ):
                         with patch(
-                            "src.orchestrator.agentic._fetch_url_raw",
+                            "src.orchestrator.agentic_actions._fetch_url_raw",
                             return_value=(
                                 "<html><body><ul><li>ParserHawk: Hardware-aware parser generator using program synthesis</li></ul></body></html>",
                                 "text/html",
                             ),
                         ) as fetch_mock:
                             with patch(
-                                "src.orchestrator.agentic._extract_text_segments",
+                                "src.orchestrator.agentic_text._extract_text_segments",
                                 return_value=[f"segment {idx}" for idx in range(40)],
                             ):
 
@@ -2347,7 +2350,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                                     raise TimeoutError("timed out")
 
                                 with patch(
-                                    "src.orchestrator.agentic._extract_facts_with_llm",
+                                    "src.orchestrator.agentic_actions._extract_facts_with_llm",
                                     side_effect=_extract_side_effect,
                                 ):
                                     run_step(
@@ -2388,7 +2391,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         ],
                     ):
                         with patch(
-                            "src.orchestrator.agentic._fetch_url_raw",
+                            "src.orchestrator.agentic_actions._fetch_url_raw",
                             return_value=(
                                 "<html><body>ByteDance Systems Architecture Research Profile 2025. Researcher at Bytedance. Publications listed.</body></html>",
                                 "text/html",
