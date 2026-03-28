@@ -14,6 +14,7 @@ from src.orchestrator import agentic_contracts as contracts_mod
 from src.orchestrator import agentic_fetch as fetch_mod
 from src.orchestrator import agentic_extract_candidates as candidate_mod
 from src.orchestrator import agentic_extract as extract_mod
+from src.orchestrator import agentic_extract_prepare as prepare_mod
 from src.orchestrator import agentic_llm as llm_mod
 from src.orchestrator import agentic_result as result_mod
 from src.orchestrator import agentic_search as search_mod
@@ -513,7 +514,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertIn("ParserHawk", str(facts[0].get("paper_title") or ""))
 
     def test_resolve_extract_intent_infers_year_from_prompt(self):
-        intent = extract_mod.resolve_extract_intent(
+        intent = prepare_mod.resolve_extract_intent(
             params={},
             filters={"institution": "Google"},
             user_prompt="papers by google at SIGCOMM and NSDI in 2025",
@@ -523,7 +524,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertIn("Google", must.get("institution_any") or [])
 
     def test_resolve_extract_intent_treats_org_by_subject_as_institution(self):
-        intent = extract_mod.resolve_extract_intent(
+        intent = prepare_mod.resolve_extract_intent(
             params={},
             filters={},
             user_prompt="papers by Google at SIGCOMM in 2025",
@@ -533,7 +534,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(must.get("author_any") or [], [])
 
     def test_resolve_extract_intent_treats_person_by_subject_as_author(self):
-        intent = extract_mod.resolve_extract_intent(
+        intent = prepare_mod.resolve_extract_intent(
             params={},
             filters={},
             user_prompt="papers by Alice Smith at SIGCOMM in 2025",
@@ -779,7 +780,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
     def test_resolve_extract_request_matches_fetched_record_by_url_alias(self):
         redirected_url = "https://conferences.sigcomm.org/sigcomm/2025/program/"
         requested_url = "https://conferences.sigcomm.org/sigcomm/2025/program.html"
-        request = extract_mod._resolve_extract_request(
+        request = prepare_mod.resolve_extract_request(
             session_id="s1",
             cycle_index=1,
             params={
@@ -806,9 +807,9 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             },
             raw_event_fn=None,
             deps={
-                "normalize_fetch_target_fn": extract_mod.normalize_fetch_target,
-                "extract_target_filters_fn": extract_mod.extract_target_filters,
-                "resolve_extract_intent_fn": extract_mod.resolve_extract_intent,
+                "normalize_fetch_target_fn": prepare_mod.normalize_fetch_target,
+                "extract_target_filters_fn": prepare_mod.extract_target_filters,
+                "resolve_extract_intent_fn": prepare_mod.resolve_extract_intent,
                 "resolve_extract_anchor_terms_fn": text_mod._resolve_extract_anchor_terms,
                 "safe_int_fn": text_mod._safe_int,
                 "reuse_fetched_record_for_target_fn": search_mod._reuse_fetched_record_for_target,
