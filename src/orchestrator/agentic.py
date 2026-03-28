@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from src.connectors.http import normalize_arxiv_id, normalize_doi
 from src.orchestrator import agentic_actions as actions_mod
 from src.orchestrator.agentic_contracts import (
     _build_agent_messages,
@@ -16,17 +15,11 @@ from src.orchestrator.agentic_contracts import (
 )
 from src.orchestrator.agentic_extract_candidates import (
     canonicalize_candidate_title as _canonicalize_candidate_title_impl,
-    canonicalize_discovered_url as _canonicalize_discovered_url_impl,
-    collect_candidate_url_inputs_from_records as _collect_candidate_url_inputs_from_records_impl,
     extract_listing_candidates_from_segments as _extract_listing_candidates_from_segments_impl,
     extract_year_best as _extract_year_best_impl,
-    infer_paper_title as _infer_paper_title_impl,
-    is_authorish_title_fragment as _is_authorish_title_fragment_impl,
-    looks_like_paper_candidate as _looks_like_paper_candidate_impl,
     to_paper_candidates_from_facts as _to_paper_candidates_from_facts_impl,
 )
 from src.orchestrator.agentic_extract import (
-    extract_candidate_urls_with_llm as _extract_candidate_urls_with_llm_impl,
     extract_segment_token_budget as _extract_segment_token_budget_impl,
     extract_target_filters as _extract_target_filters_impl,
     infer_by_subject_from_prompt as _infer_by_subject_from_prompt_impl,
@@ -36,24 +29,9 @@ from src.orchestrator.agentic_extract import (
     resolve_extract_intent as _resolve_extract_intent_impl,
     slice_segments_by_token_budget as _slice_segments_by_token_budget_impl,
 )
-from src.orchestrator.agentic_fetch import (
-    build_extraction_windows as _build_extraction_windows_impl,
-    decode_bytes as _decode_bytes_impl,
-    extract_text_from_pdf_bytes as _extract_text_from_pdf_bytes_impl,
-    fetch_retry_urls as _fetch_retry_urls_impl,
-    fetch_target_record as _fetch_target_record_impl,
-    fetch_url_raw as _fetch_url_raw_impl,
-    safe_name as _safe_name_impl,
-    save_raw_fetch as _save_raw_fetch_impl,
-)
 from src.orchestrator.agentic_llm import (
-    coerce_message_content_text as _coerce_message_content_text_impl,
     estimate_messages_metrics as _estimate_messages_metrics_impl,
-    extract_json_object as _extract_json_object_impl,
     openai_complete_json as _openai_complete_json_impl,
-    openai_completion_json_payload as _openai_completion_json_payload_impl,
-    resolve_openai_model_and_base_url as _resolve_openai_model_and_base_url_impl,
-    response_message_content as _response_message_content_impl,
 )
 from src.orchestrator.agentic_loop import (
     _AgentConfig,
@@ -66,22 +44,16 @@ from src.orchestrator.agentic_loop import (
 from src.orchestrator.agentic_search import (
     _apply_shortlist_hints,
     _as_list,
-    _candidate_dedup_key,
-    _domain_quality_adjustment,
     _filter_records_by_urls,
     _filter_search_rows,
     _host_from_url,
     _make_hit_id,
     _merge_fetched_records,
     _merge_url_hits,
-    _normalize_title_for_key,
     _peek_text,
-    _rank_candidates,
     _reuse_fetched_record_for_target,
     _select_diverse_shortlist,
-    _strip_listing_author_tail,
     _to_url_hits as _to_url_hits_impl,
-    _unique_nonempty,
 )
 from src.orchestrator.agentic_result import (
     _merge_paper_candidates,
@@ -100,7 +72,6 @@ from src.orchestrator.agentic_text import (
     _clean_block_text,
     _clean_text,
     _discover_pagination_urls,
-    _estimate_text_tokens,
     _extract_html_structural_segments,
     _extract_listing_text_with_fallback,
     _extract_main_text_from_html,
@@ -277,460 +248,11 @@ def _read_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _extract_json_object(text: str) -> dict:
-    return _extract_json_object_impl(text)
-
-
-def _coerce_message_content_text(content: Any) -> str:
-    return _coerce_message_content_text_impl(content)
-
-
-def _response_message_content(response: Any) -> str:
-    return _response_message_content_impl(response)
-
-
-def _resolve_openai_model_and_base_url(*, model: str, api_key_env: str) -> tuple[str, str]:
-    return _resolve_openai_model_and_base_url_impl(model=model, api_key_env=api_key_env)
-
-
-def _openai_completion_json_payload(
-    *,
-    client: Any,
-    model: str,
-    messages: list[dict],
-    with_response_format: bool,
-    max_tokens: int | None = None,
-) -> dict:
-    return _openai_completion_json_payload_impl(
-        client=client,
-        model=model,
-        messages=messages,
-        with_response_format=with_response_format,
-        max_tokens=max_tokens,
-    )
-
-
-def _estimate_messages_metrics(messages: list[dict]) -> dict[str, int]:
-    return _estimate_messages_metrics_impl(messages)
-
-
 def _safe_int(value: Any) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def _build_extraction_windows(text: str, filters: dict, *, max_windows: int = 6, radius: int = 2, max_chars: int = 1400) -> list[str]:
-    return _build_extraction_windows_impl(
-        text,
-        filters,
-        max_windows=max_windows,
-        radius=radius,
-        max_chars=max_chars,
-    )
-
-
-def _extract_candidate_urls_with_llm(
-    *,
-    user_prompt: str,
-    intent: dict,
-    paper_candidates: list[dict],
-    anchor_terms: list[str],
-    known_urls: list[str],
-    link_candidates: list[dict],
-    model: str,
-    api_key_env: str,
-    timeout_s: float = 45.0,
-    max_retries: int = 0,
-    raw_event_fn: Callable[[str, Any], str] | None = None,
-    llm_op_id: str = "",
-) -> tuple[list[dict], dict]:
-    return _extract_candidate_urls_with_llm_impl(
-        user_prompt=user_prompt,
-        intent=intent,
-        paper_candidates=paper_candidates,
-        anchor_terms=anchor_terms,
-        known_urls=known_urls,
-        link_candidates=link_candidates,
-        model=model,
-        api_key_env=api_key_env,
-        timeout_s=timeout_s,
-        max_retries=max_retries,
-        raw_event_fn=raw_event_fn,
-        llm_op_id=llm_op_id,
-        deps={
-            "estimate_messages_metrics_fn": _estimate_messages_metrics,
-            "openai_complete_json_fn": _openai_complete_json,
-            "peek_text_fn": _peek_text,
-        },
-    )
-def _canonical_candidate_key(row: dict) -> str:
-    doi = normalize_doi(str(row.get("doi") or ""))
-    if doi:
-        return f"doi:{doi.lower()}"
-    arxiv_id = normalize_arxiv_id(str(row.get("arxiv_id") or ""))
-    if arxiv_id:
-        return f"arxiv:{arxiv_id.lower()}"
-    title = _canonicalize_candidate_title_impl(row)
-    title_key = _normalize_title_for_key(title)
-    if title_key:
-        return f"title:{title_key}:{str(row.get('year') or '').strip()}"
-    return _candidate_dedup_key(row)
-
-
-def _candidate_preference_key(row: dict) -> tuple[float, int, int, int]:
-    score = float(row.get("score") or 0.0)
-    domain_bonus = _domain_quality_adjustment(str(row.get("url") or ""), str(row.get("title") or ""))
-    doi_present = 1 if normalize_doi(str(row.get("doi") or "")) else 0
-    arxiv_present = 1 if normalize_arxiv_id(str(row.get("arxiv_id") or "")) else 0
-    meta_rich = 0
-    if str(row.get("authors") or "").strip():
-        meta_rich += 1
-    if str(row.get("affiliations") or "").strip():
-        meta_rich += 1
-    if str(row.get("abstract_snippet") or row.get("abstract") or "").strip():
-        meta_rich += 1
-    return (round(score + domain_bonus, 6), doi_present + arxiv_present, meta_rich, len(str(row.get("title") or "")))
-
-
-def _candidate_matches_intent_guard(row: dict, intent: dict) -> bool:
-    must_match = intent.get("must_match") if isinstance(intent.get("must_match"), dict) else {}
-    context_parts = [
-        str(row.get("title") or ""),
-        str(row.get("authors") or ""),
-        str(row.get("affiliations") or ""),
-        str(row.get("abstract_snippet") or row.get("abstract") or ""),
-        str(row.get("url") or ""),
-        str(row.get("venue") or ""),
-    ]
-    aliases = row.get("aliases")
-    if isinstance(aliases, list):
-        context_parts.extend(str(v) for v in aliases[:8])
-    context = " ".join(context_parts).lower()
-
-    def _hits(values: Any) -> bool:
-        if not isinstance(values, list) or not values:
-            return True
-        for raw in values:
-            terms = [tok for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]{2,}", str(raw or "").lower()) if len(tok) >= 3]
-            if not terms:
-                continue
-            if all(term in context for term in terms):
-                return True
-        return False
-
-    if not _hits(must_match.get("institution_any")):
-        return False
-    if not _hits(must_match.get("author_any")):
-        return False
-    if not _hits(must_match.get("venue_any")):
-        return False
-    year_gte = _safe_int(must_match.get("year_gte"))
-    if year_gte is not None:
-        year = _safe_int(row.get("year"))
-        if year is None or year < year_gte:
-            return False
-    year_lte = _safe_int(must_match.get("year_lte"))
-    if year_lte is not None:
-        year = _safe_int(row.get("year"))
-        if year is None or year > year_lte:
-            return False
-    return True
-
-
-def _deterministic_canonicalize_candidates(candidates: list[dict]) -> tuple[list[dict], dict]:
-    def _is_tail_variant_title(base: str, other: str) -> bool:
-        a = str(base or "").strip()
-        b = str(other or "").strip()
-        if not a or not b:
-            return False
-        short, long = (a, b) if len(a) <= len(b) else (b, a)
-        if not long.lower().startswith(short.lower()):
-            return False
-        tail = long[len(short) :].strip()
-        if not tail:
-            return False
-        words = [w for w in re.findall(r"[A-Za-z][A-Za-z'\-]{1,}", tail) if w]
-        if not words or len(words) > 3:
-            return False
-        return all(w[:1].isupper() for w in words)
-
-    grouped: dict[str, list[dict]] = {}
-    for row in candidates:
-        if not isinstance(row, dict):
-            continue
-        title = _canonicalize_candidate_title_impl(row)
-        if not title:
-            continue
-        clean = dict(row)
-        clean["title"] = title
-        grouped.setdefault(_canonical_candidate_key(clean), []).append(clean)
-    out: list[dict] = []
-    dropped = 0
-    for _key, rows in grouped.items():
-        best = max(rows, key=_candidate_preference_key)
-        merged = dict(best)
-        merged["title"] = _canonicalize_candidate_title_impl(best)
-        alias_titles = _unique_nonempty([str(item.get("title") or "") for item in rows], limit=12)
-        if alias_titles:
-            merged["aliases"] = alias_titles
-        for field in ("doi", "arxiv_id", "year", "authors", "affiliations", "abstract_snippet"):
-            if str(merged.get(field) or "").strip():
-                continue
-            for item in rows:
-                value = str(item.get(field) or "").strip()
-                if value:
-                    merged[field] = value
-                    break
-        out.append(merged)
-        dropped += max(0, len(rows) - 1)
-    ranked = _rank_candidates(out)
-    deduped: list[dict] = []
-    for cand in ranked:
-        title = str(cand.get("title") or "")
-        year = str(cand.get("year") or "")
-        merged_into_existing = False
-        for kept in deduped:
-            if str(kept.get("year") or "") != year:
-                continue
-            kept_title = str(kept.get("title") or "")
-            if not _is_tail_variant_title(kept_title, title):
-                continue
-            aliases = _unique_nonempty(
-                [*list(kept.get("aliases") or []), str(cand.get("title") or "")],
-                limit=16,
-            )
-            if aliases:
-                kept["aliases"] = aliases
-            merged_into_existing = True
-            dropped += 1
-            break
-        if not merged_into_existing:
-            deduped.append(cand)
-    return _rank_candidates(deduped), {"groups": len(grouped), "dropped": dropped}
-
-
-def _canonicalize_candidates_with_llm(
-    *,
-    candidates: list[dict],
-    user_prompt: str,
-    intent: dict,
-    model: str,
-    api_key_env: str,
-    timeout_s: float = 35.0,
-    raw_event_fn: Callable[[str, Any], str] | None = None,
-    llm_op_id: str = "",
-) -> tuple[list[dict], dict]:
-    if not candidates:
-        return [], {"status": "skipped", "reason": "no_candidates", "scope": "cycle_local"}
-    prepared: list[dict] = []
-    index: dict[str, dict] = {}
-    for idx, row in enumerate(candidates, start=1):
-        cid = f"c{idx:04d}"
-        title = _canonicalize_candidate_title_impl(row)
-        if not title:
-            continue
-        entry = {
-            "candidate_id": cid,
-            "title": title,
-            "year": str(row.get("year") or ""),
-            "doi": normalize_doi(str(row.get("doi") or "")),
-            "arxiv_id": normalize_arxiv_id(str(row.get("arxiv_id") or "")),
-            "url": str(row.get("url") or ""),
-            "source": str(row.get("source") or ""),
-            "score": float(row.get("score") or 0.0),
-            "authors": str(row.get("authors") or ""),
-            "affiliations": str(row.get("affiliations") or ""),
-            "abstract_snippet": _peek_text(str(row.get("abstract_snippet") or row.get("abstract") or ""), 320),
-            "evidence": _peek_text(str(row.get("abstract") or ""), 360),
-        }
-        prepared.append(entry)
-        index[cid] = dict(row)
-        index[cid]["title"] = title
-    if not prepared:
-        return _rank_candidates(candidates), {"status": "fallback", "reason": "no_prepared_candidates", "scope": "cycle_local"}
-    user_payload = {
-        "task": "canonicalize_extracted_candidates",
-        "policy": {
-            "no_new_papers": True,
-            "allowed_actions": ["merge", "normalize_title", "drop"],
-            "drop_reasons": ["alias_of_existing", "malformed_title", "non_match", "insufficient_evidence"],
-        },
-        "user_prompt": user_prompt,
-        "intent": intent,
-        "candidates": prepared,
-    }
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You clean and deduplicate extracted academic paper candidates. "
-                "Return JSON only with key `items` as list. "
-                "Each item keys: candidate_id, decision, canonical_candidate_id, canonical_title, verification, reason. "
-                "decision is one of keep|drop. verification is one of match|uncertain|non_match. "
-                "Do not introduce new papers or new candidate ids. "
-                "If two rows are the same paper with malformed variants, merge by pointing to the same canonical_candidate_id. "
-                "Interpret institution filters as: the paper matches if at least one coauthor affiliation matches the institution filter. "
-                "Interpret author filters as: the paper matches if at least one author name matches the author filter. "
-                "Do not require majority authorship or first-author authorship unless the prompt explicitly requires that. "
-                "Keep strong paper rows even when some metadata fields are missing."
-            ),
-        },
-        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
-    ]
-    message_metrics = _estimate_messages_metrics(messages)
-    if raw_event_fn is not None:
-        raw_event_fn(
-            "canonicalize_llm_request",
-            {
-                "model": model,
-                "api_key_env": api_key_env,
-                "op_id": llm_op_id,
-                "messages": messages,
-                "candidate_count": len(prepared),
-                "input_chars": int(message_metrics.get("input_chars") or 0),
-                "input_tokens_est": int(message_metrics.get("input_tokens_est") or 0),
-            },
-        )
-    payload = _openai_complete_json(
-        model=model,
-        api_key_env=api_key_env,
-        messages=messages,
-        timeout_s=timeout_s,
-        max_tokens=1800,
-        max_retries=0,
-    )
-    if raw_event_fn is not None:
-        response_payload: dict[str, Any]
-        if isinstance(payload, dict):
-            response_payload = dict(payload)
-            response_payload["op_id"] = llm_op_id
-        else:
-            response_payload = {"op_id": llm_op_id, "payload": payload}
-        payload_text = json.dumps(response_payload, ensure_ascii=False)
-        response_payload["output_chars"] = len(payload_text)
-        response_payload["output_tokens_est"] = _estimate_text_tokens(payload_text)
-        raw_event_fn("canonicalize_llm_response", response_payload)
-
-    rows = payload.get("items") if isinstance(payload, dict) else []
-    if not isinstance(rows, list) or not rows:
-        fallback, info = _deterministic_canonicalize_candidates(list(index.values()))
-        info.update({"status": "fallback", "reason": "empty_llm_items", "scope": "cycle_local"})
-        return fallback, info
-
-    plan_by_id: dict[str, dict] = {}
-    verification_counts = {"match": 0, "uncertain": 0, "non_match": 0}
-    drop_reasons: dict[str, int] = {}
-    overridden_non_match = 0
-    for item in rows:
-        if not isinstance(item, dict):
-            continue
-        cid = str(item.get("candidate_id") or "").strip()
-        if cid not in index:
-            continue
-        decision = str(item.get("decision") or "").strip().lower()
-        if decision not in {"keep", "drop"}:
-            decision = "keep"
-        rep = str(item.get("canonical_candidate_id") or cid).strip()
-        if rep not in index:
-            rep = cid
-        canonical_title = _canonicalize_candidate_title_impl({"title": str(item.get("canonical_title") or "")})
-        if not canonical_title:
-            canonical_title = str(index.get(rep, {}).get("title") or "")
-        # Guardrail: do not allow hallucinated title replacements.
-        rep_title = str(index.get(rep, {}).get("title") or "")
-        if canonical_title and rep_title:
-            a = _normalize_title_for_key(canonical_title)
-            b = _normalize_title_for_key(rep_title)
-            if a and b and a not in b and b not in a:
-                canonical_title = rep_title
-        plan_by_id[cid] = {
-            "decision": decision,
-            "rep": rep,
-            "canonical_title": canonical_title,
-            "verification": str(item.get("verification") or "").strip().lower(),
-            "reason": str(item.get("reason") or "").strip(),
-        }
-        verification = str(plan_by_id[cid].get("verification") or "")
-        if verification in verification_counts:
-            verification_counts[verification] += 1
-        reason = str(plan_by_id[cid].get("reason") or "").strip()
-        if verification == "non_match":
-            if _candidate_matches_intent_guard(index[cid], intent):
-                plan_by_id[cid]["decision"] = "keep"
-                plan_by_id[cid]["verification"] = "uncertain"
-                plan_by_id[cid]["reason"] = f"guard_keep:{reason or 'local_intent_match'}"
-                verification_counts["non_match"] = max(0, verification_counts["non_match"] - 1)
-                verification_counts["uncertain"] += 1
-                overridden_non_match += 1
-            else:
-                plan_by_id[cid]["decision"] = "drop"
-                drop_reasons[reason or "non_match"] = int(drop_reasons.get(reason or "non_match", 0)) + 1
-        elif decision == "drop":
-            drop_reasons[reason or "drop"] = int(drop_reasons.get(reason or "drop", 0)) + 1
-
-    grouped: dict[str, list[str]] = {}
-    for cid in index:
-        plan = plan_by_id.get(cid, {"decision": "keep", "rep": cid})
-        if plan.get("decision") == "drop":
-            continue
-        rep = str(plan.get("rep") or cid)
-        grouped.setdefault(rep, []).append(cid)
-    if not grouped:
-        fallback, info = _deterministic_canonicalize_candidates(list(index.values()))
-        info.update({"status": "fallback", "reason": "all_dropped", "scope": "cycle_local"})
-        return fallback, info
-
-    out: list[dict] = []
-    dropped_count = 0
-    for rep, members in grouped.items():
-        rows_for_group = [index[cid] for cid in members if cid in index]
-        if not rows_for_group:
-            continue
-        best = max(rows_for_group, key=_candidate_preference_key)
-        merged = dict(best)
-        merged["title"] = str((plan_by_id.get(rep) or {}).get("canonical_title") or merged.get("title") or "")
-        merged["aliases"] = _unique_nonempty([str(index[cid].get("title") or "") for cid in members], limit=12)
-        merged["canonical_member_ids"] = members
-        for field in ("doi", "arxiv_id", "year", "authors", "affiliations", "abstract_snippet"):
-            if str(merged.get(field) or "").strip():
-                continue
-            for cid in members:
-                value = str(index[cid].get(field) or "").strip()
-                if value:
-                    merged[field] = value
-                    break
-        out.append(merged)
-        dropped_count += max(0, len(members) - 1)
-    return _rank_candidates(out), {
-        "status": "ok",
-        "input_count": len(index),
-        "output_count": len(out),
-        "dropped": dropped_count,
-        "scope": "cycle_local",
-        "verification_counts": verification_counts,
-        "drop_reasons": drop_reasons,
-        "overridden_non_match": overridden_non_match,
-    }
-
-def _openai_complete_json(
-    *,
-    model: str,
-    api_key_env: str,
-    messages: list[dict],
-    timeout_s: float | None = None,
-    max_tokens: int | None = None,
-    max_retries: int | None = None,
-) -> dict:
-    return _openai_complete_json_impl(
-        model=model,
-        api_key_env=api_key_env,
-        messages=messages,
-        timeout_s=timeout_s,
-        max_tokens=max_tokens,
-        max_retries=max_retries,
-    )
 
 
 def _agent_next_action_llm(
@@ -745,8 +267,8 @@ def _agent_next_action_llm(
         queries_per_cycle=queries_per_cycle,
         supported_actions=sorted(AGENT_SUPPORTED_ACTIONS),
     )
-    message_metrics = _estimate_messages_metrics(messages)
-    payload = _openai_complete_json(model=model, api_key_env=api_key_env, messages=messages, max_retries=1)
+    message_metrics = _estimate_messages_metrics_impl(messages)
+    payload = _openai_complete_json_impl(model=model, api_key_env=api_key_env, messages=messages, max_retries=1)
     return _parse_agent_action_response(
         payload=payload,
         queries_per_cycle=queries_per_cycle,

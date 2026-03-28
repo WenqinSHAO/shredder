@@ -80,7 +80,7 @@ Working:
 - user-facing result and trajectory artifacts generated from compact projections
 
 Main problems to finish:
-- `src/orchestrator/agentic.py` is now under 1k lines and no longer owns the loop or action execution, but it still carries more compatibility/helper surface than a coordinator-only module should
+- `src/orchestrator/agentic.py` is now a small coordinator-sized module (`442` lines), but it still exposes some legacy import/helper surface that should be either made intentional or moved to owning modules
 - `src/orchestrator/agentic_extract.py` is now mostly runtime/orchestration code, but the surrounding compatibility wrappers still hide ownership more than they should
 - current decomposition still leaves too much behavior hidden behind compatibility wrappers and giant helper files, which risks recreating the previous un-debuggable implementation
 - the extractor still lacks a first-class page result shape such as `papers[]`, `candidate_urls[]`, and `page_status`
@@ -198,13 +198,15 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-28: Completed the first `E9` slice by removing the candidate-only forwarding helpers from `src/orchestrator/agentic.py`, wiring coordinator-local callers directly to the extracted implementation modules, and keeping tests focused on the real module boundaries. `src/orchestrator/agentic.py` is now `1355` lines, and full tests still pass (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
 - 2026-03-28: Completed the second `E9` slice by removing the target-normalization and extract-budget forwarding helpers from `src/orchestrator/agentic.py`, rewiring the extract action deps directly to implementation modules, and retargeting the remaining pure tests to `src/orchestrator/agentic_extract.py`. `src/orchestrator/agentic.py` is now `1288` lines, and full tests still pass (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
 - 2026-03-28: Completed the third `E9` slice by moving action execution into `src/orchestrator/agentic_actions.py`, deleting the remaining fetch/search/extract execution facade from `src/orchestrator/agentic.py`, and retargeting runtime tests to the real action/view/text ownership seams. `src/orchestrator/agentic.py` is now `920` lines, and full tests still pass (`93 passed` in `tests/test_retrieval_agentic_i1.py`; `139 passed, 27 subtests passed` overall).
+- 2026-03-28: Completed the fourth `E9` slice by deleting the unused cycle-local candidate canonicalization subsystem from `src/orchestrator/agentic.py` and dropping the dead tests that only exercised that non-runtime path. `src/orchestrator/agentic.py` is now `559` lines, and full tests still pass (`88 passed` in `tests/test_retrieval_agentic_i1.py`; `134 passed, 27 subtests passed` overall).
+- 2026-03-28: Completed the fifth `E9` slice by retargeting low-level LLM/fetch/extract helper tests to `src/orchestrator/agentic_llm.py`, `src/orchestrator/agentic_fetch.py`, and `src/orchestrator/agentic_extract.py`, then deleting those test-only wrappers from `src/orchestrator/agentic.py`. `src/orchestrator/agentic.py` is now `442` lines, and full tests still pass (`88 passed` in `tests/test_retrieval_agentic_i1.py`; `134 passed, 27 subtests passed` overall).
 
 ### 3.2.7 Next Big Stage
 
 Next stage focus: restore debuggability by shrinking the remaining giant agentic modules before reopening fetch-store/cache work or adding more planner behavior.
 
 Why this comes next:
-- the loop engine now lives in `src/orchestrator/agentic_loop.py`, but `src/orchestrator/agentic.py` is still larger than it should be because compatibility wrappers and action wiring have not been burned down yet
+- the loop engine now lives in `src/orchestrator/agentic_loop.py`, and `src/orchestrator/agentic.py` is finally small enough to reason about, so the next leverage is deciding which remaining imported helpers are intentional compatibility and which should move or disappear
 - `src/orchestrator/agentic_extract.py` is now runtime-focused and comfortably below 2k lines, so the next leverage is deleting forwarding layers and narrowing callers rather than splitting more code for its own sake
 - if the next slices only add behavior, or only move code behind compatibility shims, troubleshooting will drift back toward the previous terrible state
 - the remaining replay work should be used to trim or justify policy, not to keep expanding fallback heuristics
@@ -255,7 +257,9 @@ Immediate queue for the next stage:
   - done: remove the candidate-only forwarding helpers from `src/orchestrator/agentic.py` once callers/tests moved to the extracted modules
   - done: remove the target-normalization and extract-budget forwarding helpers from `src/orchestrator/agentic.py`
   - done: move search/fetch/extract action execution into `src/orchestrator/agentic_actions.py` and retarget runtime tests to that boundary
-  - next: audit the remaining stable compatibility helpers in `agentic.py` and either move ownership to focused modules or delete dead wrappers instead of letting them become a second long tail
+  - done: delete the dead cycle-local candidate canonicalization path that no longer ran in the live runtime
+  - done: move low-level LLM/fetch/extract helper tests to their owning modules and remove the corresponding test-only wrappers from `src/orchestrator/agentic.py`
+  - next: audit the remaining import-based compatibility surface in `agentic.py` and decide which names are intentional coordinator API versus leftovers that should move to owning modules
   - success check: wrapper count and line count both decrease, not just file count
 - `E10 -> H9, H10`: require replay/targeted validation after each refactor slice that moved ownership
   - each slice should leave behind focused tests for the new boundary before the next move

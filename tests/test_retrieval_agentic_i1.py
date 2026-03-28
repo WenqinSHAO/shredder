@@ -10,9 +10,13 @@ from unittest.mock import patch
 
 from src.orchestrator import agentic as agentic_mod
 from src.orchestrator import agentic_actions as actions_mod
+from src.orchestrator import agentic_fetch as fetch_mod
 from src.orchestrator import agentic_extract_candidates as candidate_mod
 from src.orchestrator import agentic_extract as extract_mod
+from src.orchestrator import agentic_llm as llm_mod
+from src.orchestrator import agentic_search as search_mod
 from src.orchestrator import agentic_state_apply as state_apply_mod
+from src.orchestrator import agentic_text as text_mod
 from src.orchestrator import agentic_view as view_mod
 from src.orchestrator import agentic_trace as trace_mod
 from src.orchestrator.runner import run_step
@@ -117,7 +121,7 @@ def _mock_search_web_empty(**kwargs):
 @unittest.skipUnless(HAS_PYYAML, "PyYAML is not installed in this environment")
 class TestAgenticRetrievalI1(unittest.TestCase):
     def test_extract_json_object_accepts_fenced_json(self):
-        payload = agentic_mod._extract_json_object(
+        payload = llm_mod.extract_json_object(
             """```json
             {"action": "search_web", "params": {"queries": ["nsdi 2025 accepted papers"]}}
             ```"""
@@ -126,7 +130,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(payload["params"]["queries"], ["nsdi 2025 accepted papers"])
 
     def test_estimate_messages_metrics_coerces_list_content(self):
-        metrics = agentic_mod._estimate_messages_metrics(
+        metrics = llm_mod.estimate_messages_metrics(
             [
                 {
                     "role": "user",
@@ -149,11 +153,11 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             },
             clear=False,
         ):
-            deepseek_model, deepseek_url = agentic_mod._resolve_openai_model_and_base_url(
+            deepseek_model, deepseek_url = llm_mod.resolve_openai_model_and_base_url(
                 model="deepseek/deepseek-chat",
                 api_key_env="DS_API_KEY",
             )
-            openai_model, openai_url = agentic_mod._resolve_openai_model_and_base_url(
+            openai_model, openai_url = llm_mod.resolve_openai_model_and_base_url(
                 model="openai/gpt-4o-mini",
                 api_key_env="OPENAI_API_KEY",
             )
@@ -173,14 +177,14 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         noisy_suffix = "Coffee Break. Sponsor Session. Logistics update. " * 10
         text_a = f"{noisy_prefix} {core} {noisy_suffix}"
         text_b = f"{noisy_suffix} {core} {noisy_prefix}"
-        windows_a = agentic_mod._build_extraction_windows(
+        windows_a = fetch_mod.build_extraction_windows(
             text_a,
             {"institution": "Alibaba", "year_gte": 2025, "topic": "papers by Alibaba at NSDI in 2025"},
             max_windows=8,
             radius=2,
             max_chars=1500,
         )
-        windows_b = agentic_mod._build_extraction_windows(
+        windows_b = fetch_mod.build_extraction_windows(
             text_b,
             {"institution": "Alibaba", "year_gte": 2025, "topic": "papers by Alibaba at NSDI in 2025"},
             max_windows=8,
@@ -199,7 +203,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         for fixture in files:
             raw_html = fixture.read_text(encoding="utf-8", errors="ignore")
             text = agentic_mod._extract_listing_text_with_fallback(raw_html, max_chars=500000)
-            windows = agentic_mod._build_extraction_windows(
+            windows = fetch_mod.build_extraction_windows(
                 text,
                 {"institution": "Alibaba", "year_gte": 2025, "topic": "papers by Alibaba in 2025"},
                 max_windows=8,
@@ -218,7 +222,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertTrue(fixture.exists())
         raw_html = fixture.read_text(encoding="utf-8", errors="ignore")
         text = agentic_mod._extract_listing_text_with_fallback(raw_html, max_chars=800000)
-        windows = agentic_mod._build_extraction_windows(
+        windows = fetch_mod.build_extraction_windows(
             text,
             {"institution": "Alibaba", "year_gte": 2025, "topic": "papers by Alibaba at NSDI in 2025"},
             max_windows=8,
@@ -711,7 +715,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             min_segments=1,
         )
         self.assertGreaterEqual(len(batch), 2)
-        self.assertLessEqual(sum(agentic_mod._estimate_text_tokens(x) for x in batch), 5200)
+        self.assertLessEqual(sum(text_mod._estimate_text_tokens(x) for x in batch), 5200)
 
     def test_extract_segment_token_budget_leaves_headroom(self):
         budget = extract_mod.extract_segment_token_budget(
@@ -722,7 +726,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             context_limit_tokens=128000,
             safety_margin=0.18,
             output_token_reserve=6000,
-            deps={"estimate_messages_metrics_fn": agentic_mod._estimate_messages_metrics},
+            deps={"estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics},
         )
         self.assertGreaterEqual(budget, 4000)
         self.assertLess(budget, 128000)
@@ -840,17 +844,17 @@ class TestAgenticRetrievalI1(unittest.TestCase):
 
     def test_strip_listing_author_tail(self):
         raw = "ParserHawk: Hardware-aware parser generator using program synthesis Xiangyu Gao (University of Washington); Jiaqi Gao (Alibaba Cloud)"
-        stripped = agentic_mod._strip_listing_author_tail(raw)
+        stripped = search_mod._strip_listing_author_tail(raw)
         self.assertEqual(stripped, "ParserHawk: Hardware-aware parser generator using program synthesis")
 
     def test_strip_listing_author_tail_keeps_last_title_token(self):
         raw = "Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters"
-        stripped = agentic_mod._strip_listing_author_tail(raw)
+        stripped = search_mod._strip_listing_author_tail(raw)
         self.assertEqual(stripped, raw)
 
     def test_strip_listing_author_tail_handles_name_comma_tail(self):
         raw = "ZENITH: Towards A Formally Verified Highly-Available Control Plane Pooria Namyar, Arvin Ghavidel"
-        stripped = agentic_mod._strip_listing_author_tail(raw)
+        stripped = search_mod._strip_listing_author_tail(raw)
         self.assertEqual(stripped, "ZENITH: Towards A Formally Verified Highly-Available Control Plane")
 
     def test_authorish_title_fragment_is_rejected(self):
@@ -876,7 +880,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         )
 
     def test_extract_candidate_key_uses_title_for_extract_rows(self):
-        key1 = agentic_mod._candidate_dedup_key(
+        key1 = search_mod._candidate_dedup_key(
             {
                 "source": "agentic_extract",
                 "reason": "extract_content",
@@ -887,7 +891,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "arxiv_id": "",
             }
         )
-        key2 = agentic_mod._candidate_dedup_key(
+        key2 = search_mod._candidate_dedup_key(
             {
                 "source": "agentic_extract",
                 "reason": "extract_content",
@@ -986,228 +990,6 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         candidates = _papers_from_facts(facts)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["title"], "Falcon: A Reliable, Low Latency Hardware Transport")
-
-    def test_deterministic_canonicalize_candidates_merges_malformed_aliases(self):
-        candidates = [
-            {
-                "title": "Falcon: A Reliable, Low Latency Hardware Transport",
-                "year": "2025",
-                "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
-                "score": 0.9,
-                "source": "agentic_extract",
-                "reason": "extract_content",
-                "source_id": "t1",
-            },
-            {
-                "title": "Falcon: A Reliable, Low Latency Hardware Transport Arjun",
-                "year": "2025",
-                "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
-                "score": 0.72,
-                "source": "agentic_extract",
-                "reason": "extract_content",
-                "source_id": "t2",
-            },
-            {
-                "title": "Placement Preventing Network Bottlenecks: Accelerating Datacenter Services with Hotspot-Aware Placement for Compute and Storage",
-                "year": "2025",
-                "url": "https://www.usenix.org/conference/nsdi25/technical-sessions",
-                "score": 0.9,
-                "source": "agentic_extract",
-                "reason": "extract_content",
-                "source_id": "t3",
-            },
-        ]
-        out, info = agentic_mod._deterministic_canonicalize_candidates(candidates)
-        titles = [str(row.get("title") or "") for row in out]
-        self.assertIn("Falcon: A Reliable, Low Latency Hardware Transport", titles)
-        self.assertIn(
-            "Preventing Network Bottlenecks: Accelerating Datacenter Services with Hotspot-Aware Placement for Compute and Storage",
-            titles,
-        )
-        self.assertGreaterEqual(int(info.get("dropped") or 0), 1)
-
-    def test_llm_canonicalize_candidates_merges_by_rep(self):
-        candidates = [
-            {
-                "title": "ParserHawk: Hardware-aware parser generator using program synthesis",
-                "year": "2025",
-                "url": "https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/",
-                "score": 0.9,
-                "source": "agentic_extract",
-                "reason": "extract_content",
-                "source_id": "t1",
-            },
-            {
-                "title": "ParserHawk: Hardware-aware parser generator using program synthesis Xiangyu",
-                "year": "2025",
-                "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
-                "score": 0.72,
-                "source": "agentic_extract",
-                "reason": "extract_content",
-                "source_id": "t2",
-            },
-        ]
-        with patch(
-            "src.orchestrator.agentic._openai_complete_json",
-            return_value={
-                "items": [
-                    {
-                        "candidate_id": "c0001",
-                        "decision": "keep",
-                        "canonical_candidate_id": "c0001",
-                        "canonical_title": "ParserHawk: Hardware-aware parser generator using program synthesis",
-                        "verification": "match",
-                        "reason": "canonical",
-                    },
-                    {
-                        "candidate_id": "c0002",
-                        "decision": "keep",
-                        "canonical_candidate_id": "c0001",
-                        "canonical_title": "ParserHawk: Hardware-aware parser generator using program synthesis",
-                        "verification": "match",
-                        "reason": "author_tail_alias",
-                    },
-                ]
-            },
-        ):
-            out, info = agentic_mod._canonicalize_candidates_with_llm(
-                candidates=candidates,
-                user_prompt="papers by Google at SIGCOMM in 2025",
-                intent={"must_match": {"institution_any": ["Google"], "year_gte": 2025}},
-                model="dummy",
-                api_key_env="DS_API_KEY",
-            )
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["title"], "ParserHawk: Hardware-aware parser generator using program synthesis")
-        self.assertEqual(str(info.get("status") or ""), "ok")
-
-    def test_llm_canonicalize_candidates_falls_back_on_empty_items(self):
-        candidates = [
-            {
-                "title": "Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters",
-                "year": "2025",
-                "url": "https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/",
-                "score": 0.9,
-                "source": "agentic_extract",
-                "reason": "extract_content",
-                "source_id": "t1",
-            },
-            {
-                "title": "Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters Pooria",
-                "year": "2025",
-                "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
-                "score": 0.72,
-                "source": "agentic_extract",
-                "reason": "extract_content",
-                "source_id": "t2",
-            },
-        ]
-        with patch("src.orchestrator.agentic._openai_complete_json", return_value={"items": []}):
-            out, info = agentic_mod._canonicalize_candidates_with_llm(
-                candidates=candidates,
-                user_prompt="papers by Google at SIGCOMM in 2025",
-                intent={"must_match": {"institution_any": ["Google"], "year_gte": 2025}},
-                model="dummy",
-                api_key_env="DS_API_KEY",
-            )
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["title"], "Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters")
-        self.assertEqual(str(info.get("status") or ""), "fallback")
-
-    def test_llm_canonicalize_candidates_drops_non_match_verification(self):
-        candidates = [
-            {
-                "title": "Falcon: A Reliable, Low Latency Hardware Transport",
-                "year": "2025",
-                "url": "https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/",
-                "score": 0.9,
-                "source": "agentic_extract",
-                "reason": "extract_content",
-                "source_id": "t1",
-            },
-            {
-                "title": "Noisy Session Header Title",
-                "year": "2025",
-                "url": "https://example.org/noise",
-                "score": 0.7,
-                "source": "agentic_extract",
-                "reason": "extract_content",
-                "source_id": "t2",
-            },
-        ]
-        with patch(
-            "src.orchestrator.agentic._openai_complete_json",
-            return_value={
-                "items": [
-                    {
-                        "candidate_id": "c0001",
-                        "decision": "keep",
-                        "canonical_candidate_id": "c0001",
-                        "canonical_title": "Falcon: A Reliable, Low Latency Hardware Transport",
-                        "verification": "match",
-                        "reason": "valid",
-                    },
-                    {
-                        "candidate_id": "c0002",
-                        "decision": "keep",
-                        "canonical_candidate_id": "c0002",
-                        "canonical_title": "Noisy Session Header Title",
-                        "verification": "non_match",
-                        "reason": "not_a_paper",
-                    },
-                ]
-            },
-        ):
-            out, _info = agentic_mod._canonicalize_candidates_with_llm(
-                candidates=candidates,
-                user_prompt="papers by google at SIGCOMM and NSDI in 2025",
-                intent={"must_match": {"institution_any": ["Google"], "year_gte": 2025}},
-                model="dummy",
-                api_key_env="DS_API_KEY",
-            )
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["title"], "Falcon: A Reliable, Low Latency Hardware Transport")
-
-    def test_llm_canonicalize_candidates_keeps_guarded_non_match_when_local_intent_matches(self):
-        candidates = [
-            {
-                "title": "Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters",
-                "year": "2025",
-                "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
-                "score": 0.72,
-                "source": "agentic_extract",
-                "reason": "extract_content",
-                "source_id": "t1",
-                "authors": "Pooria Namyar; Yuliang Li; Nandita Dukkipati",
-                "affiliations": "USC & Google LLC; Google LLC; Google LLC",
-                "abstract_snippet": "SIGCOMM 2025 paper with multiple Google LLC coauthors",
-            }
-        ]
-        with patch(
-            "src.orchestrator.agentic._openai_complete_json",
-            return_value={
-                "items": [
-                    {
-                        "candidate_id": "c0001",
-                        "decision": "drop",
-                        "canonical_candidate_id": "c0001",
-                        "canonical_title": "Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters",
-                        "verification": "non_match",
-                        "reason": "only one Google-affiliated coauthor",
-                    }
-                ]
-            },
-        ):
-            out, info = agentic_mod._canonicalize_candidates_with_llm(
-                candidates=candidates,
-                user_prompt="papers by google at SIGCOMM in 2025",
-                intent={"must_match": {"institution_any": ["Google"], "venue_any": ["SIGCOMM"], "year_gte": 2025}},
-                model="dummy",
-                api_key_env="DS_API_KEY",
-            )
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["title"], "Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters")
-        self.assertEqual(int(info.get("overridden_non_match") or 0), 1)
 
     def test_llm_preferred_over_listing_deterministic_for_same_target(self):
         deterministic = {
@@ -1369,7 +1151,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
 
     def test_extract_candidate_urls_with_llm_keeps_only_supplied_links(self):
         with patch(
-            "src.orchestrator.agentic._openai_complete_json",
+            "src.orchestrator.agentic_llm.openai_complete_json",
             return_value={
                 "candidate_urls": [
                     {
@@ -1385,7 +1167,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 ]
             },
         ):
-            discovered, trace = agentic_mod._extract_candidate_urls_with_llm(
+            discovered, trace = extract_mod.extract_candidate_urls_with_llm(
                 user_prompt="papers by Google at SIGCOMM in 2025",
                 intent={"query_goal": "papers by Google at SIGCOMM in 2025"},
                 paper_candidates=[
@@ -1416,6 +1198,11 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 ],
                 model="dummy",
                 api_key_env="DS_API_KEY",
+                deps={
+                    "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,
+                    "openai_complete_json_fn": llm_mod.openai_complete_json,
+                    "peek_text_fn": search_mod._peek_text,
+                },
             )
         self.assertEqual(len(discovered), 1)
         self.assertEqual(discovered[0]["url"], "https://conf.example/paper/falcon")
