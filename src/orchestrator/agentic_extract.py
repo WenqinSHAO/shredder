@@ -5,25 +5,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.orchestrator.agentic_extract_candidates import (
-    canonicalize_candidate_title as _canonicalize_candidate_title_impl,
     canonicalize_discovered_url as _canonicalize_discovered_url_impl,
-    collect_candidate_url_inputs_from_records as _collect_candidate_url_inputs_from_records_impl,
-    extract_listing_candidates_from_segments as _extract_listing_candidates_from_segments_impl,
-    extract_year_best as _extract_year_best_impl,
-    infer_paper_title as _infer_paper_title_impl,
-    is_authorish_title_fragment as _is_authorish_title_fragment_impl,
-    looks_like_paper_candidate as _looks_like_paper_candidate_impl,
-    to_paper_candidates_from_facts as _to_paper_candidates_from_facts_impl,
 )
 from src.orchestrator.agentic_extract_llm import (
-    extract_candidate_urls_llm_messages as _extract_candidate_urls_llm_messages_impl,
-    extract_candidate_urls_llm_system_prompt as _extract_candidate_urls_llm_system_prompt_impl,
-    extract_candidate_urls_llm_user_payload as _extract_candidate_urls_llm_user_payload_impl,
     extract_candidate_urls_with_llm as _extract_candidate_urls_with_llm_impl,
     extract_facts_with_llm as _extract_facts_with_llm_impl,
-    extract_llm_messages as _extract_llm_messages_impl,
-    extract_llm_system_prompt as _extract_llm_system_prompt_impl,
-    extract_llm_user_payload as _extract_llm_user_payload_impl,
     extract_segment_token_budget as _extract_segment_token_budget_impl,
     slice_segments_by_token_budget as _slice_segments_by_token_budget_impl,
 )
@@ -77,79 +63,6 @@ def extract_target_filters(item: dict) -> dict:
     except (TypeError, ValueError):
         pass
     return out
-
-
-def extract_year_best(text: str, *, year_gte: int | None = None) -> str:
-    return _extract_year_best_impl(text, year_gte=year_gte)
-
-
-def infer_paper_title(text: str, fallback: str) -> str:
-    return _infer_paper_title_impl(text, fallback)
-
-
-def looks_like_paper_candidate(title: str, evidence: str, url: str) -> bool:
-    return _looks_like_paper_candidate_impl(title, evidence, url)
-
-
-def is_authorish_title_fragment(title: str) -> bool:
-    return _is_authorish_title_fragment_impl(title)
-
-
-def extract_listing_candidates_from_segments(
-    *,
-    session_id: str,
-    cycle_index: int,
-    target_id: str,
-    url: str,
-    url_title: str,
-    segments: list[str],
-    filters: dict,
-    fallback_year: str,
-) -> list[dict]:
-    return _extract_listing_candidates_from_segments_impl(
-        session_id=session_id,
-        cycle_index=cycle_index,
-        target_id=target_id,
-        url=url,
-        url_title=url_title,
-        segments=segments,
-        filters=filters,
-        fallback_year=fallback_year,
-    )
-
-
-def to_paper_candidates_from_facts(
-    facts: list[dict],
-    *,
-    canonicalize_candidate_title_fn: Callable[[dict], str],
-) -> list[dict]:
-    return _to_paper_candidates_from_facts_impl(
-        facts,
-        canonicalize_candidate_title_fn=canonicalize_candidate_title_fn,
-    )
-
-
-def canonicalize_discovered_url(url: str) -> str:
-    return _canonicalize_discovered_url_impl(url)
-
-
-def collect_candidate_url_inputs_from_records(
-    records: list[dict],
-    *,
-    paths: dict[str, Path],
-    known_urls: list[str],
-    max_links: int = 80,
-) -> list[dict[str, Any]]:
-    return _collect_candidate_url_inputs_from_records_impl(
-        records,
-        paths=paths,
-        known_urls=known_urls,
-        max_links=max_links,
-    )
-
-
-def canonicalize_candidate_title(row: dict) -> str:
-    return _canonicalize_candidate_title_impl(row)
 
 
 def normalize_fetch_target(item: dict, idx: int) -> dict:
@@ -332,86 +245,6 @@ def resolve_extract_intent(
     }
 
 
-def extract_llm_system_prompt() -> str:
-    return _extract_llm_system_prompt_impl()
-
-
-def extract_llm_user_payload(
-    *,
-    record: dict,
-    filters: dict,
-    user_prompt: str,
-    intent: dict,
-    segments: list[str],
-) -> dict[str, Any]:
-    return _extract_llm_user_payload_impl(
-        record=record,
-        filters=filters,
-        user_prompt=user_prompt,
-        intent=intent,
-        segments=segments,
-    )
-
-
-def extract_llm_messages(
-    *,
-    record: dict,
-    filters: dict,
-    user_prompt: str,
-    intent: dict,
-    segments: list[str],
-) -> tuple[list[dict], dict[str, Any]]:
-    return _extract_llm_messages_impl(
-        record=record,
-        filters=filters,
-        user_prompt=user_prompt,
-        intent=intent,
-        segments=segments,
-    )
-
-
-def extract_candidate_urls_llm_system_prompt() -> str:
-    return _extract_candidate_urls_llm_system_prompt_impl()
-
-
-def extract_candidate_urls_llm_user_payload(
-    *,
-    user_prompt: str,
-    intent: dict[str, Any],
-    paper_candidates: list[dict[str, Any]],
-    anchor_terms: list[str],
-    known_urls: list[str],
-    link_candidates: list[dict[str, Any]],
-) -> dict[str, Any]:
-    return _extract_candidate_urls_llm_user_payload_impl(
-        user_prompt=user_prompt,
-        intent=intent,
-        paper_candidates=paper_candidates,
-        anchor_terms=anchor_terms,
-        known_urls=known_urls,
-        link_candidates=link_candidates,
-    )
-
-
-def extract_candidate_urls_llm_messages(
-    *,
-    user_prompt: str,
-    intent: dict[str, Any],
-    paper_candidates: list[dict[str, Any]],
-    anchor_terms: list[str],
-    known_urls: list[str],
-    link_candidates: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    return _extract_candidate_urls_llm_messages_impl(
-        user_prompt=user_prompt,
-        intent=intent,
-        paper_candidates=paper_candidates,
-        anchor_terms=anchor_terms,
-        known_urls=known_urls,
-        link_candidates=link_candidates,
-    )
-
-
 def extract_segment_token_budget(
     *,
     record: dict,
@@ -502,7 +335,7 @@ def extract_candidate_urls_with_llm(
     deps: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     llm_deps = dict(deps)
-    llm_deps["canonicalize_discovered_url_fn"] = canonicalize_discovered_url
+    llm_deps["canonicalize_discovered_url_fn"] = _canonicalize_discovered_url_impl
     return _extract_candidate_urls_with_llm_impl(
         user_prompt=user_prompt,
         intent=intent,

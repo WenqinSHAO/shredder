@@ -10,10 +10,12 @@ from unittest.mock import patch
 
 from src.orchestrator import agentic as agentic_mod
 from src.orchestrator import agentic_actions as actions_mod
+from src.orchestrator import agentic_contracts as contracts_mod
 from src.orchestrator import agentic_fetch as fetch_mod
 from src.orchestrator import agentic_extract_candidates as candidate_mod
 from src.orchestrator import agentic_extract as extract_mod
 from src.orchestrator import agentic_llm as llm_mod
+from src.orchestrator import agentic_result as result_mod
 from src.orchestrator import agentic_search as search_mod
 from src.orchestrator import agentic_state_apply as state_apply_mod
 from src.orchestrator import agentic_text as text_mod
@@ -202,7 +204,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertGreaterEqual(len(files), 4)
         for fixture in files:
             raw_html = fixture.read_text(encoding="utf-8", errors="ignore")
-            text = agentic_mod._extract_listing_text_with_fallback(raw_html, max_chars=500000)
+            text = text_mod._extract_listing_text_with_fallback(raw_html, max_chars=500000)
             windows = fetch_mod.build_extraction_windows(
                 text,
                 {"institution": "Alibaba", "year_gte": 2025, "topic": "papers by Alibaba in 2025"},
@@ -221,7 +223,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         fixture = Path("tests/fixtures/agentic_fetch_raw/cycle03-auto-fetch-2-technical-sessions.html")
         self.assertTrue(fixture.exists())
         raw_html = fixture.read_text(encoding="utf-8", errors="ignore")
-        text = agentic_mod._extract_listing_text_with_fallback(raw_html, max_chars=800000)
+        text = text_mod._extract_listing_text_with_fallback(raw_html, max_chars=800000)
         windows = fetch_mod.build_extraction_windows(
             text,
             {"institution": "Alibaba", "year_gte": 2025, "topic": "papers by Alibaba at NSDI in 2025"},
@@ -236,7 +238,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         fixture = Path("tests/fixtures/agentic_fetch_raw/cycle03-auto-fetch-1-page.html")
         self.assertTrue(fixture.exists())
         raw_html = fixture.read_text(encoding="utf-8", errors="ignore")
-        segments = agentic_mod._extract_html_structural_segments(raw_html, max_segments=240, max_chars=1800)
+        segments = text_mod._extract_html_structural_segments(raw_html, max_segments=240, max_chars=1800)
         joined = " ".join(segments).lower()
         self.assertGreaterEqual(len(segments), 20)
         self.assertIn("hermes", joined)
@@ -252,14 +254,14 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         - Falcon: A Reliable, Low Latency Hardware Transport
           Arjun Singhvi (Google)
         """
-        segments = agentic_mod._extract_text_segments(text, max_chars=240)
+        segments = text_mod._extract_text_segments(text, max_chars=240)
         self.assertGreaterEqual(len(segments), 2)
         self.assertTrue(any("ParserHawk" in seg for seg in segments))
         self.assertTrue(any("Falcon" in seg for seg in segments))
 
     def test_clean_block_text_preserves_line_breaks(self):
         raw = "<ul><li>ParserHawk: Hardware-aware parser generator using program synthesis</li><li>Falcon: A Reliable, Low Latency Hardware Transport</li></ul>"
-        cleaned = agentic_mod._clean_block_text(raw, limit_chars=1000)
+        cleaned = text_mod._clean_block_text(raw, limit_chars=1000)
         self.assertIn("\n", cleaned)
         self.assertIn("ParserHawk", cleaned)
         self.assertIn("Falcon", cleaned)
@@ -268,9 +270,9 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         fixture = Path("tests/fixtures/agentic_fetch_raw/cycle03-auto-fetch-1-page.html")
         self.assertTrue(fixture.exists())
         raw_html = fixture.read_text(encoding="utf-8", errors="ignore")
-        text = agentic_mod._extract_listing_text_with_fallback(raw_html, max_chars=500000)
-        segments = agentic_mod._extract_text_segments(text, max_chars=1800)
-        selected = agentic_mod._anchor_segments_for_filters(
+        text = text_mod._extract_listing_text_with_fallback(raw_html, max_chars=500000)
+        segments = text_mod._extract_text_segments(text, max_chars=1800)
+        selected = text_mod._anchor_segments_for_filters(
             segments,
             {"institution": "Google", "year_gte": 2025},
             anchor_terms=["Google", "ParserHawk", "Falcon", "Firefly"],
@@ -284,8 +286,8 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         fixture = Path("tests/fixtures/agentic_fetch_raw/cycle03-auto-fetch-2-technical-sessions.html")
         self.assertTrue(fixture.exists())
         raw_html = fixture.read_text(encoding="utf-8", errors="ignore")
-        text = agentic_mod._extract_listing_text_with_fallback(raw_html, max_chars=800000)
-        segments = agentic_mod._extract_text_segments(text, max_chars=1800)
+        text = text_mod._extract_listing_text_with_fallback(raw_html, max_chars=800000)
+        segments = text_mod._extract_text_segments(text, max_chars=1800)
         self.assertTrue(any("Efficient Multi-WAN Transport for 5G with OTTER" in seg for seg in segments))
 
     def test_llm_extract_filters_listing_heading_and_acronym_only(self):
@@ -732,7 +734,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertLess(budget, 128000)
 
     def test_merge_url_hits_preserves_cross_cycle_shortlist(self):
-        merged = agentic_mod._merge_url_hits(
+        merged = search_mod._merge_url_hits(
             [
                 {
                     "hit_id": "sig1",
@@ -768,7 +770,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 ],
             }
         ]
-        matched = agentic_mod._filter_records_by_urls(
+        matched = search_mod._filter_records_by_urls(
             records,
             {"https://conferences.sigcomm.org/sigcomm/2025/program.html"},
         )
@@ -807,14 +809,14 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "normalize_fetch_target_fn": extract_mod.normalize_fetch_target,
                 "extract_target_filters_fn": extract_mod.extract_target_filters,
                 "resolve_extract_intent_fn": extract_mod.resolve_extract_intent,
-                "resolve_extract_anchor_terms_fn": agentic_mod._resolve_extract_anchor_terms,
-                "safe_int_fn": agentic_mod._safe_int,
-                "reuse_fetched_record_for_target_fn": agentic_mod._reuse_fetched_record_for_target,
+                "resolve_extract_anchor_terms_fn": text_mod._resolve_extract_anchor_terms,
+                "safe_int_fn": text_mod._safe_int,
+                "reuse_fetched_record_for_target_fn": search_mod._reuse_fetched_record_for_target,
                 "fetch_target_record_fn": lambda **kwargs: (_ for _ in ()).throw(AssertionError("unexpected auto-fetch")),
-                "merge_fetched_records_fn": agentic_mod._merge_fetched_records,
-                "filter_records_by_urls_fn": agentic_mod._filter_records_by_urls,
+                "merge_fetched_records_fn": search_mod._merge_fetched_records,
+                "filter_records_by_urls_fn": search_mod._filter_records_by_urls,
                 "next_op_id_fn": lambda _state, prefix="op": f"{prefix}-000001",
-                "normalize_anchor_terms_fn": agentic_mod._normalize_anchor_terms,
+                "normalize_anchor_terms_fn": text_mod._normalize_anchor_terms,
             },
         )
         self.assertEqual(request["requested_urls"], [requested_url])
@@ -1098,7 +1100,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
           <a href="https://example.com/other">external</a>
         </body></html>
         """
-        urls = agentic_mod._discover_pagination_urls(
+        urls = text_mod._discover_pagination_urls(
             html,
             "https://www.usenix.org/conference/osdi25/technical-sessions",
             max_extra_pages=4,
@@ -1230,7 +1232,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             {"title": "SOSP 2025 Program", "url": "https://sosp.org/2025/program", "score": 1.0},
             {"title": "EuroSys 2025 Accepted Papers", "url": "https://eurosys.org/2025/accepted-papers", "score": 0.9},
         ]
-        reranked = agentic_mod._apply_shortlist_hints(ranked, {"prefer": ["venue_program_pages", "avoid_detail_pages"]})
+        reranked = search_mod._apply_shortlist_hints(ranked, {"prefer": ["venue_program_pages", "avoid_detail_pages"]})
         self.assertIn("Technical Sessions", str((reranked[0] or {}).get("title") or ""))
 
     def test_multi_venue_query_is_split_into_one_venue_per_query(self):
@@ -1253,7 +1255,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             {"title": "SOSP page", "url": "https://c.org/sosp", "query_used": "SOSP 2025 accepted papers", "score": 1.8},
             {"title": "ASPLOS page", "url": "https://d.org/asplos", "query_used": "ASPLOS 2025 accepted papers", "score": 1.7},
         ]
-        shortlisted = agentic_mod._select_diverse_shortlist(ranked, 3)
+        shortlisted = search_mod._select_diverse_shortlist(ranked, 3)
         queries = {str(r.get("query_used") or "") for r in shortlisted}
         self.assertIn("OSDI 2025 accepted papers", queries)
         self.assertIn("SOSP 2025 accepted papers", queries)
@@ -1280,13 +1282,13 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "score": 1.1,
             },
         ]
-        shortlisted = agentic_mod._select_diverse_shortlist(ranked, 2)
+        shortlisted = search_mod._select_diverse_shortlist(ranked, 2)
         urls = {str(r.get("url") or "") for r in shortlisted}
         self.assertIn("https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/", urls)
         self.assertIn("https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/", urls)
 
     def test_filter_keeps_conference_signal_on_non_whitelisted_host(self):
-        kept, rejected = agentic_mod._filter_search_rows(
+        kept, rejected = search_mod._filter_search_rows(
             [
                 {
                     "title": "MICRO 2025 accepted papers",
@@ -1382,8 +1384,8 @@ class TestAgenticRetrievalI1(unittest.TestCase):
 
     def test_extract_listing_text_fallback_prefers_raw_when_main_too_short(self):
         html = "<html><body>" + "Program Item. " * 2000 + "</body></html>"
-        with patch("src.orchestrator.agentic._extract_main_text_from_html", return_value="short text"):
-            text = agentic_mod._extract_listing_text_with_fallback(html, max_chars=30000)
+        with patch("src.orchestrator.agentic_text._extract_main_text_from_html", return_value="short text"):
+            text = text_mod._extract_listing_text_with_fallback(html, max_chars=30000)
         self.assertGreater(len(text), 1000)
         self.assertIn("Program Item", text)
 
@@ -1399,7 +1401,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             }
         ]
         incoming = []
-        merged = agentic_mod._merge_paper_candidates(existing, incoming, top_n=5)
+        merged = result_mod._merge_paper_candidates(existing, incoming, top_n=5)
         self.assertEqual(len(merged), 1)
         self.assertEqual(str(merged[0].get("title") or ""), "Paper A")
 
@@ -1548,7 +1550,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                                 ),
                             ):
                                 with patch(
-                                    "src.orchestrator.agentic._extract_html_structural_segments",
+                                    "src.orchestrator.agentic_text._extract_html_structural_segments",
                                     return_value=[
                                         "segment 1 ParserHawk Alibaba Cloud",
                                         "segment 2 ParserHawk Alibaba Cloud",
@@ -2382,7 +2384,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(len(finalized["fallback_candidates"]), 1)
 
     def test_resolve_extract_anchor_terms_prefers_agent_supplied_terms(self):
-        terms = agentic_mod._resolve_extract_anchor_terms(
+        terms = text_mod._resolve_extract_anchor_terms(
             params={"anchor_terms": ["Google", "NDD", "technical sessions"]},
             filters={"institution": "Google", "topic": "formal verification"},
             intent={},
@@ -2391,7 +2393,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(terms, ["Google", "NDD", "technical sessions"])
 
     def test_sanitize_agent_action_params_removes_extract_micropolicy(self):
-        params = agentic_mod._sanitize_agent_action_params(
+        params = view_mod._sanitize_agent_action_params(
             "extract_content",
             {
                 "urls": ["https://example.com/program"],
@@ -2410,7 +2412,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertNotIn("max_calls_per_target", params)
 
     def test_sanitize_agent_action_params_normalizes_extract_targets(self):
-        params = agentic_mod._sanitize_agent_action_params(
+        params = view_mod._sanitize_agent_action_params(
             "extract_content",
             {
                 "targets": [
@@ -2443,7 +2445,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         )
 
     def test_build_agent_working_state_is_compact(self):
-        working = agentic_mod._build_agent_working_state(
+        working = view_mod._build_agent_working_state(
             user_prompt="papers by Google at SIGCOMM and NSDI in 2025",
             cycle_index=3,
             max_cycles=5,
@@ -2462,7 +2464,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertNotIn("summary", working)
 
     def test_build_agent_memory_includes_last_step_and_urls(self):
-        memory = agentic_mod._build_agent_memory(
+        memory = view_mod._build_agent_memory(
             user_prompt="papers by Google at SIGCOMM and NSDI in 2025",
             plan_state={
                 "active_step": {"step_id": "step3", "action": "extract_content", "goal": "Extract candidate papers"},
@@ -2499,7 +2501,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertTrue(any("timeout" in item for item in memory["blockers"]))
 
     def test_build_agent_memory_includes_suggested_urls_from_last_extract_action(self):
-        memory = agentic_mod._build_agent_memory(
+        memory = view_mod._build_agent_memory(
             user_prompt="papers by Google at SIGCOMM in 2025",
             plan_state={},
             url_hits=[],
@@ -2532,7 +2534,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
     def test_write_agentic_trajectory_user_view_keeps_url_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "agentic_trajectory.yaml"
-            agentic_mod._write_agentic_trajectory(
+            view_mod._write_agentic_trajectory(
                 path,
                 session_id="sess-1",
                 prompt="papers by Google at SIGCOMM in 2025",
@@ -2583,7 +2585,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertTrue(user_view[0]["extract_summary"]["url_checks"][0]["has_more_results"])
 
     def test_apply_plan_update_merges_deltas(self):
-        merged = agentic_mod._apply_plan_update(
+        merged = view_mod._apply_plan_update(
             {
                 "active_step": {"step_id": "step1", "action": "search_web", "goal": "Find venue pages"},
                 "todo": [{"todo_id": "todo1", "action": "search_web", "status": "doing", "target": "venue pages"}],
@@ -2601,7 +2603,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(str(todo_by_id["todo2"].get("status")), "doing")
 
     def test_parse_agent_action_response_accepts_new_envelope(self):
-        parsed = agentic_mod._parse_agent_action_response(
+        parsed = contracts_mod._parse_agent_action_response(
             payload={
                 "decision": {"mode": "continue", "reason": "need venue pages"},
                 "state_delta": {

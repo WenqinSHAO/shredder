@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from src.workspace.manager import init_project
 from .steps import run_discovery, run_parsing, run_extraction, run_render
-from .agentic import run_retrieve_agentic, run_extract_agentic_local
+from .agentic import run_retrieve_agentic
+from .agentic_local_extract import run_extract_agentic_local
 from .retrieval import run_retrieve_open, run_retrieve_paper
 
 

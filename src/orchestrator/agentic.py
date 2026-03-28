@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -12,22 +10,6 @@ from src.orchestrator import agentic_actions as actions_mod
 from src.orchestrator.agentic_contracts import (
     _build_agent_messages,
     _parse_agent_action_response,
-)
-from src.orchestrator.agentic_extract_candidates import (
-    canonicalize_candidate_title as _canonicalize_candidate_title_impl,
-    extract_listing_candidates_from_segments as _extract_listing_candidates_from_segments_impl,
-    extract_year_best as _extract_year_best_impl,
-    to_paper_candidates_from_facts as _to_paper_candidates_from_facts_impl,
-)
-from src.orchestrator.agentic_extract import (
-    extract_segment_token_budget as _extract_segment_token_budget_impl,
-    extract_target_filters as _extract_target_filters_impl,
-    infer_by_subject_from_prompt as _infer_by_subject_from_prompt_impl,
-    infer_subject_kind as _infer_subject_kind_impl,
-    infer_year_gte_from_prompt as _infer_year_gte_from_prompt_impl,
-    normalize_fetch_target as _normalize_fetch_target_impl,
-    resolve_extract_intent as _resolve_extract_intent_impl,
-    slice_segments_by_token_budget as _slice_segments_by_token_budget_impl,
 )
 from src.orchestrator.agentic_llm import (
     estimate_messages_metrics as _estimate_messages_metrics_impl,
@@ -39,81 +21,25 @@ from src.orchestrator.agentic_loop import (
     _ExtractConfig,
     _ResultConfig,
     _SearchConfig,
-    _next_op_id,
 )
 from src.orchestrator.agentic_search import (
-    _apply_shortlist_hints,
-    _as_list,
-    _filter_records_by_urls,
-    _filter_search_rows,
     _host_from_url,
     _make_hit_id,
-    _merge_fetched_records,
-    _merge_url_hits,
     _peek_text,
-    _reuse_fetched_record_for_target,
-    _select_diverse_shortlist,
     _to_url_hits as _to_url_hits_impl,
-)
-from src.orchestrator.agentic_result import (
-    _merge_paper_candidates,
 )
 from src.orchestrator.agentic_state_apply import (
     _apply_search_action_result as _apply_search_action_result_impl,
-    _paper_fallback_candidates,
-    _paper_final_candidates,
 )
-from src.orchestrator.agentic_text import (
-    LISTING_HEADING_PHRASES,
-    NON_PAPER_TITLE_TOKENS,
-    NON_VENUE_ACRONYMS,
-    PAPER_SIGNAL_TOKENS,
-    _anchor_segments_for_filters,
-    _clean_block_text,
-    _clean_text,
-    _discover_pagination_urls,
-    _extract_html_structural_segments,
-    _extract_listing_text_with_fallback,
-    _extract_main_text_from_html,
-    _extract_text_segments,
-    _is_detail_page,
-    _is_listing_page,
-    _normalize_anchor_terms,
-    _prepare_extract_segments,
-    _resolve_active_extract_filters,
-    _resolve_extract_anchor_terms,
-)
-from src.orchestrator.agentic_view import (
-    _apply_plan_update,
-    _build_agent_memory,
-    _build_agent_working_state,
-    _build_progress_snapshot,
-    _sanitize_agent_action_params,
-    _trace_action_input,
-    _write_agentic_trajectory,
-)
-from src.retrieval.service import write_yaml
 from src.utils.paths import project_dir
 from src.utils.yamlx import load
 
-APP_SUPPORTED_ACTIONS = {
-    "search_web",
-    "extract_content",
-}
 AGENT_SUPPORTED_ACTIONS = {
     "search_web",
     "extract_content",
 }
 
 ProgressCallback = Callable[[dict], None]
-
-DEFAULT_EXTRACTOR_CONTEXT_LIMIT_TOKENS = 128_000
-DEFAULT_EXTRACTOR_SAFETY_MARGIN = 0.18
-DEFAULT_EXTRACTOR_OUTPUT_TOKEN_RESERVE = 6_000
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _emit_progress(progress_callback: ProgressCallback | None, *, event: str, **payload) -> None:
@@ -171,56 +97,10 @@ def _agentic_paths(pdir: Path) -> dict[str, Path]:
     }
 
 
-def _append_raw_event(
-    *,
-    path: Path,
-    trace_state: "_TraceState",
-    session_id: str,
-    cycle_index: int,
-    action_id: str,
-    event_type: str,
-    payload: Any,
-    raw_refs: list[str] | None = None,
-) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    seq = int(trace_state.raw_event_seq or 0) + 1
-    trace_state.raw_event_seq = seq
-    event_id = f"raw-{seq:06d}"
-    row = {
-        "event_id": event_id,
-        "ts": _utc_now(),
-        "run_id": session_id,
-        "cycle_index": cycle_index,
-        "action_id": action_id,
-        "event_type": event_type,
-        "raw_refs": list(raw_refs or []),
-        "payload": payload,
-    }
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, ensure_ascii=False))
-        fh.write("\n")
-    return event_id
-
-
-def _next_op_id(trace_state: "_TraceState", prefix: str = "op") -> str:
-    seq = int(trace_state.op_event_seq or 0) + 1
-    trace_state.op_event_seq = seq
-    token = re.sub(r"[^a-z0-9]+", "-", str(prefix or "op").strip().lower()).strip("-") or "op"
-    return f"{token}-{seq:06d}"
-
-
 def _new_session_id(prompt: str) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     digest = hashlib.sha1(prompt.strip().lower().encode("utf-8")).hexdigest()[:10]
     return f"agentic-{stamp}-{digest}"
-
-
-def _new_result_state() -> dict:
-    return {
-        "status": "running",
-        "stop_reason": "",
-        "cycle_count": 0,
-    }
 
 
 def _read_int(value: Any, default: int) -> int:
@@ -248,13 +128,6 @@ def _read_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _safe_int(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _agent_next_action_llm(
     *,
     working_state: dict,
@@ -275,83 +148,6 @@ def _agent_next_action_llm(
         supported_actions=AGENT_SUPPORTED_ACTIONS,
         debug_metrics=message_metrics,
     )
-
-def run_extract_agentic_local(
-    project_id: str,
-    *,
-    institution: str = "",
-    year_gte: int = 0,
-    url_contains: str = "",
-) -> Path:
-    pdir = project_dir(project_id)
-    paths = _agentic_paths(pdir)
-    fetch_dir = paths["result"].parent / "fetch_raw"
-    out_path = paths["result"].parent / "agentic_extract_local.yaml"
-
-    filters: dict[str, Any] = {}
-    if str(institution or "").strip():
-        filters["institution"] = str(institution).strip()
-    if int(year_gte or 0) > 0:
-        filters["year_gte"] = int(year_gte)
-
-    url_hint = str(url_contains or "").strip().lower()
-    facts: list[dict] = []
-    inspected: list[dict] = []
-    for idx, path in enumerate(sorted(fetch_dir.glob("*.html")), start=1):
-        raw_html = path.read_text(encoding="utf-8", errors="ignore")
-        text = _extract_listing_text_with_fallback(raw_html, max_chars=8_000_000)
-        segments = _extract_html_structural_segments(raw_html, max_segments=240, max_chars=1800)
-        pseudo_url = f"file:{path.name}"
-        if url_hint and url_hint not in pseudo_url.lower() and url_hint not in text.lower():
-            continue
-        year = _extract_year_best_impl(text, year_gte=_safe_int(filters.get("year_gte"))) or str(year_gte or "")
-        listing_facts = _extract_listing_candidates_from_segments_impl(
-            session_id="local",
-            cycle_index=0,
-            target_id=f"local-{idx}",
-            url=pseudo_url,
-            url_title=path.name,
-            segments=segments,
-            filters=filters,
-            fallback_year=year,
-        )
-        facts.extend(listing_facts)
-        inspected.append(
-            {
-                "file": path.name,
-                "segment_count": len(segments),
-                "text_chars": len(text),
-                "extracted_count": len(listing_facts),
-            }
-        )
-
-    candidates = _to_paper_candidates_from_facts_impl(
-        facts,
-        canonicalize_candidate_title_fn=_canonicalize_candidate_title_impl,
-    )
-    payload = {
-        "artifact_type": "agentic_extract_local",
-        "schema_version": "0.1.0",
-        "filters": filters,
-        "url_contains": str(url_contains or ""),
-        "inspected": inspected,
-        "result_count": len(candidates),
-        "papers": [
-            {
-                "title": str(row.get("title") or ""),
-                "year": str(row.get("year") or ""),
-                "doi": str(row.get("doi") or ""),
-                "arxiv_id": str(row.get("arxiv_id") or ""),
-                "source_url": str(row.get("url") or ""),
-                "confidence": float(row.get("score") or 0.0),
-                "evidence": _peek_text(str(row.get("abstract") or ""), 220),
-            }
-            for row in candidates
-        ],
-        "updated_at": _utc_now(),
-    }
-    write_yaml(out_path, payload)
-    return out_path
 
 
 def run_retrieve_agentic(
