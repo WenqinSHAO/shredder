@@ -9,6 +9,7 @@ from src.connectors.http import get_json
 from src.orchestrator import agentic_extract as extract_mod
 from src.orchestrator import agentic_extract_candidates as candidate_mod
 from src.orchestrator import agentic_extract_prepare as prepare_mod
+from src.orchestrator import agentic_extract_runtime as extract_runtime_mod
 from src.orchestrator import agentic_fetch as fetch_mod
 from src.orchestrator import agentic_llm as llm_mod
 from src.orchestrator import agentic_search as search_mod
@@ -295,7 +296,7 @@ def execute_extract_content_action(
     next_op_id_fn: Callable[[dict[str, Any], str], str] | None = None,
     raw_event_fn: Callable[[str, Any, list[str] | None], str] | None = None,
 ) -> dict:
-    return extract_mod.execute_extract_content_action(
+    return extract_runtime_mod.execute_extract_content_action(
         session_id=session_id,
         cycle_index=cycle_index,
         params=params,
@@ -312,6 +313,8 @@ def execute_extract_content_action(
             "normalize_anchor_terms_fn": text_mod._normalize_anchor_terms,
             "resolve_active_extract_filters_fn": text_mod._resolve_active_extract_filters,
             "prepare_extract_segments_fn": text_mod._prepare_extract_segments,
+            "resolve_extract_request_fn": prepare_mod.resolve_extract_request,
+            "prepare_extract_target_fn": prepare_mod.prepare_extract_target,
             "extract_segment_token_budget_fn": (
                 lambda **kwargs: extract_mod.extract_segment_token_budget(
                     **kwargs,

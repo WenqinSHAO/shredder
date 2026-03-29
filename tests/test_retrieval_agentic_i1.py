@@ -15,6 +15,7 @@ from src.orchestrator import agentic_fetch as fetch_mod
 from src.orchestrator import agentic_extract_candidates as candidate_mod
 from src.orchestrator import agentic_extract as extract_mod
 from src.orchestrator import agentic_extract_prepare as prepare_mod
+from src.orchestrator import agentic_extract_runtime as extract_runtime_mod
 from src.orchestrator import agentic_llm as llm_mod
 from src.orchestrator import agentic_result as result_mod
 from src.orchestrator import agentic_search as search_mod
@@ -1211,6 +1212,86 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(discovered[0]["url"], "https://conf.example/paper/falcon")
         self.assertIn("abstract", str(discovered[0].get("why") or "").lower())
         self.assertEqual(int(trace.get("response_candidate_urls_count") or 0), 2)
+
+    def test_execute_resolved_extract_request_uses_runtime_boundary(self):
+        result = extract_runtime_mod.execute_resolved_extract_request(
+            cycle_index=1,
+            request={
+                "target_scope_by_url": {"https://conf.example/program": {"filters": {}, "anchor_terms": []}},
+                "filters": {"institution": "Google", "year_gte": 2025},
+                "extract_intent": {
+                    "query_goal": "papers by Google at SIGCOMM in 2025",
+                    "must_match": {"institution_any": ["Google"], "year_gte": 2025},
+                },
+                "anchor_terms": ["Google", "Falcon"],
+                "records": [
+                    {
+                        "target_id": "fetch-1",
+                        "url": "https://conf.example/program",
+                        "url_title": "Conference Program",
+                        "status": "ok",
+                        "segments": ["Falcon by Google"],
+                    }
+                ],
+                "requested_urls": ["https://conf.example/program"],
+                "auto_fetched_records": [],
+            },
+            paths={"result": Path("workspace/demo/artifacts/retrieval/agentic_result.yaml")},
+            user_prompt="papers by Google at SIGCOMM in 2025",
+            timeout_s=45.0,
+            llm_extractor_model="dummy",
+            llm_api_key_env="DS_API_KEY",
+            extract_use_llm_extractor=False,
+            progress_callback=None,
+            runtime_state={},
+            raw_event_fn=None,
+            deps={
+                "prepare_extract_target_fn": lambda **kwargs: {
+                    "row": kwargs["row"],
+                    "filters": dict(kwargs["filters"]),
+                    "anchor_terms": list(kwargs["anchor_terms"]),
+                    "ranked_segments": ["Falcon by Google"],
+                    "batch_mode": "page",
+                    "token_budget": 4000,
+                },
+                "emit_progress_fn": lambda *args, **kwargs: None,
+                "next_op_id_fn": lambda _state, prefix="op": f"{prefix}-1",
+                "collect_candidate_url_inputs_from_records_fn": (
+                    lambda records, paths, known_urls: [
+                        {
+                            "url": "https://conf.example/paper/falcon",
+                            "label": "Falcon: A Reliable, Low Latency Hardware Transport",
+                            "context": "Paper detail page likely contains abstract.",
+                            "source_url": "https://conf.example/program",
+                            "source_title": "Conference Program",
+                        }
+                    ]
+                ),
+                "extract_candidate_urls_with_llm_fn": (
+                    lambda **kwargs: (
+                        [
+                            {
+                                "url": "https://conf.example/paper/falcon",
+                                "title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                                "why": "Paper detail page likely contains abstract.",
+                            }
+                        ],
+                        {"response_candidate_urls_count": 1},
+                    )
+                ),
+                "to_paper_candidates_from_facts_fn": lambda facts: [],
+                "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,
+                "openai_complete_json_fn": llm_mod.openai_complete_json,
+                "peek_text_fn": search_mod._peek_text,
+                "context_limit_tokens": 128000,
+                "safety_margin": 0.18,
+                "output_token_reserve": 6000,
+            },
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["candidate_urls"][0]["url"], "https://conf.example/paper/falcon")
+        self.assertEqual(result["extract_windows_trace"][0]["target_id"], "fetch-1")
+        self.assertEqual(result["auto_fetched_count"], 0)
 
     def test_extract_year_best_prefers_recent_year(self):
         text = "Bio 2016 and 2020. Proceedings 2025. Session notes."
