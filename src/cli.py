@@ -124,6 +124,14 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
         return
     prefix = "[retrieve-agentic]"
 
+    def _preview_list(values: list[str] | None, limit: int = 3) -> str:
+        items = [str(value).strip() for value in (values or []) if str(value).strip()]
+        if not items:
+            return "[]"
+        preview = items[:limit]
+        suffix = ", ..." if len(items) > limit else ""
+        return "[" + ", ".join(preview) + suffix + "]"
+
     if name == "agentic_start":
         print(
             f"{prefix} start workflow={event.get('workflow')} top_n={event.get('top_n')} "
@@ -160,16 +168,32 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
             print(f"{prefix} queries={planned}", flush=True)
         return
     if name == "agentic_action_start":
-        print(
+        line = (
             f"{prefix} action start cycle={event.get('cycle_index')} action_id={event.get('action_id')} "
-            f"step={event.get('active_step_id')} action={event.get('action')} raw_ref={event.get('raw_event_id')}",
-            flush=True,
+            f"step={event.get('active_step_id')} action={event.get('action')}"
         )
+        action = str(event.get("action") or "")
+        if action == "search_web":
+            line += f" queries={event.get('query_count')} query_list={_preview_list(event.get('queries') or [], limit=3)}"
+        if action == "extract_content":
+            line += (
+                f" targets={event.get('target_count')} "
+                f"urls={_preview_list(event.get('target_urls') or [], limit=3)}"
+            )
+        line += f" raw_ref={event.get('raw_event_id')}"
+        print(line, flush=True)
         return
     if name == "agentic_action_done":
+        extra = ""
+        if str(event.get("action") or "") == "extract_content":
+            extra = (
+                f" requested_urls={event.get('requested_url_count')} extracted={event.get('extracted_count')} "
+                f"candidate_urls={event.get('candidate_url_count')} "
+                f"dedup={event.get('paper_dedup_clusters')}/{event.get('paper_dedup_reduced')}"
+            )
         print(
             f"{prefix} action done cycle={event.get('cycle_index')} action_id={event.get('action_id')} "
-            f"action={event.get('action')} status={event.get('status')} note={event.get('notes')} "
+            f"action={event.get('action')} status={event.get('status')}{extra} note={event.get('notes')} "
             f"raw_ref={event.get('raw_event_id')}",
             flush=True,
         )
@@ -197,9 +221,14 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
         )
         return
     if name == "agentic_extract_batch_start":
+        batch_start = int(event.get("batch_start") or 0)
+        batch_size = int(event.get("batch_size") or 0)
+        segment_total = int(event.get("segment_total") or 0)
+        seg_first = batch_start + 1 if batch_size > 0 else batch_start
+        seg_last = min(segment_total, batch_start + batch_size) if segment_total > 0 else batch_start + batch_size
         print(
             f"{prefix} llm extract batch start cycle={event.get('cycle_index')} target={event.get('target_id')} "
-            f"pass={event.get('pass_index')} batch={event.get('batch_start')}+{event.get('batch_size')}",
+            f"pass={event.get('pass_index')} segments={seg_first}-{seg_last}/{segment_total}",
             flush=True,
         )
         return
@@ -214,10 +243,57 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
         return
     if name == "agentic_extract_stage":
         stage = str(event.get("stage") or "")
+        target = event.get("target_id") or "-"
+        if stage == "extract_start":
+            filters = event.get("filters") if isinstance(event.get("filters"), dict) else {}
+            venue_items = [str(value).strip() for value in (event.get("venues") or []) if str(value).strip()]
+            institution_items = [str(value).strip() for value in (event.get("institutions") or []) if str(value).strip()]
+            venue = ",".join(venue_items) or str(filters.get("venue") or "")
+            institution = ",".join(institution_items) or str(filters.get("institution") or "")
+            print(
+                f"{prefix} extract stage cycle={event.get('cycle_index')} stage=extract_start "
+                f"targets={event.get('target_count')} institution={institution or '-'} venue={venue or '-'}",
+                flush=True,
+            )
+            return
+        if stage in {"segment_filter", "llm_prepare"}:
+            print(
+                f"{prefix} extract stage cycle={event.get('cycle_index')} target={target} stage={stage} "
+                f"segments={event.get('segments_ranked')}/{event.get('segments_total')} "
+                f"batch_mode={event.get('batch_mode')} token_budget={event.get('token_budget')}",
+                flush=True,
+            )
+            return
+        if stage == "merge_results":
+            print(
+                f"{prefix} extract stage cycle={event.get('cycle_index')} stage=merge_results "
+                f"llm_rows={event.get('llm_count')} merged_rows={event.get('merged_count')}",
+                flush=True,
+            )
+            return
+        if stage == "paper_dedup_done":
+            print(
+                f"{prefix} extract stage cycle={event.get('cycle_index')} stage=paper_dedup "
+                f"clusters={event.get('paper_dedup_clusters')} reduced={event.get('paper_dedup_reduced')}",
+                flush=True,
+            )
+            return
+        if stage == "candidate_url_proposal":
+            print(
+                f"{prefix} extract stage cycle={event.get('cycle_index')} stage=candidate_url_proposal "
+                f"link_candidates={event.get('link_candidates')}",
+                flush=True,
+            )
+            return
+        if stage == "candidate_url_done":
+            print(
+                f"{prefix} extract stage cycle={event.get('cycle_index')} stage=candidate_url_done "
+                f"link_candidates={event.get('link_candidates')} suggested_urls={event.get('candidate_url_count')}",
+                flush=True,
+            )
+            return
         print(
-            f"{prefix} extract stage cycle={event.get('cycle_index')} target={event.get('target_id') or '-'} "
-            f"stage={stage} total={event.get('segments_total')} ranked={event.get('segments_ranked')} "
-            f"det={event.get('deterministic_listing_count')} llm={event.get('llm_count')} merged={event.get('merged_count')}",
+            f"{prefix} extract stage cycle={event.get('cycle_index')} target={target} stage={stage}",
             flush=True,
         )
         return
@@ -249,11 +325,13 @@ def _print_retrieve_agentic_progress(event: dict) -> None:
     if name == "agentic_progress_snapshot":
         progress = event.get("progress") or {}
         todo = progress.get("todo") if isinstance(progress.get("todo"), dict) else {}
+        latest = progress.get("latest_progress") if isinstance(progress.get("latest_progress"), dict) else {}
         print(
             f"{prefix} progress cycle={event.get('cycle_index')} action={progress.get('action')} "
             f"step={progress.get('active_step_id')} todo={todo.get('done', 0)}/{todo.get('total', 0)} "
             f"doing={todo.get('doing', 0)} final_matches={progress.get('final_candidates', 0)} "
-            f"decision={progress.get('decision')}",
+            f"decision={progress.get('decision')} reason={progress.get('decision_reason')} "
+            f"note={latest.get('note') or ''}",
             flush=True,
         )
         return

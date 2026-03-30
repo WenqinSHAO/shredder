@@ -17,7 +17,7 @@ def extract_llm_system_prompt() -> str:
         "You extract academic paper rows from conference/web listing segments. "
         "Return JSON only with key `items` as list of row objects. "
         "Each row object keys: "
-        "is_paper, paper_title_raw, paper_title_normalized, authors, affiliations, venue, year, doi, arxiv_id, abstract_snippet, "
+        "is_paper, paper_title_raw, paper_title_normalized, authors, affiliations, author_affiliations, venue, year, doi, arxiv_id, abstract, abstract_snippet, "
         "institution_hits, match_decision, decision_reason, evidence_span, confidence. "
         "Hard rules: "
         "Extract one row per concrete paper entry. "
@@ -27,7 +27,9 @@ def extract_llm_system_prompt() -> str:
         "Do not require majority authorship or first-author authorship unless the prompt explicitly requires that. "
         "Do not emit navigation/menu text, sponsor text, keynote/session headings, schedule blocks, or page headers. "
         "Do not emit acronym-only strings as paper titles. "
+        "If authors and affiliations are present, pair them in `author_affiliations` as list items with `author` and `affiliation` keys when possible. "
         "If authors, affiliations, or abstract are present in the local segment for a kept paper row, extract them in the same row instead of omitting them. "
+        "Prefer `abstract` as the full abstract text when the segment contains it; use `abstract_snippet` only if you only have a partial abstract fragment. "
         "If unsure whether row matches intent filters, set match_decision=uncertain. "
         "Use match_decision=non_match for valid paper rows not matching intent constraints."
     )
@@ -353,7 +355,8 @@ def extract_facts_with_llm(
             continue
         authors_raw = item.get("authors")
         affiliations_raw = item.get("affiliations")
-        abstract_snippet = peek_text_fn(str(item.get("abstract_snippet") or ""), 320)
+        abstract_text = str(item.get("abstract") or item.get("abstract_snippet") or "").strip()
+        abstract_snippet = peek_text_fn(abstract_text, 320)
         field_presence = {
             "authors": bool(
                 (isinstance(authors_raw, list) and any(str(v).strip() for v in authors_raw))
@@ -395,8 +398,10 @@ def extract_facts_with_llm(
                     "institution_hits": item.get("institution_hits"),
                     "authors": authors_raw,
                     "affiliations": affiliations_raw,
+                    "author_affiliations": item.get("author_affiliations"),
                     "paper_title_raw": title_raw,
                     "paper_title_normalized": title_norm or title,
+                    "abstract": abstract_text,
                     "abstract_snippet": abstract_snippet,
                     "venue_hint": str(item.get("venue_hint") or ""),
                 },

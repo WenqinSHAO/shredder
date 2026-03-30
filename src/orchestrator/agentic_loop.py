@@ -45,6 +45,68 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _unique_texts(items: list[str], *, limit: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        lowered = value.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        out.append(value)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _subject_hint_from_prompt(prompt: str) -> str:
+    text = str(prompt or "").strip()
+    if not text:
+        return ""
+    match = re.search(
+        r"\bby\s+([A-Za-z][A-Za-z0-9 .,&\-]{1,80}?)(?:\s+at\s+|\s+in\s+|\s+since\s+|\s+from\s+|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", str(match.group(1) or "").strip(" ,.;:"))
+
+
+def _search_query_from_todo_target(target: str, *, user_prompt: str) -> str:
+    base = re.sub(r"\s+", " ", str(target or "").strip())
+    if not base:
+        return ""
+    subject = _subject_hint_from_prompt(user_prompt)
+    if subject and subject.lower() not in base.lower():
+        base = f"{base} {subject}"
+    return re.sub(r"\s+", " ", base).strip()
+
+
+def _planned_search_queries_from_state_delta(
+    state_delta: dict[str, Any],
+    *,
+    user_prompt: str,
+    limit: int,
+) -> list[str]:
+    queries: list[str] = []
+    for item in [*(state_delta.get("todo_updates") or []), *(state_delta.get("todo_append") or [])]:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("action") or "").strip().lower() != "search_web":
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        if status in {"done", "blocked", "error"}:
+            continue
+        query = _search_query_from_todo_target(str(item.get("target") or ""), user_prompt=user_prompt)
+        if query:
+            queries.append(query)
+    return _unique_texts(queries, limit=max(1, int(limit or 1)))
+
+
 def _append_raw_event(
     *,
     path: Path,
@@ -655,6 +717,18 @@ def _start_cycle_action(
     raw_event_ids: list[str],
 ) -> None:
     action_params["debug_retrieval"] = loop.debug_retrieval
+    target_urls: list[str] = []
+    for url in action_params.get("urls") or []:
+        value = str(url or "").strip()
+        if value:
+            target_urls.append(value)
+    for item in action_params.get("targets") or []:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("url") or "").strip()
+        if value and value not in target_urls:
+            target_urls.append(value)
+    queries = [str(value).strip() for value in (action_params.get("queries") or []) if str(value).strip()]
     action_input_raw_id = loop._append_raw(
         action_id=action_id,
         event_type="action_input",
@@ -668,6 +742,10 @@ def _start_cycle_action(
         action=selected_action,
         active_step_id=str((loop.agent_plan.get("active_step") or {}).get("step_id") or ""),
         raw_event_id=action_input_raw_id,
+        query_count=len(queries),
+        queries=queries[:6],
+        target_count=len(target_urls),
+        target_urls=target_urls[:6],
     )
     loop._write_trajectory(status="running", stop_reason="")
 
@@ -695,6 +773,11 @@ def _finish_cycle_action(
         status=str(action_result.get("status") or ""),
         notes=_peek_text(str(action_result.get("notes") or ""), 160),
         raw_event_id=action_output_raw_id,
+        requested_url_count=len(action_result.get("requested_urls") or []),
+        extracted_count=len(action_result.get("paper_candidates") or []),
+        candidate_url_count=len(action_result.get("candidate_urls") or []),
+        paper_dedup_clusters=int(action_result.get("paper_dedup_clusters") or 0),
+        paper_dedup_reduced=int(action_result.get("paper_dedup_reduced") or 0),
     )
 
 
@@ -744,6 +827,19 @@ def _run_agent_turn(loop: _AgenticSearchLoop, cycle_index: int) -> _PlanTurn | N
     latest_progress = dict(normalized_output["latest_progress"])
     agent_decision = normalized_output["agent_decision"]
     agent_debug = dict(normalized_output["agent_debug"])
+    if selected_action == "search_web":
+        declared_queries = _planned_search_queries_from_state_delta(
+            state_delta,
+            user_prompt=loop.prompt,
+            limit=max(1, int(loop.agent_config.max_queries_per_turn or 1)),
+        )
+        if declared_queries:
+            merged_queries = _unique_texts(
+                [*list(action_params.get("queries") or []), *declared_queries],
+                limit=max(1, int(loop.agent_config.max_queries_per_turn or 1)),
+            )
+            action_params["queries"] = merged_queries
+            planned_queries = list(merged_queries)
     _finish_agent_turn(
         loop=loop,
         cycle_index=cycle_index,
@@ -752,6 +848,8 @@ def _run_agent_turn(loop: _AgenticSearchLoop, cycle_index: int) -> _PlanTurn | N
         raw_event_ids=raw_event_ids,
         agent_op_id=agent_op_id,
         agent_debug=agent_debug,
+        selected_action=selected_action,
+        planned_queries=planned_queries,
     )
 
     if state_delta:
@@ -932,6 +1030,8 @@ def _finish_agent_turn(
     raw_event_ids: list[str],
     agent_op_id: str,
     agent_debug: dict[str, Any],
+    selected_action: str,
+    planned_queries: list[str],
 ) -> None:
     agent_response_raw_id = loop._append_raw(
         action_id=action_id,
@@ -962,6 +1062,8 @@ def _finish_agent_turn(
         action_id=action_id,
         payload=agent_output,
         raw_event_id=agent_response_raw_id,
+        selected_action=selected_action,
+        planned_queries=list(planned_queries),
     )
 
 

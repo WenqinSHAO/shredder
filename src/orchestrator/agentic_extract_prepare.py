@@ -192,10 +192,12 @@ def resolve_extract_intent(
             "paper_title_normalized",
             "authors",
             "affiliations",
+            "author_affiliations",
             "venue",
             "year",
             "doi",
             "arxiv_id",
+            "abstract",
             "abstract_snippet",
             "institution_hits",
             "match_decision",
@@ -230,6 +232,69 @@ def resolve_extract_intent(
     }
 
 
+def scope_extract_intent(
+    *,
+    extract_intent: dict[str, Any],
+    filters: dict[str, Any],
+    anchor_terms: list[str],
+    user_prompt: str,
+) -> dict[str, Any]:
+    base = dict(extract_intent if isinstance(extract_intent, dict) else {})
+    base_must_match = dict(base.get("must_match") or {})
+    if str(filters.get("institution") or "").strip():
+        base_must_match.pop("institution_any", None)
+    if str(filters.get("author") or "").strip():
+        base_must_match.pop("author_any", None)
+    if str(filters.get("venue") or "").strip():
+        base_must_match.pop("venue_any", None)
+    if str(filters.get("topic") or "").strip():
+        base_must_match.pop("topic_any", None)
+    if _safe_int(filters.get("year_gte")) is not None:
+        base_must_match.pop("year_gte", None)
+    base["must_match"] = base_must_match
+    scoped = resolve_extract_intent(
+        params={"intent": base},
+        filters=filters,
+        user_prompt=user_prompt,
+    )
+    scoped["anchor_terms"] = _normalize_anchor_terms(anchor_terms)
+    return scoped
+
+
+def merge_shared_extract_filters(
+    *,
+    base_filters: dict[str, Any],
+    target_scopes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    merged = dict(base_filters)
+
+    def _scope_values(key: str) -> list[str]:
+        values: list[str] = []
+        for scope in target_scopes:
+            value = str(scope.get(key) or "").strip()
+            if value:
+                values.append(value)
+        return _unique_nonempty(values, limit=12)
+
+    for key in ("institution", "author", "venue", "topic"):
+        if str(merged.get(key) or "").strip():
+            continue
+        values = _scope_values(key)
+        if len(values) == 1:
+            merged[key] = values[0]
+
+    if _safe_int(merged.get("year_gte")) is None:
+        year_values = {
+            _safe_int(scope.get("year_gte"))
+            for scope in target_scopes
+            if _safe_int(scope.get("year_gte")) is not None
+        }
+        if len(year_values) == 1:
+            merged["year_gte"] = next(iter(year_values))
+
+    return merged
+
+
 def prepare_extract_target(
     *,
     row: dict[str, Any],
@@ -259,6 +324,12 @@ def prepare_extract_target(
     scoped_filters.update(dict(row_scope.get("filters") or {}))
     row_anchor_terms = normalize_anchor_terms_fn(list(anchor_terms) + list(row_scope.get("anchor_terms") or []))
     active_filters = resolve_active_extract_filters_fn(scoped_filters, must_match, user_prompt)
+    scoped_extract_intent = scope_extract_intent(
+        extract_intent=extract_intent,
+        filters=active_filters,
+        anchor_terms=row_anchor_terms,
+        user_prompt=user_prompt,
+    )
     ranked_segments, batch_mode = prepare_extract_segments_fn(
         row=row,
         filters=active_filters,
@@ -268,7 +339,7 @@ def prepare_extract_target(
         record=row,
         filters=active_filters,
         user_prompt=user_prompt,
-        intent=extract_intent,
+        intent=scoped_extract_intent,
         context_limit_tokens=context_limit_tokens,
         safety_margin=safety_margin,
         output_token_reserve=output_token_reserve,
@@ -277,6 +348,7 @@ def prepare_extract_target(
         "row": row,
         "filters": active_filters,
         "anchor_terms": row_anchor_terms,
+        "extract_intent": scoped_extract_intent,
         "ranked_segments": ranked_segments,
         "batch_mode": batch_mode,
         "token_budget": token_budget,
@@ -362,14 +434,14 @@ def resolve_extract_request(
             "auto_fetched_records": [],
         }
 
-    filters = extract_target_filters_fn({"filters": params.get("filters")})
-    if not filters:
-        for target in normalized_targets:
-            scoped = target_scope_by_url.get(str(target.get("url") or ""), {})
-            scoped_filters = scoped.get("filters") if isinstance(scoped.get("filters"), dict) else {}
-            for key, value in scoped_filters.items():
-                if key not in filters and value not in ("", None):
-                    filters[key] = value
+    filters = merge_shared_extract_filters(
+        base_filters=extract_target_filters_fn({"filters": params.get("filters")}),
+        target_scopes=[
+            scoped.get("filters")
+            for scoped in target_scope_by_url.values()
+            if isinstance(scoped, dict) and isinstance(scoped.get("filters"), dict)
+        ],
+    )
     extract_intent = resolve_extract_intent_fn(params=params, filters=filters, user_prompt=user_prompt)
     anchor_terms = resolve_extract_anchor_terms_fn(
         params=params,

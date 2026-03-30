@@ -21,6 +21,69 @@ from src.orchestrator.agentic_text import (
 )
 
 
+def _listify_text_items(value: Any) -> list[str]:
+    if isinstance(value, list):
+        items: list[str] = []
+        for entry in value:
+            text = str(entry or "").strip()
+            if text:
+                items.append(text)
+        return items
+    text = str(value or "").strip()
+    if not text:
+        return []
+    if ";" in text:
+        return [part.strip() for part in text.split(";") if part.strip()]
+    if "\n" in text:
+        return [part.strip() for part in text.splitlines() if part.strip()]
+    return [text]
+
+
+def normalize_author_affiliations(
+    author_affiliations_raw: Any,
+    *,
+    authors_raw: Any,
+    affiliations_raw: Any,
+) -> list[dict[str, str]]:
+    if isinstance(author_affiliations_raw, list):
+        pairs: list[dict[str, str]] = []
+        for entry in author_affiliations_raw:
+            if not isinstance(entry, dict):
+                continue
+            author = str(entry.get("author") or entry.get("name") or entry.get("author_name") or "").strip()
+            affiliation = str(entry.get("affiliation") or entry.get("institution") or "").strip()
+            if author:
+                pairs.append({"author": author, "affiliation": affiliation})
+        if pairs:
+            return pairs
+
+    authors = _listify_text_items(authors_raw)
+    affiliations = _listify_text_items(affiliations_raw)
+    if not authors:
+        return []
+    if len(affiliations) == len(authors):
+        return [{"author": author, "affiliation": affiliation} for author, affiliation in zip(authors, affiliations)]
+    if len(affiliations) == 1:
+        return [{"author": author, "affiliation": affiliations[0]} for author in authors]
+    return [{"author": author, "affiliation": ""} for author in authors]
+
+
+def format_author_affiliations(author_affiliations_raw: Any, *, authors_raw: Any, affiliations_raw: Any) -> str:
+    pairs = normalize_author_affiliations(
+        author_affiliations_raw,
+        authors_raw=authors_raw,
+        affiliations_raw=affiliations_raw,
+    )
+    formatted: list[str] = []
+    for pair in pairs:
+        author = str(pair.get("author") or "").strip()
+        affiliation = str(pair.get("affiliation") or "").strip()
+        if not author:
+            continue
+        formatted.append(f"{author} ({affiliation})" if affiliation else author)
+    return "; ".join(formatted)
+
+
 def extract_year_best(text: str, *, year_gte: int | None = None) -> str:
     years = [int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", str(text or ""))]
     if not years:
@@ -437,6 +500,24 @@ def to_paper_candidates_from_facts(
                 continue
         elif not looks_like_paper_candidate(title, evidence, str(fact.get("url") or "")):
             continue
+        authors_raw = (llm_extract or {}).get("authors") if isinstance(llm_extract, dict) else ""
+        affiliations_raw = (llm_extract or {}).get("affiliations") if isinstance(llm_extract, dict) else ""
+        author_affiliations_raw = (llm_extract or {}).get("author_affiliations") if isinstance(llm_extract, dict) else []
+        author_affiliations = normalize_author_affiliations(
+            author_affiliations_raw,
+            authors_raw=authors_raw,
+            affiliations_raw=affiliations_raw,
+        )
+        authors_with_affiliations = format_author_affiliations(
+            author_affiliations_raw,
+            authors_raw=authors_raw,
+            affiliations_raw=affiliations_raw,
+        )
+        abstract_text = (
+            str((llm_extract or {}).get("abstract") or "").strip()
+            if isinstance(llm_extract, dict)
+            else ""
+        )
         candidates.append(
             {
                 "source": "agentic_extract",
@@ -447,26 +528,24 @@ def to_paper_candidates_from_facts(
                 "doi": normalize_doi(str(fact.get("doi") or "")),
                 "arxiv_id": normalize_arxiv_id(str(fact.get("arxiv_id") or "")),
                 "url": str(fact.get("url") or ""),
-                "abstract": evidence,
+                "abstract": abstract_text or evidence,
                 "abstract_snippet": (
-                    _peek_text(str((llm_extract or {}).get("abstract_snippet") or ""), 320)
+                    _peek_text(abstract_text or str((llm_extract or {}).get("abstract_snippet") or evidence), 320)
                     if isinstance(llm_extract, dict)
                     else ""
                 ),
                 "authors": (
-                    "; ".join([str(v).strip() for v in ((llm_extract or {}).get("authors") or []) if str(v).strip()][:20])
-                    if isinstance((llm_extract or {}).get("authors"), list)
-                    else str((llm_extract or {}).get("authors") or "")
+                    "; ".join(_listify_text_items(authors_raw)[:20])
                 ),
                 "affiliations": (
-                    "; ".join([str(v).strip() for v in ((llm_extract or {}).get("affiliations") or []) if str(v).strip()][:20])
-                    if isinstance((llm_extract or {}).get("affiliations"), list)
-                    else str((llm_extract or {}).get("affiliations") or "")
+                    "; ".join(_listify_text_items(affiliations_raw)[:20])
                 ) or (
                     "; ".join([str(v).strip() for v in ((llm_extract or {}).get("institution_hits") or []) if str(v).strip()][:20])
                     if isinstance((llm_extract or {}).get("institution_hits"), list)
                     else str((llm_extract or {}).get("institution_hits") or "")
                 ),
+                "author_affiliations": author_affiliations,
+                "authors_with_affiliations": authors_with_affiliations,
                 "keywords": [],
                 "categories": [],
                 "score": float(fact.get("score") or 0.0),

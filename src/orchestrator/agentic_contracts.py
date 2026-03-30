@@ -62,6 +62,8 @@ def _agent_system_prompt() -> str:
         "extract_content(params.targets[{url, anchor_terms[], filters?}]) => fetch + extract paper facts for chosen URLs. "
         "Rules: one search query per venue when multiple venues are in scope. "
         "Do not combine many venue names in one query. "
+        "memory.next_todos lists the concrete pending tasks; treat those as real obligations, not just hints. "
+        "If pending search_web tasks remain for named venues, keep covering those venue searches before switching to extract_content. "
         "If venue cues exist, prioritize conference program/accepted/proceedings pages. "
         "If author cues dominate, prioritize DBLP/arXiv/OpenReview/author pages and then filter. "
         "If topic cue dominates, first land likely venues or influential authors/institutions, then expand. "

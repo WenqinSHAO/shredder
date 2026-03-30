@@ -123,6 +123,7 @@ def _new_extract_window_trace(
 ) -> dict[str, Any]:
     row = prepared["row"]
     ranked_segments = list(prepared["ranked_segments"])
+    target_extract_intent = prepared.get("extract_intent") if isinstance(prepared.get("extract_intent"), dict) else extract_intent
     return {
         "target_id": str(row.get("target_id") or ""),
         "url": str(row.get("url") or ""),
@@ -130,7 +131,7 @@ def _new_extract_window_trace(
         "status": str(row.get("status") or ""),
         "filters": dict(prepared["filters"]),
         "anchor_terms": list(prepared["anchor_terms"]),
-        "intent": dict(extract_intent),
+        "intent": dict(target_extract_intent or {}),
         "window_count": len(ranked_segments),
         "windows": ranked_segments[: min(12, len(ranked_segments))],
         "segment_total": len(ranked_segments),
@@ -221,6 +222,11 @@ def _run_prepared_extract_target(
     row = prepared["row"]
     active_filters = dict(prepared["filters"])
     row_anchor_terms = list(prepared["anchor_terms"])
+    target_extract_intent = (
+        dict(prepared.get("extract_intent"))
+        if isinstance(prepared.get("extract_intent"), dict)
+        else dict(extract_intent)
+    )
     ranked_segments = list(prepared["ranked_segments"])
     effective_batch_mode = str(prepared["batch_mode"])
     segment_token_budget = int(prepared["token_budget"])
@@ -392,7 +398,7 @@ def _run_prepared_extract_target(
                 user_prompt=user_prompt,
                 model=llm_extractor_model,
                 api_key_env=llm_api_key_env,
-                intent=extract_intent,
+                intent=target_extract_intent,
                 segments=batch,
                 timeout_s=45.0,
                 max_retries=0,
@@ -664,6 +670,22 @@ def execute_resolved_extract_request(
     output_token_reserve = int(deps["output_token_reserve"])
     emit_progress_fn = deps["emit_progress_fn"]
     prepare_extract_target_fn = deps.get("prepare_extract_target_fn", _prepare_extract_target_impl)
+    scope_institutions: list[str] = []
+    scope_venues: list[str] = []
+    for scope in target_scope_by_url.values():
+        if not isinstance(scope, dict):
+            continue
+        scoped_filters = scope.get("filters") if isinstance(scope.get("filters"), dict) else {}
+        institution = str(scoped_filters.get("institution") or "").strip()
+        venue = str(scoped_filters.get("venue") or "").strip()
+        if institution and institution not in scope_institutions:
+            scope_institutions.append(institution)
+        if venue and venue not in scope_venues:
+            scope_venues.append(venue)
+    if not scope_institutions and str(filters.get("institution") or "").strip():
+        scope_institutions.append(str(filters.get("institution") or "").strip())
+    if not scope_venues and str(filters.get("venue") or "").strip():
+        scope_venues.append(str(filters.get("venue") or "").strip())
 
     extract_windows_trace: list[dict[str, Any]] = []
     emit_progress_fn(
@@ -673,6 +695,8 @@ def execute_resolved_extract_request(
         stage="extract_start",
         target_count=len(records),
         filters=dict(filters),
+        institutions=scope_institutions,
+        venues=scope_venues,
         anchor_terms=anchor_terms,
         intent=extract_intent,
     )
@@ -771,6 +795,14 @@ def execute_resolved_extract_request(
                 "next_op_id_fn": (lambda prefix: deps["next_op_id_fn"](runtime_state, prefix)),
             },
         )
+        emit_progress_fn(
+            progress_callback,
+            event="agentic_extract_stage",
+            cycle_index=cycle_index,
+            stage="paper_dedup_done",
+            paper_dedup_clusters=int(paper_dedup_trace.get("cluster_count") or 0),
+            paper_dedup_reduced=int(paper_dedup_trace.get("reduced_count") or 0),
+        )
     known_urls = [
         str(row.get("url") or "")
         for row in (runtime_state.get("url_hits") or [])
@@ -793,7 +825,14 @@ def execute_resolved_extract_request(
         known_urls=known_urls,
     )
     candidate_urls: list[dict[str, Any]] = []
-    if link_candidates:
+    if paper_candidates and link_candidates:
+        emit_progress_fn(
+            progress_callback,
+            event="agentic_extract_stage",
+            cycle_index=cycle_index,
+            stage="candidate_url_proposal",
+            link_candidates=len(link_candidates),
+        )
         candidate_url_op_id = deps["next_op_id_fn"](runtime_state, "extract_candidate_urls")
         candidate_urls, _candidate_url_trace = deps["extract_candidate_urls_with_llm_fn"](
             user_prompt=user_prompt,
@@ -817,6 +856,14 @@ def execute_resolved_extract_request(
                 "openai_complete_json_fn": deps["openai_complete_json_fn"],
                 "peek_text_fn": deps["peek_text_fn"],
             },
+        )
+        emit_progress_fn(
+            progress_callback,
+            event="agentic_extract_stage",
+            cycle_index=cycle_index,
+            stage="candidate_url_done",
+            link_candidates=len(link_candidates),
+            candidate_url_count=len(candidate_urls),
         )
     return _build_extract_action_result(
         facts=facts,

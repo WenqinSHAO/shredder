@@ -362,6 +362,7 @@ def _build_agent_memory(
         "goal": _peek_text(str(user_prompt or ""), 180),
         "active_step": dict(plan.get("active_step") or {}),
         "todo": dict(plan.get("todo_counts") or {}),
+        "next_todos": [dict(item) for item in (plan.get("next_todos") or [])[:4] if isinstance(item, dict)],
         "known_urls": _compact_known_urls_for_agent(
             [item for item in url_hits if isinstance(item, dict)],
             extract_state_by_url=extract_state_by_url,
