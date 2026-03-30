@@ -2,15 +2,16 @@
 
 ## 1) Scope
 This document describes the current design of the agentic retrieval path used by `retrieve-agentic`.
-It is intentionally narrower than the older end-to-end pipeline notes: the active system is a local-first search and extraction loop that:
+It is intentionally narrower than the older end-to-end pipeline notes: the active system is a workspace-local agentic retrieval loop with remote search/fetch connectors that:
 
-1. plans the next search or extraction action with a stateless LLM,
-2. searches the web for promising URLs,
-3. fetches and extracts paper facts from selected pages,
-4. proposes complementary page-local URLs when useful,
-5. writes compact retrieval artifacts that are easy to inspect and replay.
+1. maintains canonical run state for progress tracking and later planner decisions,
+2. reconstructs planner context explicitly from that state instead of relying on naive chat accumulation,
+3. chooses the next search or extraction action with an LLM,
+4. executes search or page extraction and returns compact action results,
+5. applies those results back into canonical state,
+6. writes replayable local artifacts that expose both raw behavior and compact summaries.
 
-The design goal is debuggability first. Hard semantic choices should live in LLM prompts and compact contracts, while deterministic code should stay focused on normalization, filtering, dedupe, persistence, and projection.
+The design goal is debuggability first. Run control, runtime state, and replay artifacts are local to the workspace even though `search_web` and page fetches use remote services. Hard semantic choices should live in LLM prompts and compact contracts, while deterministic code should stay focused on normalization, filtering, dedupe, state updates, persistence, and projection.
 
 ## 2) Core Principles
 
@@ -49,6 +50,34 @@ Current ownership is split on purpose:
 - candidate shaping,
 - state application,
 - trace/result projection.
+
+### 2.5 State Transition Pipeline
+The main loop is intentionally organized as:
+
+`action result -> state_apply -> canonical state -> view/result/trace`
+
+That means:
+
+- action modules produce compact action results, not direct loop mutations
+- `agentic_state_apply.py` owns deterministic state transitions from those results into canonical loop state
+- loop state remains the single source of truth for URL progress, matched papers, and plan progress
+- `agentic_view.py`, `agentic_trace.py`, and `agentic_result.py` project that canonical state outward for the planner, trajectory, and final artifact
+
+This separation is a deliberate design decision.
+It keeps runtime mutation logic away from presentation logic, makes replay/debugging easier, and prevents UI/trajectory formatting changes from also changing loop behavior.
+
+### 2.6 Explicit Planner State Reconstruction
+The planner is stateful at the application level, but not through vanilla chat history accumulation.
+
+Instead, each turn:
+
+- keeps canonical domain state in the loop,
+- rebuilds compact planner memory from that state,
+- wraps that memory into a bounded working-state payload,
+- sends that reconstructed state to the planner LLM as the authoritative context for the next decision.
+
+This is a core domain-specific design choice.
+The important state is not "all prior messages"; it is the structured retrieval state built from known URLs, extract coverage, matched papers, blockers, last-step deltas, and outstanding plan/todo items.
 
 ## 3) Main Artifacts and Contracts
 
@@ -108,6 +137,28 @@ Action executors do not mutate those dataclasses directly.
 - `extract_state_by_url`
 
 That bridge is the shared in-memory contract between the loop and the action layer.
+After an action completes, the loop applies deterministic state transitions before rebuilding outward-facing projections.
+
+### 4.1 Planner Memory as the Domain State Interface
+The most important state-to-LLM boundary is in `src/orchestrator/agentic_view.py`:
+
+- `_build_agent_memory(...)` builds the compact domain memory used by the planner
+- `_build_agent_working_state(...)` wraps that memory with the current task and cycle metadata
+
+This is where domain knowledge is intentionally distilled for planning.
+Today that memory includes:
+
+- current plan state (`active_step`, todo counts)
+- known URLs with projected progress/status
+- matched papers already found
+- suggested URLs from the latest extract action
+- blockers, including failed pages and stop reasons
+- last step summary and last change delta
+
+This layer matters because it decides what the planner is allowed to "remember" and reason over.
+It is not just serialization glue; it is the explicit state interface between the domain runtime and the planning LLM.
+
+The loop refreshes that memory before each planner turn in `src/orchestrator/agentic_loop.py::_refresh_agent_memory(...)`.
 
 ## 5) Code Map
 
@@ -144,6 +195,13 @@ It returns strict JSON with:
 Important design rule:
 - the planner does not control fetch retries, batch sizes, token budgets, or low-level extraction mechanics
 - the planner chooses intentful actions and compact parameters only
+- the planner receives explicit reconstructed state, not a raw transcript of all prior turns
+
+The planner side should be understood as:
+
+- multi-turn at the application level,
+- explicitly state-carried through `_build_agent_memory(...)` and `_build_agent_working_state(...)`,
+- bounded and domain-shaped rather than chat-history-shaped.
 
 For `extract_content`, planner params should stay high level:
 - target `url`
@@ -203,8 +261,8 @@ Responsibilities:
 `src/orchestrator/agentic_loop.py::_run_agentic_search_loop`
 
 Each cycle:
-1. refresh compact agent memory
-2. build planner working state
+1. refresh compact agent memory from canonical loop state
+2. build planner working state from that memory
 3. call planner LLM
 4. sanitize and record the chosen action
 5. execute the action through `agentic_actions`
@@ -275,6 +333,12 @@ Suggested debug order for a bad run:
 3. read matching rows in `agentic_raw.ndjson`
 4. inspect referenced `fetch_raw/*` files if extraction quality is the issue
 5. open the responsible module from the code map above
+
+When deciding where a bug belongs, use this rule:
+
+- if the problem is "the tool output was wrong", start in the action/search/extract module
+- if the problem is "the loop state changed incorrectly", start in `agentic_state_apply.py`
+- if the problem is "the state is right but the planner/trajectory/result view is misleading", start in `agentic_view.py`, `agentic_trace.py`, or `agentic_result.py`
 
 ## 11) Current Guardrails
 
