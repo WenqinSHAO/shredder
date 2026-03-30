@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from src.orchestrator import agentic as agentic_mod
@@ -17,6 +18,7 @@ from src.orchestrator import agentic_extract as extract_mod
 from src.orchestrator import agentic_extract_prepare as prepare_mod
 from src.orchestrator import agentic_extract_runtime as extract_runtime_mod
 from src.orchestrator import agentic_llm as llm_mod
+from src.orchestrator import agentic_replay_extract as replay_mod
 from src.orchestrator import agentic_result as result_mod
 from src.orchestrator import agentic_search as search_mod
 from src.orchestrator import agentic_state_apply as state_apply_mod
@@ -2235,7 +2237,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             result = yamlx.load(rdir / "agentic_result.yaml")
             self.assertEqual(result["status"], "completed")
             self.assertEqual(fetch_mock.call_count, 1)
-            self.assertEqual(llm_batches, [32, 8])
+            self.assertEqual(llm_batches, [4, 4])
             self.assertEqual(len(result.get("papers") or []), 1)
             self.assertIn("parserhawk", str((result.get("papers") or [])[0].get("title") or "").lower())
 
@@ -2665,6 +2667,257 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         user_view = trajectory.get("user_view") or []
         self.assertEqual(user_view[0]["extract_summary"]["url_checks"][0]["status"], "in_progress")
         self.assertTrue(user_view[0]["extract_summary"]["url_checks"][0]["has_more_results"])
+
+    def test_rebuild_saved_fetched_records_maps_targets_to_fetch_raw(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            retrieval_dir = Path(tmp)
+            fetch_dir = retrieval_dir / "fetch_raw"
+            fetch_dir.mkdir(parents=True, exist_ok=True)
+            raw_path = fetch_dir / "cycle02-auto-fetch-1-page.html"
+            raw_path.write_text(
+                """
+                <html><body>
+                <h1>Accepted Papers</h1>
+                <ul>
+                  <li>Falcon: A Reliable, Low Latency Hardware Transport. Arjun Singhvi (Google)</li>
+                  <li>Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters. Amin Vahdat (Google)</li>
+                </ul>
+                </body></html>
+                """,
+                encoding="utf-8",
+            )
+            step = {
+                "cycle_index": 2,
+                "action_input": {
+                    "urls": ["https://conf.example/accepted-papers"],
+                    "filters": {"institution": "Google"},
+                    "auto_fetch": True,
+                },
+                "action_debug": {
+                    "targets": [
+                        {
+                            "target_id": "auto-fetch-1",
+                            "url": "https://conf.example/accepted-papers",
+                        }
+                    ]
+                },
+                "refs": {
+                    "fetch_raw_paths": ["fetch_raw/cycle02-auto-fetch-1-page.html"],
+                },
+            }
+
+            records = replay_mod._rebuild_saved_fetched_records(retrieval_dir=retrieval_dir, step=step)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["raw_path"], "fetch_raw/cycle02-auto-fetch-1-page.html")
+        self.assertEqual(records[0]["target_id"], "auto-fetch-1")
+        self.assertGreater(records[0]["segment_count"], 0)
+        self.assertIn("Falcon", records[0]["text"])
+
+    def test_replay_params_fall_back_to_action_debug_targets(self):
+        params = replay_mod._replay_params_from_step(
+            {
+                "action_input": {"filters": {"institution": "Google"}, "urls": []},
+                "action_debug": {
+                    "targets": [
+                        {
+                            "target_id": "auto-fetch-1",
+                            "url": "https://conf.example/accepted-papers",
+                            "why": "saved extract target",
+                        }
+                    ]
+                },
+            }
+        )
+        self.assertEqual(params["urls"], ["https://conf.example/accepted-papers"])
+        self.assertEqual(params["targets"][0]["target_id"], "auto-fetch-1")
+
+    def test_current_probe_segments_use_current_cleaned_page_segments(self):
+        segments = replay_mod._current_probe_segments(
+            record={
+                "url": "https://conf.example/accepted-papers",
+                "url_title": "Accepted Papers",
+                "segments": [
+                    "<div>Falcon: A Reliable, Low Latency Hardware Transport. Arjun Singhvi (Google).</div>",
+                    "<div>Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters. Google LLC.</div>",
+                    "<div>Sponsor session and registration details.</div>",
+                ],
+            },
+            params={"filters": {"institution": "Google"}},
+            user_prompt="papers by Google at SIGCOMM in 2025",
+            limit=2,
+        )
+        self.assertEqual(len(segments), 2)
+        self.assertIn("Falcon", segments[0])
+        self.assertNotIn("<div>", segments[0])
+
+    def test_effective_extract_batch_size_stays_small(self):
+        self.assertEqual(
+            extract_runtime_mod._effective_extract_batch_size(
+                coverage_batch_size=12,
+                batch_mode="page",
+                segment_count=20,
+            ),
+            4,
+        )
+        self.assertEqual(
+            extract_runtime_mod._effective_extract_batch_size(
+                coverage_batch_size=12,
+                batch_mode="segments",
+                segment_count=20,
+            ),
+            3,
+        )
+
+    def test_probe_saved_target_returns_error_row_on_timeout(self):
+        with patch(
+            "src.orchestrator.agentic_actions._extract_facts_with_llm",
+            side_effect=RuntimeError("timeout"),
+        ):
+            row = replay_mod._probe_saved_target(
+                record={"target_id": "t1", "url": "https://conf.example/page"},
+                params={"filters": {"institution": "Google"}},
+                user_prompt="papers by Google at SIGCOMM in 2025",
+                model="deepseek/deepseek-chat",
+                api_key_env="DS_API_KEY",
+                timeout_s=12.0,
+                probe_segments=["Falcon: A Reliable, Low Latency Hardware Transport"],
+            )
+        self.assertEqual(row["status"], "error")
+        self.assertIn("RuntimeError:timeout", row["error"])
+
+    def test_project_action_result_reads_llm_counts_from_notes(self):
+        payload = replay_mod._project_action_result(
+            {
+                "status": "ok",
+                "notes": (
+                    "requested_urls=3 extracted_rows=2 llm_extract_attempted=5 "
+                    "llm_extract_applied=2 llm_timeout_errors=3 "
+                    "coverage_has_more=False coverage_passes=4 candidate_urls=1"
+                ),
+                "paper_candidates": [{"title": "Falcon"}],
+                "candidate_urls": [{"url": "https://conf.example/paper/falcon"}],
+                "coverage_has_more": False,
+                "extract_timeout_errors": 3,
+                "extract_empty_semantic": 1,
+            }
+        )
+        self.assertEqual(payload["requested_url_count"], 3)
+        self.assertEqual(payload["llm_extract_attempted"], 5)
+        self.assertEqual(payload["llm_extract_applied"], 2)
+        self.assertEqual(payload["llm_timeout_errors"], 3)
+        self.assertEqual(payload["coverage_passes"], 4)
+
+    def test_run_replay_agentic_extract_writes_replay_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            with patch("src.utils.paths.WORKSPACE_ROOT", ws):
+                run_step("demo", "init", theme="systems")
+                project = ws / "demo"
+                retrieval_dir = project / "artifacts" / "retrieval"
+                fetch_dir = retrieval_dir / "fetch_raw"
+                fetch_dir.mkdir(parents=True, exist_ok=True)
+                (fetch_dir / "cycle02-auto-fetch-1-page.html").write_text(
+                    """
+                    <html><body>
+                    <h1>Accepted Papers</h1>
+                    <p>Falcon: A Reliable, Low Latency Hardware Transport. Arjun Singhvi (Google)</p>
+                    </body></html>
+                    """,
+                    encoding="utf-8",
+                )
+                yamlx.dump_to_path(
+                    retrieval_dir / "agentic_trajectory.yaml",
+                    {
+                        "artifact_type": "agentic_trajectory",
+                        "schema_version": "0.1.0",
+                        "session_id": "sess-1",
+                        "run_header": {"prompt": "papers by Google at SIGCOMM in 2025"},
+                        "steps": [
+                            {
+                                "action_id": "c02",
+                                "cycle_index": 2,
+                                "status_snapshot": {"action": "extract_content"},
+                                "agent_state_before": {
+                                    "summary": {
+                                        "top_hits": [
+                                            {
+                                                "title": "Accepted Papers",
+                                                "url": "https://conf.example/accepted-papers",
+                                                "host": "conf.example",
+                                                "score": 1.0,
+                                            }
+                                        ]
+                                    }
+                                },
+                                "action_input": {
+                                    "urls": ["https://conf.example/accepted-papers"],
+                                    "filters": {"institution": "Google"},
+                                    "auto_fetch": True,
+                                },
+                                "action_debug": {
+                                    "targets": [
+                                        {
+                                            "target_id": "auto-fetch-1",
+                                            "url": "https://conf.example/accepted-papers",
+                                        }
+                                    ]
+                                },
+                                "refs": {
+                                    "fetch_raw_paths": ["fetch_raw/cycle02-auto-fetch-1-page.html"],
+                                },
+                            }
+                        ],
+                    },
+                )
+                (retrieval_dir / "agentic_raw.ndjson").write_text("", encoding="utf-8")
+
+                observed: dict[str, Any] = {}
+
+                def _fake_execute_extract_content_action(**kwargs):
+                    observed["params"] = dict(kwargs["params"])
+                    observed["record_count"] = len(kwargs["runtime_state"]["fetched_records"])
+                    return {
+                        "status": "ok",
+                        "notes": "replayed saved extract step",
+                        "requested_urls": list(kwargs["params"].get("urls") or []),
+                        "paper_candidates": [
+                            {
+                                "title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                                "url": "https://conf.example/accepted-papers",
+                            }
+                        ],
+                        "candidate_urls": [],
+                        "llm_extract_attempted": 1,
+                        "llm_extract_applied": 1,
+                        "llm_timeout_errors": 0,
+                        "coverage_has_more": False,
+                    }
+
+                with patch(
+                    "src.orchestrator.agentic_actions.execute_extract_content_action",
+                    side_effect=_fake_execute_extract_content_action,
+                ):
+                    out_path = run_step(
+                        "demo",
+                        "replay-agentic-extract",
+                        cycle_index=2,
+                        timeout_s=12.0,
+                        probe_segments=0,
+                    )
+
+                payload = yamlx.load(out_path)
+
+        self.assertTrue(str(out_path).endswith("agentic_extract_replay.yaml"))
+        self.assertFalse(observed["params"]["auto_fetch"])
+        self.assertEqual(observed["record_count"], 1)
+        self.assertEqual(payload["step_count"], 1)
+        self.assertEqual(payload["steps"][0]["replay_result"]["extracted_count"], 1)
+        self.assertEqual(
+            payload["steps"][0]["replay_result"]["paper_titles"][0],
+            "Falcon: A Reliable, Low Latency Hardware Transport",
+        )
 
     def test_apply_plan_update_merges_deltas(self):
         merged = view_mod._apply_plan_update(

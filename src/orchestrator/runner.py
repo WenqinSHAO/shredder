@@ -4,6 +4,7 @@ from src.workspace.manager import init_project
 from .steps import run_discovery, run_parsing, run_extraction, run_render
 from .agentic import run_retrieve_agentic
 from .agentic_local_extract import run_extract_agentic_local
+from .agentic_replay_extract import run_replay_agentic_extract
 from .retrieval import run_retrieve_open, run_retrieve_paper
 
 
@@ -49,5 +50,15 @@ def run_step(project_id: str, step: str, **kwargs):
             institution=kwargs.get("institution", ""),
             year_gte=int(kwargs.get("year_gte", 0)),
             url_contains=kwargs.get("url_contains", ""),
+        )
+    if step == "replay-agentic-extract":
+        return run_replay_agentic_extract(
+            project_id,
+            cycle_index=int(kwargs.get("cycle_index", 0)),
+            timeout_s=float(kwargs.get("timeout_s", 45.0)),
+            probe_segments=int(kwargs.get("probe_segments", 0)),
+            use_llm_extractor=kwargs.get("use_llm_extractor"),
+            llm_extractor_model=kwargs.get("llm_extractor_model", ""),
+            llm_api_key_env=kwargs.get("llm_api_key_env", ""),
         )
     raise ValueError(f"Unknown step: {step}")

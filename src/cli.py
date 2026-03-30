@@ -331,6 +331,19 @@ def main() -> None:
     p_extract_local.add_argument("--year-gte", type=int, default=0)
     p_extract_local.add_argument("--url-contains", default="")
 
+    p_replay_extract = sub.add_parser("replay-agentic-extract")
+    p_replay_extract.add_argument("project_id")
+    p_replay_extract.add_argument("--cycle-index", type=int, default=0)
+    p_replay_extract.add_argument("--timeout-s", type=float, default=45.0)
+    p_replay_extract.add_argument("--probe-segments", type=int, default=0)
+    p_replay_extract.add_argument("--llm-extractor-model", default="")
+    p_replay_extract.add_argument("--llm-api-key-env", default="")
+    p_replay_extract.add_argument(
+        "--use-llm-extractor",
+        choices=("auto", "true", "false"),
+        default="auto",
+    )
+
     args = parser.parse_args()
     try:
         if args.cmd == "init":
@@ -382,6 +395,23 @@ def main() -> None:
                 url_contains=args.url_contains,
             )
             print(f"Local extraction complete: {result}")
+        elif args.cmd == "replay-agentic-extract":
+            use_llm_extractor = None
+            if args.use_llm_extractor == "true":
+                use_llm_extractor = True
+            elif args.use_llm_extractor == "false":
+                use_llm_extractor = False
+            result = run_step(
+                args.project_id,
+                "replay-agentic-extract",
+                cycle_index=int(args.cycle_index or 0),
+                timeout_s=float(args.timeout_s or 45.0),
+                probe_segments=int(args.probe_segments or 0),
+                use_llm_extractor=use_llm_extractor,
+                llm_extractor_model=args.llm_extractor_model,
+                llm_api_key_env=args.llm_api_key_env,
+            )
+            print(f"Replay extraction complete: {result}")
     except YamlDependencyError as exc:
         raise SystemExit(f"YAML dependency error: {exc}") from exc
 

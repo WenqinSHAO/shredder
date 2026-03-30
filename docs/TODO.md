@@ -208,6 +208,9 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-29: Refreshed `docs/DESIGN.md` so it reflects the current agentic retrieval architecture, live module ownership, main action/result contracts, and the recommended troubleshooting path through `agentic_raw.ndjson`, `agentic_trajectory.yaml`, and the refactored extract/search modules.
 - 2026-03-30: Clarified `docs/DESIGN.md` further by replacing the misleading "local-first search" wording with a more precise workspace-local runtime description, and by explicitly documenting the `action result -> state_apply -> state -> view` design principle that now shapes the loop, state-apply, and view/result module split.
 - 2026-03-30: Tightened `docs/DESIGN.md` again to make the opening state-centric, to explain that planner state is reconstructed explicitly each turn rather than accumulated as naive chat history, and to call out `_build_agent_memory(...)` / `_build_agent_working_state(...)` as the main domain-state interface for the planning LLM.
+- 2026-03-30: Added a saved-artifact replay path in `src/orchestrator/agentic_replay_extract.py` plus the `replay-agentic-extract` CLI/runner entrypoint so current extraction can be exercised against existing `agentic_trajectory.yaml`, `agentic_raw.ndjson`, and `fetch_raw/` without depending on a fresh search run. This replay artifact is now the preferred way to compare page-level extract runtime behavior with narrower saved-segment probes on workspaces such as `google*` and `alibaba`.
+- 2026-03-30: Ran the new replay harness live against saved venue-page cycles for `workspace/google` and `workspace/alibaba` using `DS_API_KEY`. The dominant failure mode is now explicit: page-level extract replays timed out on every LLM attempt, and the saved-segment probes timed out too, so the next leverage is backend/runtime timeout handling or smaller extract payloads, not more fallback heuristics.
+- 2026-03-30: Tightened the replay/runtime path accordingly: replay probes now derive segments from the current cleaned page text plus current extract intent instead of reusing old `extract_llm_request` payloads, and `src/orchestrator/agentic_extract_runtime.py` now caps per-call extract batches to small sizes (`4` listing segments or `3` detail-page segments). Re-running the saved venue-page cycles for `workspace/google` and `workspace/alibaba` removed the timeout failures entirely and restored live extraction on both representative workspaces.
 
 ### 3.2.7 Next Big Stage
 
@@ -280,6 +283,10 @@ Immediate queue for the next stage:
 - `E10 -> H9, H10`: require replay/targeted validation after each refactor slice that moved ownership
   - each slice should leave behind focused tests for the new boundary before the next move
   - do not batch multiple ownership moves together if it makes regressions harder to localize
+  - done: add `replay-agentic-extract` so saved trajectory + `fetch_raw/` can be replayed through the current extract action and, when needed, narrowed to saved LLM request segments
+  - done: use the replay artifact on representative `google` and `alibaba` saved workspaces; both showed timeout-dominated LLM extraction behavior rather than new precision bugs
+  - done: reduce replay/extract payload size by using current cleaned segments for probes and hard-capping per-call extract batches in the runtime
+  - next: use the now-stable replay artifacts to trim duplicate/over-broad matches before adding any new extraction policy
 
 ## 4) Non-Active Modules (Summary Only)
 

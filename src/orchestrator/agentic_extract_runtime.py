@@ -10,6 +10,22 @@ from src.orchestrator.agentic_extract_prepare import (
 
 ProgressCallback = Callable[[dict], None]
 
+DEFAULT_EXTRACT_BATCH_SIZE = 6
+DEFAULT_EXTRACT_MAX_CALLS = 6
+LISTING_EXTRACT_BATCH_CAP = 4
+DETAIL_EXTRACT_BATCH_CAP = 3
+
+
+def _effective_extract_batch_size(
+    *,
+    coverage_batch_size: int,
+    batch_mode: str,
+    segment_count: int,
+) -> int:
+    base = max(1, min(int(coverage_batch_size or 0), max(1, int(segment_count or 0))))
+    hard_cap = LISTING_EXTRACT_BATCH_CAP if str(batch_mode or "") == "page" else DETAIL_EXTRACT_BATCH_CAP
+    return max(1, min(base, hard_cap))
+
 
 def _auto_fetch_counts(auto_fetched_records: list[dict[str, Any]]) -> tuple[int, int]:
     ok = sum(1 for row in auto_fetched_records if str(row.get("status") or "") == "ok")
@@ -256,7 +272,11 @@ def _run_prepared_extract_target(
         url=str(row.get("url") or ""),
     )
     page_state["segment_total"] = len(ranked_segments)
-    effective_batch_size = max(1, min(coverage_batch_size, len(ranked_segments)))
+    effective_batch_size = _effective_extract_batch_size(
+        coverage_batch_size=coverage_batch_size,
+        batch_mode=effective_batch_mode,
+        segment_count=len(ranked_segments),
+    )
     start = max(0, min(int(page_state.get("segments_done") or 0), len(ranked_segments)))
     if start >= len(ranked_segments):
         page_state["completed"] = True
@@ -632,8 +652,8 @@ def execute_resolved_extract_request(
             auto_fetched_records=auto_fetched_records,
         )
 
-    coverage_batch_size = 32
-    max_calls_per_target = 4
+    coverage_batch_size = DEFAULT_EXTRACT_BATCH_SIZE
+    max_calls_per_target = DEFAULT_EXTRACT_MAX_CALLS
     context_limit_tokens = int(deps["context_limit_tokens"])
     safety_margin = float(deps["safety_margin"])
     output_token_reserve = int(deps["output_token_reserve"])
