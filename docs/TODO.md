@@ -211,6 +211,8 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-30: Added a saved-artifact replay path in `src/orchestrator/agentic_replay_extract.py` plus the `replay-agentic-extract` CLI/runner entrypoint so current extraction can be exercised against existing `agentic_trajectory.yaml`, `agentic_raw.ndjson`, and `fetch_raw/` without depending on a fresh search run. This replay artifact is now the preferred way to compare page-level extract runtime behavior with narrower saved-segment probes on workspaces such as `google*` and `alibaba`.
 - 2026-03-30: Ran the new replay harness live against saved venue-page cycles for `workspace/google` and `workspace/alibaba` using `DS_API_KEY`. The dominant failure mode is now explicit: page-level extract replays timed out on every LLM attempt, and the saved-segment probes timed out too, so the next leverage is backend/runtime timeout handling or smaller extract payloads, not more fallback heuristics.
 - 2026-03-30: Tightened the replay/runtime path accordingly: replay probes now derive segments from the current cleaned page text plus current extract intent instead of reusing old `extract_llm_request` payloads, and `src/orchestrator/agentic_extract_runtime.py` now caps per-call extract batches to small sizes (`4` listing segments or `3` detail-page segments). Re-running the saved venue-page cycles for `workspace/google` and `workspace/alibaba` removed the timeout failures entirely and restored live extraction on both representative workspaces.
+- 2026-03-30: Investigated the post-timeout precision issues on the live Google replay. The main false-positive seam is now concrete: `src/orchestrator/agentic_extract_candidates.py::_structured_match_text(...)` includes `llm_extract.decision_reason`, so uncertain rows such as "cannot verify Google affiliation" still satisfy institution phrase checks because the filter term is echoed in that reason text. A second, separate seam remains in title normalization: `canonicalize_candidate_title(...)` still does not collapse some paraphrased program-page titles (`Firefly ...`, `NIER ...`) to the accepted-list form, so near-duplicates survive dedupe.
+- 2026-03-30: Completed the first `E11` precision slice by removing `llm_extract.decision_reason` from fallback evidence matching in `src/orchestrator/agentic_extract_candidates.py` and adding replay-backed tests for current Google-style false positives (`Discovering Millions...`, `NIER ... Solution`). This keeps uncertain rows from passing institution filters just because the reason text repeats the filter term, while leaving explicit `match_decision == match` behavior unchanged.
 
 ### 3.2.7 Next Big Stage
 
@@ -287,6 +289,16 @@ Immediate queue for the next stage:
   - done: use the replay artifact on representative `google` and `alibaba` saved workspaces; both showed timeout-dominated LLM extraction behavior rather than new precision bugs
   - done: reduce replay/extract payload size by using current cleaned segments for probes and hard-capping per-call extract batches in the runtime
   - next: use the now-stable replay artifacts to trim duplicate/over-broad matches before adding any new extraction policy
+  - next: split this into two separate follow-ups:
+    - `E11`: precision cleanup on extracted papers only
+      - done: remove `decision_reason` from fallback evidence matching so uncertain rows do not pass institution/author filters just because the reason text repeats the filter term
+      - keep `llm_extract.match_decision == match` as the only case where the LLM's explicit semantic judgment short-circuits fallback matching
+      - done: add replay-backed tests for current Google false positives such as the `Discovering Millions...` and `NIER ... Solution` rows
+      - improve title canonicalization/dedupe only for replay-backed near-duplicates such as the `Firefly` and `NIER` variants
+    - `E12`: prompt reuse / batching efficiency after precision stabilizes
+      - do not reopen large per-call batches; the timeout fix depended on staying small
+      - look for safer reuse wins such as segment compaction, contiguous-hit grouping, or page-local summary segments before increasing batch size
+      - keep this separate from precision so bad matches are not hidden behind efficiency tuning
 
 ## 4) Non-Active Modules (Summary Only)
 

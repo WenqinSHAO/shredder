@@ -247,7 +247,6 @@ def to_paper_candidates_from_facts(
             str(fact.get("url_title") or ""),
             str(fact.get("venue") or ""),
             str(fact.get("url") or ""),
-            str(llm_extract.get("decision_reason") or ""),
             str(llm_extract.get("venue_hint") or ""),
             str(llm_extract.get("abstract_snippet") or ""),
         ]

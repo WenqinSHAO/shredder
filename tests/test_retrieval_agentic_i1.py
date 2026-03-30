@@ -1062,6 +1062,54 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["title"], "Learnings from Deploying Network QoS Alignment to Application Priorities for Storage Services")
 
+    def test_extract_candidates_do_not_use_decision_reason_as_institution_evidence(self):
+        facts = [
+            {
+                "status": "ok",
+                "paper_title": "Discovering Millions of New Nodes and Links in the Internet by Challenging the Uniformity Assumption in Multipath Detection",
+                "year": "2025",
+                "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
+                "url_title": "SIGCOMM 2025 accepted papers",
+                "evidence": "Discovering Millions of New Nodes and Links in the Internet by Challenging the Uniformity Assumption in Multipath Detection",
+                "filters": {"institution": "Google", "year_gte": 2025},
+                "extract_intent": {"must_match": {"institution_any": ["Google"], "venue_any": ["SIGCOMM"], "year_gte": 2025}},
+                "llm_extract": {
+                    "match_decision": "uncertain",
+                    "decision_reason": "Cannot verify Google affiliation from this segment.",
+                    "institution_hits": [],
+                    "authors": [],
+                    "affiliations": [],
+                    "abstract_snippet": "",
+                },
+            }
+        ]
+        candidates = _papers_from_facts(facts)
+        self.assertEqual(candidates, [])
+
+    def test_extract_candidates_require_local_google_evidence_not_reason_text(self):
+        facts = [
+            {
+                "status": "ok",
+                "paper_title": "NIER: A Practical Low-Bitrate Video Conferencing Solution",
+                "year": "2025",
+                "url": "https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/",
+                "url_title": "SIGCOMM 2025 program papers info",
+                "evidence": "Abstract: In this paper, we develop NIER, a practical low-bitrate video conferencing solution...",
+                "filters": {"institution": "Google", "year_gte": 2025},
+                "extract_intent": {"must_match": {"institution_any": ["Google"], "venue_any": ["SIGCOMM"], "year_gte": 2025}},
+                "llm_extract": {
+                    "match_decision": "uncertain",
+                    "decision_reason": "Paper appears to be from SIGCOMM 2025, but no explicit Google affiliation is present.",
+                    "institution_hits": [],
+                    "authors": [],
+                    "affiliations": [],
+                    "abstract_snippet": "A practical low-bitrate video conferencing solution.",
+                },
+            }
+        ]
+        candidates = _papers_from_facts(facts)
+        self.assertEqual(candidates, [])
+
     def test_tail_variant_deduplicates_to_clean_title(self):
         facts = [
             {
