@@ -8,6 +8,7 @@ from typing import Any, Callable
 from src.connectors.http import get_json
 from src.orchestrator import agentic_extract as extract_mod
 from src.orchestrator import agentic_extract_candidates as candidate_mod
+from src.orchestrator import agentic_extract_dedup as dedup_mod
 from src.orchestrator import agentic_extract_prepare as prepare_mod
 from src.orchestrator import agentic_extract_runtime as extract_runtime_mod
 from src.orchestrator import agentic_fetch as fetch_mod
@@ -343,6 +344,7 @@ def execute_extract_content_action(
                     canonicalize_candidate_title_fn=candidate_mod.canonicalize_candidate_title,
                 )
             ),
+            "dedup_paper_candidates_with_llm_fn": dedup_mod.dedup_paper_candidates_with_llm,
             "collect_candidate_url_inputs_from_records_fn": candidate_mod.collect_candidate_url_inputs_from_records,
             "extract_candidate_urls_with_llm_fn": extract_mod.extract_candidate_urls_with_llm,
             "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,

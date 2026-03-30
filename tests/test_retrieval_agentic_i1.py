@@ -16,6 +16,7 @@ from src.orchestrator import agentic_fetch as fetch_mod
 from src.orchestrator import agentic_extract_candidates as candidate_mod
 from src.orchestrator import agentic_extract as extract_mod
 from src.orchestrator import agentic_extract_prepare as prepare_mod
+from src.orchestrator import agentic_extract_dedup as dedup_mod
 from src.orchestrator import agentic_extract_runtime as extract_runtime_mod
 from src.orchestrator import agentic_llm as llm_mod
 from src.orchestrator import agentic_replay_extract as replay_mod
@@ -1143,6 +1144,85 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         candidates = _papers_from_facts(facts)
         titles = [str(row.get("title") or "") for row in candidates]
         self.assertEqual(sum(1 for t in titles if t.startswith("Nezha: SmartNIC-based Virtual Switch Load Sharing")), 1)
+
+    def test_build_candidate_dedup_clusters_finds_firefly_variants(self):
+        candidates = [
+            {
+                "title": "Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters",
+                "year": "2025",
+                "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
+            },
+            {
+                "title": "Firefly: A Software-driven Datacenter Clock Sync System",
+                "year": "2025",
+                "url": "https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/",
+            },
+            {
+                "title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                "year": "2025",
+                "url": "https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/",
+            },
+        ]
+        clusters = dedup_mod.build_candidate_dedup_clusters(candidates)
+        self.assertEqual(clusters, [[0, 1]])
+
+    def test_dedup_paper_candidates_with_llm_collapses_firefly_variants(self):
+        candidates = [
+            {
+                "title": "Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters",
+                "year": "2025",
+                "authors": "A; B",
+                "affiliations": "Google",
+                "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
+                "score": 0.9,
+            },
+            {
+                "title": "Firefly: A Software-driven Datacenter Clock Sync System",
+                "year": "2025",
+                "authors": "A; B",
+                "affiliations": "Google",
+                "url": "https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/",
+                "score": 0.85,
+            },
+            {
+                "title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                "year": "2025",
+                "authors": "C; D",
+                "affiliations": "Google",
+                "url": "https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/",
+                "score": 0.95,
+            },
+        ]
+        deduped, trace = dedup_mod.dedup_paper_candidates_with_llm(
+            paper_candidates=candidates,
+            user_prompt="papers by Google at SIGCOMM in 2025",
+            model="dummy",
+            api_key_env="DS_API_KEY",
+            deps={
+                "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,
+                "openai_complete_json_fn": (
+                    lambda **kwargs: {
+                        "groups": [
+                            {
+                                "candidate_ids": ["cand-1", "cand-2"],
+                                "canonical_candidate_id": "cand-1",
+                                "canonical_title": "Firefly: Scalable, Ultra-Accurate Clock Synchronization for Datacenters",
+                                "reason": "Same paper title family and author/affiliation set.",
+                            }
+                        ]
+                    }
+                ),
+                "next_op_id_fn": lambda prefix: f"{prefix}-1",
+            },
+        )
+        titles = [str(row.get("title") or "") for row in deduped]
+        self.assertEqual(len(deduped), 2)
+        self.assertEqual(
+            sum(1 for title in titles if title.startswith("Firefly:")),
+            1,
+        )
+        self.assertEqual(int(trace.get("groups_applied") or 0), 1)
+        self.assertEqual(int(trace.get("reduced_count") or 0), 1)
 
     def test_discover_pagination_urls(self):
         html = """
@@ -2841,7 +2921,8 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "notes": (
                     "requested_urls=3 extracted_rows=2 llm_extract_attempted=5 "
                     "llm_extract_applied=2 llm_timeout_errors=3 "
-                    "coverage_has_more=False coverage_passes=4 candidate_urls=1"
+                    "coverage_has_more=False coverage_passes=4 candidate_urls=1 "
+                    "paper_dedup_clusters=2 paper_dedup_reduced=1"
                 ),
                 "paper_candidates": [{"title": "Falcon"}],
                 "candidate_urls": [{"url": "https://conf.example/paper/falcon"}],
@@ -2855,6 +2936,8 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(payload["llm_extract_applied"], 2)
         self.assertEqual(payload["llm_timeout_errors"], 3)
         self.assertEqual(payload["coverage_passes"], 4)
+        self.assertEqual(payload["paper_dedup_clusters"], 2)
+        self.assertEqual(payload["paper_dedup_reduced"], 1)
 
     def test_run_replay_agentic_extract_writes_replay_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:

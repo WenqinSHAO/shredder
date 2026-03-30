@@ -382,6 +382,8 @@ def _project_action_result(result: dict[str, Any]) -> dict[str, Any]:
         "coverage_passes": _read_int(result.get("coverage_passes"), _note_int("coverage_passes")),
         "extract_timeout_errors": _read_int(result.get("extract_timeout_errors"), 0),
         "extract_empty_semantic": _read_int(result.get("extract_empty_semantic"), 0),
+        "paper_dedup_clusters": _read_int(result.get("paper_dedup_clusters"), _note_int("paper_dedup_clusters")),
+        "paper_dedup_reduced": _read_int(result.get("paper_dedup_reduced"), _note_int("paper_dedup_reduced")),
         "paper_titles": [str(row.get("title") or "") for row in (result.get("paper_candidates") or []) if str(row.get("title") or "").strip()],
         "candidate_urls": [
             {

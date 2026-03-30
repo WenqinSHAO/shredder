@@ -79,6 +79,8 @@ def _build_extract_action_result(
     extract_windows_trace: list[dict[str, Any]],
     extract_intent: dict[str, Any],
     auto_fetched_records: list[dict[str, Any]],
+    paper_dedup_clusters: int = 0,
+    paper_dedup_reduced: int = 0,
 ) -> dict[str, Any]:
     auto_fetched_ok, auto_fetched_error = _auto_fetch_counts(auto_fetched_records)
     return {
@@ -95,7 +97,8 @@ def _build_extract_action_result(
             f"llm_extract_attempted={llm_extract_attempted} llm_extract_applied={llm_extract_applied} "
             f"llm_timeout_errors={llm_timeout_errors} llm_empty_semantic={llm_empty_semantic} "
             f"coverage_has_more={coverage_has_more} coverage_passes={coverage_passes} "
-            f"candidate_urls={len(candidate_urls)}"
+            f"candidate_urls={len(candidate_urls)} "
+            f"paper_dedup_clusters={paper_dedup_clusters} paper_dedup_reduced={paper_dedup_reduced}"
         ),
         "extracted_records": facts,
         "coverage_has_more": coverage_has_more,
@@ -107,6 +110,8 @@ def _build_extract_action_result(
         "auto_fetched_count": len(auto_fetched_records),
         "auto_fetched_ok": auto_fetched_ok,
         "auto_fetched_error": auto_fetched_error,
+        "paper_dedup_clusters": paper_dedup_clusters,
+        "paper_dedup_reduced": paper_dedup_reduced,
     }
 
 
@@ -743,6 +748,29 @@ def execute_resolved_extract_request(
         coverage_passes = int(extract_run["coverage_passes"])
 
     paper_candidates = deps["to_paper_candidates_from_facts_fn"](facts)
+    paper_dedup_trace = {"cluster_count": 0, "reduced_count": 0}
+    dedup_paper_candidates_with_llm_fn = deps.get("dedup_paper_candidates_with_llm_fn")
+    if extract_use_llm_extractor and paper_candidates and dedup_paper_candidates_with_llm_fn is not None:
+        dedup_op_prefix = "extract_paper_dedup"
+        paper_candidates, paper_dedup_trace = dedup_paper_candidates_with_llm_fn(
+            paper_candidates=paper_candidates,
+            user_prompt=user_prompt,
+            model=llm_extractor_model,
+            api_key_env=llm_api_key_env,
+            timeout_s=timeout_s,
+            max_retries=0,
+            raw_event_fn=(
+                (lambda event_type, payload: raw_event_fn(event_type, payload, None))
+                if raw_event_fn is not None
+                else None
+            ),
+            llm_op_id_prefix=dedup_op_prefix,
+            deps={
+                "estimate_messages_metrics_fn": deps["estimate_messages_metrics_fn"],
+                "openai_complete_json_fn": deps["openai_complete_json_fn"],
+                "next_op_id_fn": (lambda prefix: deps["next_op_id_fn"](runtime_state, prefix)),
+            },
+        )
     known_urls = [
         str(row.get("url") or "")
         for row in (runtime_state.get("url_hits") or [])
@@ -804,6 +832,8 @@ def execute_resolved_extract_request(
         extract_windows_trace=extract_windows_trace,
         extract_intent=extract_intent,
         auto_fetched_records=auto_fetched_records,
+        paper_dedup_clusters=int(paper_dedup_trace.get("cluster_count") or 0),
+        paper_dedup_reduced=int(paper_dedup_trace.get("reduced_count") or 0),
     )
 
 
