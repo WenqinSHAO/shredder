@@ -1,177 +1,288 @@
-# Design: Local-First YAML-Centric Research Pipeline
+# Design: Agentic Search Architecture
 
-## 1) Goals
-- Build an agentic pipeline that discovers, enriches, parses, extracts, analyzes, and renders research outputs for user-defined themes.
-- Keep user-facing artifacts editable and durable as YAML/Markdown/TSV.
-- Support local-first execution with a project workspace + shared cross-project KB.
-- Provide pluggable LLM backends via OpenAI-compatible interfaces.
-- Make every step promptable with free-text `StepSpec` markdown and validated structured outputs.
+## 1) Scope
+This document describes the current design of the agentic retrieval path used by `retrieve-agentic`.
+It is intentionally narrower than the older end-to-end pipeline notes: the active system is a local-first search and extraction loop that:
 
-## 2) Non-goals (Iteration 1)
-- Perfect citation graph completeness across all venues.
-- Full-text deep semantic extraction quality parity with human experts.
-- Distributed execution and multi-user permissioning.
-- Hard real-time sync between many concurrent editors.
+1. plans the next search or extraction action with a stateless LLM,
+2. searches the web for promising URLs,
+3. fetches and extracts paper facts from selected pages,
+4. proposes complementary page-local URLs when useful,
+5. writes compact retrieval artifacts that are easy to inspect and replay.
 
-## 3) Storage Model (Local-First)
+The design goal is debuggability first. Hard semantic choices should live in LLM prompts and compact contracts, while deterministic code should stay focused on normalization, filtering, dedupe, persistence, and projection.
 
-### 3.1 Project Workspace (Plane A)
-Per-project, versionable directory (e.g., `workspace/<project>/`) containing:
-- `project.yaml` (project metadata, constraints, selected schemas)
-- `specs/*.md` (StepSpec prompts for each pipeline stage)
-- `artifacts/**` hardened step outputs
-- `artifacts/retrieval/*` deterministic retrieval index/request/source artifacts
-- `inputs/` user-provided PDFs and references
-- `reports/` generated report/slide/pdf outputs
+## 2) Core Principles
 
-All files are editable by user. Reruns should preserve user edits via overlay semantics.
+### 2.1 Simple Page Contract
+Extraction should stay centered on three outputs for a page:
 
-### 3.2 Shared KB (Plane B)
-Cross-project shared data in host-visible path:
-- `kb/kb.sqlite` as system of record for paper/author/org/provenance
-- Optional `kb/cache/` for fetched metadata snapshots and normalized copies
+- `papers[]`: extracted paper rows with evidence-oriented fields.
+- `candidate_urls[]`: suggested follow-up URLs that may contain complementary information.
+- `page_status`: coverage and failure state for that URL.
 
-### 3.3 Cache
-`cache/` for ephemeral downloads or parse intermediates (HTML, API responses, parsed XML). Cache may be dropped without losing canonical artifacts.
+### 2.2 Planner Owns Adoption
+`candidate_urls[]` are suggestions, not automatic new `url_hits`.
+The planner sees them through agent memory and decides whether to search, fetch, or extract them later.
 
-## 4) Data Model
+### 2.3 Fewer Heuristics
+Hard semantic decisions, especially around complementary URLs, should prefer the LLM contract over growing local policy code.
+Deterministic logic is still appropriate for:
 
-### 4.1 YAML Representation
+- link collection from fetched HTML,
+- URL normalization and dedupe,
+- coverage bookkeeping,
+- artifact writing,
+- compact trajectory/debug projection.
 
-#### Paper (`paper.yaml` fragment)
-```yaml
-paper_id: "doi:10.1145/1234567"
-title: "Example Paper"
-venue: "NSDI"
-year: 2024
-doi: "10.1145/1234567"
-abstract: "..."
-authors:
-  - author_id: "orcid:0000-0001-..."
-    name: "Jane Doe"
-    affiliations:
-      - org_id: "ror:05xyz"
-        name: "Example University"
-urls:
-  pdf: "https://.../paper.pdf"
-  html: "https://..."
-provenance:
-  sources: ["openalex", "crossref"]
-  fetched_at: "2026-01-01T00:00:00Z"
-```
+### 2.4 Small Ownership Boundaries
+Do not collapse extraction back into one giant mixed file.
+Current ownership is split on purpose:
 
-#### Author
-```yaml
-author_id: "orcid:..."
-name: "Jane Doe"
-aliases: ["J. Doe"]
-affiliations:
-  - org_id: "ror:05xyz"
-    role: "Professor"
-```
+- planner contract,
+- loop runtime,
+- action dispatch,
+- search execution,
+- extract request preparation,
+- extract runtime,
+- extract LLM prompt/schema,
+- candidate shaping,
+- state application,
+- trace/result projection.
 
-#### Org
-```yaml
-org_id: "ror:05xyz"
-name: "Example University"
-country: "US"
-aliases: ["Example U"]
-```
+## 3) Main Artifacts and Contracts
 
-### 4.2 SQLite Tables (Initial)
-- `papers(id PRIMARY KEY, title, venue, year, doi UNIQUE, arxiv_id, abstract, keywords_json, categories_json, pdf_url, html_url, created_at, updated_at)`
-- `authors(id PRIMARY KEY, name, orcid UNIQUE, created_at, updated_at)`
-- `orgs(id PRIMARY KEY, name, ror UNIQUE, country, created_at, updated_at)`
-- `paper_authors(paper_id, author_id, position, PRIMARY KEY(paper_id, author_id))`
-- `paper_author_metadata(paper_id, author_id, source_ids_json, affiliations_json, PRIMARY KEY(paper_id, author_id))`
-- `author_orgs(author_id, org_id, role, PRIMARY KEY(author_id, org_id))`
-- `provenance(id PRIMARY KEY, entity_type, entity_id, source, source_key, confidence, fetched_at, raw_ref)`
+The agentic run writes four main retrieval artifacts under `workspace/<project>/artifacts/retrieval/`:
 
-## 5) Pipeline Steps and Contracts
-Suggested step numbers (10..70) with hardened outputs:
+### 3.1 `agentic_result.yaml`
+Stable user-facing result contract.
+Written by `src/orchestrator/agentic_result.py`.
 
-- **10-init**: Create project scaffold.  
-  Output: `project.yaml`, `specs/*.md`, baseline directories.
-- **20-discovery**: Query OpenAlex/Crossref/S2/SearxNG + venue filters.  
-  Output: `artifacts/discovery/raw.tsv`, `artifacts/discovery/deduped.tsv`.
-- **25-retrieve-paper (deterministic)**: Resolve DOI/arXiv/title to canonical paper metadata + persist KB/index.  
-  Output: `artifacts/retrieval/deterministic_result.yaml`, `deterministic_request.yaml`, `deterministic_sources.tsv` (+ latest snapshots).
-- **26-retrieve-open (optional)**: Open recall retrieval for candidate generation/handoff.  
-  Output: `artifacts/retrieval/candidates_raw.tsv`, `candidates_ranked.tsv`, `handoff.tsv`.
-- **30-enrichment**: Merge metadata, normalize ids/authors/orgs, upsert KB.  
-  Output: `artifacts/enrichment/papers.yaml`, `authors.yaml`, `orgs.yaml`.
-- **40-fetch**: Download PDFs/HTML into workspace cache/inputs.  
-  Output: `artifacts/fetch/files.tsv`.
-- **50-parse**: Parse PDF/HTML to normalized sections.  
-  Output: `artifacts/parsing/<paper_id>/sections.yaml`.
-- **60-extract**: Apply user schema to sections using low-cost + verifier passes.  
-  Output: `artifacts/extraction/<paper_id>.yaml` + evidence pointers.
-- **65-analyze**: Run pluggable analysis skills.  
-  Output: `artifacts/analysis/*.yaml` and optional plot files.
-- **70-render**: Generate report/slides/pdf.  
-  Output: `reports/report.md`, `reports/slides.md`, optional pdf.
+Contains:
+- final `papers`
+- compact `coverage`
+- run `status`
+- `stop_reason`
+- refs to trajectory and raw trace
 
-## 6) Schema and Versioning
-- Every artifact carries:
-```yaml
-meta:
-  artifact_type: "sections"
-  schema_version: "0.1.0"
-  generated_at: "..."
-  step: 50
-```
-- Schema definitions live in `schemas/*.yaml`.
-- Backward compatibility via migrators (`from_version -> to_version`) when schema evolves.
-- Strict validation using pydantic models and/or `jsonschema` generated from YAML schema definitions.
+### 3.2 `agentic_trajectory.yaml`
+Compact cycle-by-cycle view of what the planner did.
+Written by `src/orchestrator/agentic_view.py`.
 
-## 7) Provenance and Dedup Rules
-- Dedup priority: DOI > arXiv id > title+year fuzzy match.
-- Canonical paper ID strategy: `doi:<doi>` if DOI exists, else `arxiv:<arxiv_id>`, else `title:<normalized_title>:<year>`.
-- Maintain provenance rows for each imported field with source and confidence.
-- Preserve source conflicts instead of destructive overwrite; store selected canonical value + alternatives.
+Contains:
+- full `steps`
+- simplified `user_view`
+- action summaries
+- extract debug summary
+- refs to raw events and fetched raw files
 
-Deterministic retrieval stabilization note:
-- Deterministic paper+author metadata retrieval and DB hardening are stabilized for handoff.
-- Remaining enhancements (cross-source author canonicalization, legacy metadata backfill, web fallback enrichment, author homepage field) are non-blocking and deferred.
+### 3.3 `agentic_raw.ndjson`
+Append-only raw event log.
+Written by `src/orchestrator/agentic_loop.py`.
 
-## 8) Cost-Control Extraction Strategy
-1. **Section selection**: rank sections relevant to schema fields (title/abstract/method/results/conclusion first).
-2. **Budget-aware pass**: low-cost model extracts structured candidate YAML.
-3. **Verifier pass**: smaller follow-up prompt checks evidence pointers + schema completeness.
-4. **Evidence requirements**:
-   - each nontrivial field includes `evidence` with section id and quote snippet.
-   - unresolved fields explicitly marked `unknown` with reason.
-5. **Fallback**: if confidence below threshold, escalate to higher-quality model only for missing fields.
+This is the first file to inspect when behavior is unclear. It contains:
+- planner input/output payloads
+- action input/output payloads
+- `op_start` / `op_end` events for search, fetch, and extract sub-operations
 
-## 9) Skills Plugin System
-- Skills in `src/analysis_skills/` with manifest and typed I/O.
+### 3.4 `fetch_raw/`
+Saved raw fetched pages and PDFs.
+Referenced by `raw_path` in fetched records and by `fetch_raw_paths` in trajectory refs.
 
-Example manifest (`skills/trends.yaml`):
-```yaml
-name: trends_over_time
-version: 0.1.0
-entrypoint: src.analysis_skills.trends:run
-input_schema: schemas/skills/trends_input.yaml
-output_schema: schemas/skills/trends_output.yaml
-```
+## 4) Runtime State
 
-Execution flow:
-1. Resolve skill by name in registry.
-2. Validate input YAML against schema.
-3. Run Python entrypoint.
-4. Validate + persist output artifact YAML.
+The loop owns typed state in `src/orchestrator/agentic_loop.py`:
 
-## 10) Backend API Sketch (FastAPI)
-- `POST /projects` -> create project
-- `POST /projects/{project_id}/steps/{step}` -> run a step
-- `GET /projects/{project_id}/artifacts` -> list artifacts
-- `GET /healthz` -> readiness
+- `paper_state`: final and fallback paper candidates
+- `url_state`: current shortlisted / known URLs
+- `extract_state`: per-URL coverage state plus fetched-record index
+- `agent_plan`: planner-owned active step and todo list
+- `agent_memory`: compact memory view built for the planner
+- `cycle_trace`: append-only per-cycle trace used for trajectory writing
 
-## 11) CLI/TUI Entrypoints
-CLI (`typer`) examples:
-- `python -m src.cli init <project_name>`
-- `python -m src.cli run-step <project_name> parsing --paper-id sample --pdf path/to.pdf`
-- `python -m src.cli run-step <project_name> extraction --paper-id sample`
-- `python -m src.cli render <project_name>`
+Action executors do not mutate those dataclasses directly.
+`src/orchestrator/agentic_runtime.py` bridges them through a small mutable payload:
 
-Future TUI can wrap the same orchestration service with step controls and artifact previews.
+- `url_hits`
+- `fetched_records`
+- `extract_state_by_url`
+
+That bridge is the shared in-memory contract between the loop and the action layer.
+
+## 5) Code Map
+
+Use this map when navigating the refactored codebase.
+
+| Module | Responsibility |
+|---|---|
+| `src/orchestrator/agentic.py` | Public entrypoint and config wiring for `run_retrieve_agentic`. |
+| `src/orchestrator/agentic_loop.py` | Main cycle runtime, raw event writing, action execution, cycle finalization, result/trajectory persistence. |
+| `src/orchestrator/agentic_contracts.py` | Planner prompt and JSON response contract. |
+| `src/orchestrator/agentic_view.py` | Planner working state, compact memory, trajectory writing, parameter sanitization. |
+| `src/orchestrator/agentic_actions.py` | Action dispatch and dependency injection for search/extract actions. |
+| `src/orchestrator/agentic_search.py` | Search execution, query normalization, filtering, ranking, shortlist shaping. |
+| `src/orchestrator/agentic_extract_prepare.py` | Extract request resolution, target normalization, scoped filters, target preparation. |
+| `src/orchestrator/agentic_extract_runtime.py` | Extract action runtime, per-target LLM batching, coverage trace, candidate URL proposal wiring, final action-result assembly. |
+| `src/orchestrator/agentic_extract_llm.py` | Stateless extraction prompts, schemas, token-budget helpers, OpenAI-compatible exchange. |
+| `src/orchestrator/agentic_extract.py` | Thin helper surface that exposes extract LLM utilities. Do not grow runtime here again. |
+| `src/orchestrator/agentic_extract_candidates.py` | Candidate shaping, canonicalization, candidate-URL input collection. |
+| `src/orchestrator/agentic_state_apply.py` | Apply action results back into loop state and compact coverage projections. |
+| `src/orchestrator/agentic_trace.py` | Compact action debug summaries attached to cycle trace. |
+| `src/orchestrator/agentic_result.py` | Final result shaping and artifact cleanup. |
+| `src/orchestrator/agentic_projection.py` | Shared per-URL coverage/status projection used by result, view, and trace. |
+
+## 6) Planner Contract
+
+The planner LLM contract lives in `src/orchestrator/agentic_contracts.py`.
+It returns strict JSON with:
+
+- `decision`: `continue` or `stop`
+- `state_delta`: incremental plan/todo updates
+- `progress`: compact user-facing progress note
+- `action`: one of `search_web` or `extract_content`
+
+Important design rule:
+- the planner does not control fetch retries, batch sizes, token budgets, or low-level extraction mechanics
+- the planner chooses intentful actions and compact parameters only
+
+For `extract_content`, planner params should stay high level:
+- target `url`
+- `anchor_terms`
+- minimal semantic `filters` or `match`
+
+## 7) Action Contracts
+
+### 7.1 Search Action
+Owner:
+- dispatcher: `src/orchestrator/agentic_actions.py`
+- implementation: `src/orchestrator/agentic_search.py`
+
+Primary result fields:
+- `raw_candidates`
+- `web_rows`
+- `shortlist_hints`
+- `status`
+- `notes`
+
+The loop then applies that output through `src/orchestrator/agentic_state_apply.py::_apply_search_action_result`, which updates `url_hits`.
+
+### 7.2 Extract Action
+Owners:
+- dispatcher: `src/orchestrator/agentic_actions.py`
+- request prep: `src/orchestrator/agentic_extract_prepare.py`
+- runtime: `src/orchestrator/agentic_extract_runtime.py`
+
+Primary result fields:
+- `paper_candidates`
+- `candidate_urls`
+- `extracted_records`
+- `extract_windows_trace`
+- `coverage_has_more`
+- `coverage_passes`
+- `extract_timeout_errors`
+- `extract_empty_semantic`
+- `status`
+- `notes`
+
+The loop applies that output through:
+- `src/orchestrator/agentic_state_apply.py::_apply_extract_coverage_update`
+- `src/orchestrator/agentic_state_apply.py::_apply_extract_candidate_results`
+
+## 8) Main Runtime Flow
+
+### 8.1 Entry
+`src/orchestrator/agentic.py::run_retrieve_agentic`
+
+Responsibilities:
+- load project config
+- resolve environment-backed runtime settings
+- build `_AgenticSearchLoop`
+- start the run
+
+### 8.2 Main Loop
+`src/orchestrator/agentic_loop.py::_run_agentic_search_loop`
+
+Each cycle:
+1. refresh compact agent memory
+2. build planner working state
+3. call planner LLM
+4. sanitize and record the chosen action
+5. execute the action through `agentic_actions`
+6. apply state updates
+7. write trajectory and result artifacts
+
+### 8.3 Search Path
+Follow this path when a search step behaves oddly:
+
+1. `agentic_loop.py::_run_cycle_action`
+2. `agentic_actions.py::execute_search_web_action`
+3. `agentic_search.py::execute_search_web_action`
+4. `agentic_state_apply.py::_apply_search_action_result`
+
+If the bug is about shortlist quality, stay in `agentic_search.py`.
+If the bug is about persisted `url_hits`, inspect `agentic_state_apply.py`.
+
+### 8.4 Extract Path
+Follow this path when extraction behaves oddly:
+
+1. `agentic_loop.py::_run_cycle_action`
+2. `agentic_actions.py::execute_extract_content_action`
+3. `agentic_extract_runtime.py::execute_extract_content_action`
+4. `agentic_extract_prepare.py::resolve_extract_request`
+5. `agentic_extract_runtime.py::execute_resolved_extract_request`
+6. `agentic_extract_prepare.py::prepare_extract_target`
+7. `agentic_extract_runtime.py::_run_prepared_extract_target`
+8. `agentic_extract_llm.py` via helpers in `agentic_extract.py`
+9. `agentic_extract_candidates.py`
+
+This split is intentional:
+- request-selection bugs should be debugged in `agentic_extract_prepare.py`
+- page-runtime bugs should be debugged in `agentic_extract_runtime.py`
+- prompt/schema bugs should be debugged in `agentic_extract_llm.py`
+- candidate canonicalization bugs should be debugged in `agentic_extract_candidates.py`
+
+## 9) How Complementary URLs Work
+
+Complementary URL discovery is deliberately simple:
+
+1. deterministic code collects candidate links from fetched records
+2. deterministic code normalizes and dedupes those links
+3. the stateless LLM chooses which links look complementary to the current page and still relevant to the overall query
+4. the extract action returns them as `candidate_urls`
+5. planner memory surfaces them as suggested URLs
+6. the planner decides whether to act on them later
+
+Do not reintroduce local ranking/classification taxonomies here unless replay evidence proves the prompt contract is insufficient.
+
+## 10) Troubleshooting Guide
+
+Start from artifacts, then drill into code:
+
+| Symptom | First artifact | Primary code path |
+|---|---|---|
+| Planner chose the wrong action or weird params | `agentic_raw.ndjson` planner input/output | `agentic_contracts.py`, `agentic_view.py`, `agentic_loop.py::_run_agent_turn` |
+| Search found results but shortlist looks wrong | `agentic_raw.ndjson` action output | `agentic_search.py`, then `agentic_state_apply.py::_apply_search_action_result` |
+| A target URL was not fetched or reused correctly | `agentic_raw.ndjson`, `fetch_raw/` | `agentic_extract_prepare.py::resolve_extract_request`, `agentic_runtime.py` |
+| Extract missed obvious papers on a page | `agentic_trajectory.yaml` `action_debug.targets` | `agentic_extract_prepare.py`, `agentic_extract_runtime.py`, `agentic_extract_llm.py` |
+| Candidate URLs are noisy or missing | `agentic_trajectory.yaml` `action_debug.candidate_urls` | `agentic_extract_candidates.py`, `agentic_extract_llm.py` |
+| Coverage looks inconsistent between result and trajectory | `agentic_result.yaml` + `agentic_trajectory.yaml` | `agentic_projection.py`, `agentic_state_apply.py`, `agentic_trace.py`, `agentic_view.py` |
+| Final papers look right in trace but wrong in result | `agentic_trajectory.yaml` + `agentic_result.yaml` | `agentic_state_apply.py`, `agentic_result.py` |
+
+Suggested debug order for a bad run:
+
+1. read `agentic_result.yaml` to see the final stop reason and compact coverage
+2. read `agentic_trajectory.yaml` to find the cycle where behavior drifted
+3. read matching rows in `agentic_raw.ndjson`
+4. inspect referenced `fetch_raw/*` files if extraction quality is the issue
+5. open the responsible module from the code map above
+
+## 11) Current Guardrails
+
+When extending the system, keep these rules:
+
+- do not put loop logic back into `agentic.py`
+- do not put extract runtime back into `agentic_extract.py`
+- keep planner-facing contracts compact and action-oriented
+- keep discovered URLs as planner suggestions, not automatic known URLs
+- prefer replay-backed prompt/schema improvements over new fallback heuristics
+- update `docs/TODO.md` and this file when ownership boundaries move
