@@ -53,12 +53,28 @@ def extract_target_filters(item: dict) -> dict:
     return out
 
 
+def _is_pdf_target_url(url: str) -> bool:
+    lowered = str(url or "").strip().lower()
+    if not lowered:
+        return False
+    lowered = lowered.split("#", 1)[0].split("?", 1)[0]
+    return lowered.endswith(".pdf")
+
+
 def normalize_fetch_target(item: dict, idx: int) -> dict:
     url = str(item.get("url") or "").strip()
     title = str(item.get("title") or item.get("url_title") or "").strip()
     why = str(item.get("why") or "").strip()
     target_id = str(item.get("target_id") or "").strip() or f"fetch-{idx}"
     status = str(item.get("status") or "todo").strip() or "todo"
+    if _is_pdf_target_url(url):
+        return {
+            "target_id": target_id,
+            "url": "",
+            "title": title,
+            "why": why or "skip_pdf_target",
+            "status": "skipped",
+        }
     out = {
         "target_id": target_id,
         "url": url,
@@ -442,6 +458,8 @@ def resolve_extract_request(
     }
     mapped_urls = [hit_id_to_url.get(target_id, "") for target_id in requested_target_ids]
     for url in requested_urls_from_params + mapped_urls:
+        if _is_pdf_target_url(url):
+            continue
         if url and url not in requested_urls:
             requested_urls.append(url)
 

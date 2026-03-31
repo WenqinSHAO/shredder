@@ -345,6 +345,7 @@ def execute_extract_content_action(
                 )
             ),
             "dedup_paper_candidates_with_llm_fn": dedup_mod.dedup_paper_candidates_with_llm,
+            "enable_candidate_url_proposal": False,
             "collect_candidate_url_inputs_from_records_fn": candidate_mod.collect_candidate_url_inputs_from_records,
             "extract_candidate_urls_with_llm_fn": extract_mod.extract_candidate_urls_with_llm,
             "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,

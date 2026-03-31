@@ -1654,6 +1654,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             runtime_state={},
             raw_event_fn=None,
             deps={
+                "enable_candidate_url_proposal": True,
                 "prepare_extract_target_fn": lambda **kwargs: {
                     "row": kwargs["row"],
                     "filters": dict(kwargs["filters"]),
@@ -1741,6 +1742,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             runtime_state={},
             raw_event_fn=None,
             deps={
+                "enable_candidate_url_proposal": True,
                 "prepare_extract_target_fn": lambda **kwargs: {
                     "row": kwargs["row"],
                     "filters": dict(kwargs["filters"]),
@@ -1806,6 +1808,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             runtime_state={},
             raw_event_fn=None,
             deps={
+                "enable_candidate_url_proposal": True,
                 "prepare_extract_target_fn": lambda **kwargs: {
                     "row": kwargs["row"],
                     "filters": dict(kwargs["filters"]),
@@ -1844,6 +1847,74 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         )
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(result["paper_candidates"]), 1)
+        self.assertEqual(result["candidate_urls"], [])
+
+    def test_execute_resolved_extract_request_disables_candidate_url_proposal_by_default(self):
+        result = extract_runtime_mod.execute_resolved_extract_request(
+            cycle_index=1,
+            request={
+                "target_scope_by_url": {"https://conf.example/program": {"filters": {}, "anchor_terms": []}},
+                "filters": {"institution": "Google", "year_gte": 2025},
+                "extract_intent": {
+                    "query_goal": "papers by Google at SIGCOMM in 2025",
+                    "must_match": {"institution_any": ["Google"], "year_gte": 2025},
+                },
+                "anchor_terms": ["Google", "Falcon"],
+                "records": [
+                    {
+                        "target_id": "fetch-1",
+                        "url": "https://conf.example/program",
+                        "url_title": "Conference Program",
+                        "status": "ok",
+                        "segments": ["Falcon by Google"],
+                    }
+                ],
+                "requested_urls": ["https://conf.example/program"],
+                "auto_fetched_records": [],
+            },
+            paths={"result": Path("workspace/demo/artifacts/retrieval/agentic_result.yaml")},
+            user_prompt="papers by Google at SIGCOMM in 2025",
+            timeout_s=45.0,
+            llm_extractor_model="dummy",
+            llm_api_key_env="DS_API_KEY",
+            extract_use_llm_extractor=False,
+            progress_callback=None,
+            runtime_state={},
+            raw_event_fn=None,
+            deps={
+                "prepare_extract_target_fn": lambda **kwargs: {
+                    "row": kwargs["row"],
+                    "filters": dict(kwargs["filters"]),
+                    "anchor_terms": list(kwargs["anchor_terms"]),
+                    "ranked_segments": ["Falcon by Google"],
+                    "batch_mode": "page",
+                    "token_budget": 4000,
+                },
+                "emit_progress_fn": lambda *args, **kwargs: None,
+                "next_op_id_fn": lambda _state, prefix="op": f"{prefix}-1",
+                "collect_candidate_url_inputs_from_records_fn": lambda *args, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("candidate URL collection should be disabled by default")
+                ),
+                "extract_candidate_urls_with_llm_fn": lambda **kwargs: (_ for _ in ()).throw(
+                    AssertionError("candidate URL proposal LLM should be disabled by default")
+                ),
+                "to_paper_candidates_from_facts_fn": lambda facts: [
+                    {
+                        "title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                        "authors": "Alice Roe",
+                        "affiliations": "Google",
+                        "url": "https://conf.example/program",
+                    }
+                ],
+                "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,
+                "openai_complete_json_fn": llm_mod.openai_complete_json,
+                "peek_text_fn": search_mod._peek_text,
+                "context_limit_tokens": 128000,
+                "safety_margin": 0.18,
+                "output_token_reserve": 6000,
+            },
+        )
+        self.assertEqual(result["status"], "ok")
         self.assertEqual(result["candidate_urls"], [])
 
     def test_execute_resolved_extract_request_retries_timeout_with_smaller_batch(self):
@@ -3720,9 +3791,79 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             max_items=10,
         )
         self.assertEqual(rows[0]["page_kind"], "listing")
+        self.assertEqual(rows[0]["page_role"], "accepted")
+        self.assertEqual(rows[0]["page_family"], "conferences.sigcomm.org/sigcomm/2025")
         self.assertEqual(rows[0]["url"], "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/")
         self.assertEqual(rows[0]["query_used"], "SIGCOMM 2025 accepted papers Alibaba")
         self.assertEqual(rows[1]["page_kind"], "detail")
+        self.assertEqual(rows[1]["page_role"], "detail")
+
+    def test_priority_extract_urls_for_agent_prefers_new_companion_listing_over_home_or_proceedings(self):
+        rows = view_mod._priority_extract_urls_for_agent(
+            extract_state_by_url={
+                "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/": {
+                    "fetched": True,
+                    "segments_done": 39,
+                    "segment_total": 39,
+                    "coverage_has_more": False,
+                }
+            },
+            url_hits=[
+                {
+                    "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
+                    "url_title": "ACM SIGCOMM 2025 List of Accepted Papers - Events",
+                    "host": "conferences.sigcomm.org",
+                    "peek": "Official accepted papers page",
+                    "rank": 1,
+                    "score": 1.1,
+                    "query_used": "SIGCOMM 2025 accepted papers",
+                    "source": "searxng",
+                },
+                {
+                    "url": "https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/",
+                    "url_title": "Proceedings of the ACM SIGCOMM 2025 Conference",
+                    "host": "conferences.sigcomm.org",
+                    "peek": "Companion papers info page",
+                    "rank": 2,
+                    "score": 1.0,
+                    "query_used": "SIGCOMM 2025 accepted papers",
+                    "source": "searxng",
+                },
+                {
+                    "url": "https://www.usenix.org/conference/nsdi25",
+                    "url_title": "NSDI '25 - USENIX",
+                    "host": "www.usenix.org",
+                    "peek": "Conference homepage",
+                    "rank": 3,
+                    "score": 1.05,
+                    "query_used": "NSDI 2025 accepted papers",
+                    "source": "searxng",
+                },
+                {
+                    "url": "https://dl.acm.org/doi/proceedings/10.5555/3767955",
+                    "url_title": "NSDI '25 Proceedings",
+                    "host": "dl.acm.org",
+                    "peek": "Proceedings page",
+                    "rank": 4,
+                    "score": 1.04,
+                    "query_used": "NSDI 2025 accepted papers",
+                    "source": "searxng",
+                },
+            ],
+            max_items=4,
+        )
+        urls = [row["url"] for row in rows]
+        self.assertIn("https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/", urls)
+        self.assertNotIn("https://www.usenix.org/conference/nsdi25", urls)
+        self.assertNotIn("https://dl.acm.org/doi/proceedings/10.5555/3767955", urls)
+
+    def test_normalize_fetch_target_skips_pdf_urls(self):
+        normalized = prepare_mod.normalize_fetch_target(
+            {"url": "https://conf.example/papers/falcon.pdf", "title": "Falcon PDF"},
+            1,
+        )
+        self.assertEqual(normalized["url"], "")
+        self.assertEqual(normalized["status"], "skipped")
 
     def test_planned_search_queries_from_state_delta_aligns_with_search_todos(self):
         queries = loop_mod._planned_search_queries_from_state_delta(

@@ -903,13 +903,16 @@ def execute_resolved_extract_request(
         for row in records
         if isinstance(row, dict) and str(row.get("url") or "").strip()
     )
-    link_candidates = deps["collect_candidate_url_inputs_from_records_fn"](
-        records,
-        paths=paths,
-        known_urls=known_urls,
-    )
+    enable_candidate_url_proposal = bool(deps.get("enable_candidate_url_proposal", False))
+    link_candidates: list[dict[str, Any]] = []
+    if enable_candidate_url_proposal:
+        link_candidates = deps["collect_candidate_url_inputs_from_records_fn"](
+            records,
+            paths=paths,
+            known_urls=known_urls,
+        )
     candidate_urls: list[dict[str, Any]] = []
-    if paper_candidates and link_candidates:
+    if enable_candidate_url_proposal and paper_candidates and link_candidates:
         emit_progress_fn(
             progress_callback,
             event="agentic_extract_stage",

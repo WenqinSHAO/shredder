@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from src.orchestrator.agentic_projection import _project_extract_url_rows
 from src.orchestrator.agentic_text import (
@@ -259,6 +260,45 @@ def _compact_known_urls_for_agent(
     extract_state_by_url: dict[str, Any] | None = None,
     max_items: int = 6,
 ) -> list[dict]:
+    def _page_role(url: str, title: str) -> str:
+        lowered_url = str(url or "").lower()
+        lowered_title = str(title or "").lower()
+        parsed = urlparse(url)
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if lowered_url.endswith(".pdf"):
+            return "pdf"
+        if any(token in lowered_title or token in lowered_url for token in ("accepted papers", "/accepted-papers", "/accepted", "/accept.php")):
+            return "accepted"
+        if any(token in lowered_title or token in lowered_url for token in ("technical sessions", "/technical-sessions", "/program", "/papers-info")):
+            return "program"
+        if any(token in lowered_title or token in lowered_url for token in ("proceedings", "/proceedings/", "/doi/proceedings/")):
+            return "proceedings"
+        if _is_detail_page(title=title, url=url):
+            return "detail"
+        if _is_listing_page(title=title, url=url):
+            if (
+                len(segments) <= 2
+                or (segments and segments[0] == "conference" and len(segments) <= 2)
+            ):
+                return "home"
+            return "listing"
+        return "other"
+
+    def _page_family(url: str) -> str:
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if not segments:
+            return host
+        if segments[0] == "conference" and len(segments) >= 2:
+            return f"{host}/conference/{segments[1].lower()}"
+        if len(segments) >= 2:
+            second = segments[1].lower()
+            if re.fullmatch(r"20\d{2}", second) or re.fullmatch(r"[a-z]+(?:20)?\d{2}", second):
+                return f"{host}/{segments[0].lower()}/{second}"
+            return f"{host}/{segments[0].lower()}/{second}"
+        return f"{host}/{segments[0].lower()}"
+
     projected = _project_extract_url_rows(
         extract_state_by_url=extract_state_by_url,
         url_hits=[item for item in url_hits if isinstance(item, dict)],
@@ -270,7 +310,8 @@ def _compact_known_urls_for_agent(
             continue
         url = str(item.get("url") or "")
         title = str(item.get("title") or "")
-        page_kind = "detail" if _is_detail_page(title=title, url=url) else ("listing" if _is_listing_page(title=title, url=url) else "other")
+        page_role = _page_role(url, title)
+        page_kind = "detail" if page_role == "detail" else ("listing" if page_role in {"accepted", "program", "listing", "home", "proceedings", "pdf"} else "other")
         compacted.append(
             {
                 "url": url,
@@ -279,6 +320,8 @@ def _compact_known_urls_for_agent(
                 "peek": str(item.get("peek") or ""),
                 "status": str(item.get("status") or ""),
                 "page_kind": page_kind,
+                "page_role": page_role,
+                "page_family": _page_family(url),
                 "rank": int(item.get("rank") or 0),
                 "score": round(float(item.get("score") or 0.0), 4),
                 "query_used": str(item.get("query_used") or ""),
@@ -297,10 +340,18 @@ def _compact_known_urls_for_agent(
         return 0
 
     def _memory_page_rank(row: dict[str, Any]) -> int:
-        kind = str(row.get("page_kind") or "")
-        if kind == "listing":
+        role = str(row.get("page_role") or "")
+        if role == "accepted":
+            return 6
+        if role == "program":
+            return 5
+        if role == "listing":
+            return 4
+        if role == "detail":
+            return 3
+        if role == "home":
             return 2
-        if kind == "other":
+        if role == "proceedings":
             return 1
         return 0
 
@@ -372,6 +423,42 @@ def _priority_extract_urls_for_agent(
     url_hits: list[dict[str, Any]],
     max_items: int = 4,
 ) -> list[dict[str, Any]]:
+    def _page_role(url: str, title: str) -> str:
+        lowered_url = str(url or "").lower()
+        lowered_title = str(title or "").lower()
+        parsed = urlparse(url)
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if lowered_url.endswith(".pdf"):
+            return "pdf"
+        if any(token in lowered_title or token in lowered_url for token in ("accepted papers", "/accepted-papers", "/accepted", "/accept.php")):
+            return "accepted"
+        if any(token in lowered_title or token in lowered_url for token in ("technical sessions", "/technical-sessions", "/program", "/papers-info")):
+            return "program"
+        if any(token in lowered_title or token in lowered_url for token in ("proceedings", "/proceedings/", "/doi/proceedings/")):
+            return "proceedings"
+        if _is_listing_page(title=title, url=url):
+            if (
+                len(segments) <= 2
+                or (segments and segments[0] == "conference" and len(segments) <= 2)
+            ):
+                return "home"
+            return "listing"
+        if _is_detail_page(title=title, url=url):
+            return "detail"
+        return "other"
+
+    def _page_family(url: str) -> str:
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if not segments:
+            return host
+        if segments[0] == "conference" and len(segments) >= 2:
+            return f"{host}/conference/{segments[1].lower()}"
+        if len(segments) >= 2:
+            return f"{host}/{segments[0].lower()}/{segments[1].lower()}"
+        return f"{host}/{segments[0].lower()}"
+
     projected = _project_extract_url_rows(
         extract_state_by_url=extract_state_by_url,
         url_hits=[item for item in url_hits if isinstance(item, dict)],
@@ -383,15 +470,18 @@ def _priority_extract_urls_for_agent(
             continue
         url = str(item.get("url") or "").strip()
         title = str(item.get("title") or "").strip()
-        if not url or not _is_listing_page(title=title, url=url):
+        role = _page_role(url, title)
+        if not url or role not in {"accepted", "program", "listing"}:
             continue
         status = str(item.get("status") or "").strip().lower()
         has_more = bool(item.get("has_more_results"))
-        if status not in {"in_progress", "failed"}:
+        if status not in {"new", "in_progress", "failed"}:
             continue
         reason = "unfinished listing page still has remaining extract windows"
         if status == "failed":
             reason = str(item.get("last_error") or "listing page needs retry").strip() or "listing page needs retry"
+        elif status == "new":
+            reason = "untried listing companion page from the same venue family"
         elif not has_more:
             reason = "listing page still needs explicit completion verification"
         prioritized.append(
@@ -399,19 +489,34 @@ def _priority_extract_urls_for_agent(
                 "url": url,
                 "title": _peek_text(title, 120),
                 "status": status,
+                "page_role": role,
+                "page_family": _page_family(url),
                 "why": _peek_text(reason, 160),
             }
         )
 
-    def _priority_rank(row: dict[str, Any]) -> tuple[int, int]:
+    def _priority_rank(row: dict[str, Any]) -> tuple[int, int, int]:
         status = str(row.get("status") or "").lower()
+        role = str(row.get("page_role") or "")
         return (
-            2 if status == "in_progress" else 1,
+            3 if status == "in_progress" else (2 if status == "failed" else 1),
+            3 if role == "accepted" else (2 if role == "program" else 1),
             1 if "remaining extract windows" in str(row.get("why") or "").lower() else 0,
         )
 
     ordered = sorted(prioritized, key=_priority_rank, reverse=True)
-    return ordered[: max(1, int(max_items or 1))]
+    selected: list[dict[str, Any]] = []
+    seen_families: set[str] = set()
+    for row in ordered:
+        family = str(row.get("page_family") or "")
+        if family and family in seen_families:
+            continue
+        if family:
+            seen_families.add(family)
+        selected.append(row)
+        if len(selected) >= max(1, int(max_items or 1)):
+            break
+    return selected
 
 
 def _build_agent_memory(
