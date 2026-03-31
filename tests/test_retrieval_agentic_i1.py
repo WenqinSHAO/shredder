@@ -1460,6 +1460,65 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertIn("https://conf.example/program?page=2", urls)
         self.assertNotIn("https://conf.example/program", urls)
 
+    def test_collect_candidate_url_inputs_from_records_balances_sources_and_drops_navigation_noise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fetch_raw = root / "fetch_raw"
+            fetch_raw.mkdir(parents=True, exist_ok=True)
+            (fetch_raw / "cycle01-a.html").write_text(
+                """
+                <html><body>
+                  <a href="https://www.usenix.org/">Back to USENIX</a>
+                  <a href="/user/login">Sign In</a>
+                  <a href="/conference/nsdi25/schedule">Schedule</a>
+                  <a href="/system/files/nsdi25_full_proceedings.pdf">Proceedings PDF</a>
+                  <a href="/conference/nsdi25/presentation/zeng">AliCCS Presentation</a>
+                </body></html>
+                """,
+                encoding="utf-8",
+            )
+            (fetch_raw / "cycle01-b.html").write_text(
+                """
+                <html><body>
+                  <a href="/sigcomm/2025/program/papers-info/">Papers Info</a>
+                  <a href="/sigcomm/2025/accepted-papers/">Accepted Papers</a>
+                </body></html>
+                """,
+                encoding="utf-8",
+            )
+            discovered = candidate_mod.collect_candidate_url_inputs_from_records(
+                [
+                    {
+                        "url": "https://www.usenix.org/conference/nsdi25/technical-sessions",
+                        "requested_url": "https://www.usenix.org/conference/nsdi25/technical-sessions",
+                        "url_aliases": ["https://www.usenix.org/conference/nsdi25/technical-sessions"],
+                        "page_urls": ["https://www.usenix.org/conference/nsdi25/technical-sessions"],
+                        "url_title": "NSDI '25 Technical Sessions",
+                        "raw_path": "fetch_raw/cycle01-a.html",
+                    },
+                    {
+                        "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
+                        "requested_url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
+                        "url_aliases": ["https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/"],
+                        "page_urls": ["https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/"],
+                        "url_title": "SIGCOMM Accepted Papers",
+                        "raw_path": "fetch_raw/cycle01-b.html",
+                    },
+                ],
+                paths={"result": root / "agentic_result.yaml"},
+                known_urls=[
+                    "https://www.usenix.org/conference/nsdi25/technical-sessions",
+                    "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
+                ],
+            )
+        urls = [str(row.get("url") or "") for row in discovered]
+        self.assertIn("https://www.usenix.org/system/files/nsdi25_full_proceedings.pdf", urls)
+        self.assertIn("https://www.usenix.org/conference/nsdi25/presentation/zeng", urls)
+        self.assertIn("https://conferences.sigcomm.org/sigcomm/2025/program/papers-info", urls)
+        self.assertNotIn("https://www.usenix.org", urls)
+        self.assertNotIn("https://www.usenix.org/user/login", urls)
+        self.assertNotIn("https://www.usenix.org/conference/nsdi25/schedule", urls)
+
     def test_extract_candidate_urls_with_llm_keeps_only_supplied_links(self):
         with patch(
             "src.orchestrator.agentic_llm.openai_complete_json",
@@ -1786,6 +1845,74 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(result["paper_candidates"]), 1)
         self.assertEqual(result["candidate_urls"], [])
+
+    def test_execute_resolved_extract_request_retries_timeout_with_smaller_batch(self):
+        llm_calls: list[list[str]] = []
+
+        def _fake_extract_facts_with_llm(**kwargs):
+            segments = list(kwargs.get("segments") or [])
+            llm_calls.append(segments)
+            if len(segments) > 2:
+                raise TimeoutError("Request timed out")
+            return ([], {})
+
+        result = extract_runtime_mod.execute_resolved_extract_request(
+            cycle_index=1,
+            request={
+                "target_scope_by_url": {"https://conf.example/program": {"filters": {}, "anchor_terms": []}},
+                "filters": {"institution": "Google", "year_gte": 2025},
+                "extract_intent": {
+                    "query_goal": "papers by Google at SIGCOMM in 2025",
+                    "must_match": {"institution_any": ["Google"], "year_gte": 2025},
+                },
+                "anchor_terms": ["Google", "Falcon"],
+                "records": [
+                    {
+                        "target_id": "fetch-1",
+                        "url": "https://conf.example/program",
+                        "url_title": "Conference Program",
+                        "status": "ok",
+                        "segments": ["segment 1", "segment 2", "segment 3", "segment 4"],
+                    }
+                ],
+                "requested_urls": ["https://conf.example/program"],
+                "auto_fetched_records": [],
+            },
+            paths={"result": Path("workspace/demo/artifacts/retrieval/agentic_result.yaml")},
+            user_prompt="papers by Google at SIGCOMM in 2025",
+            timeout_s=45.0,
+            llm_extractor_model="dummy",
+            llm_api_key_env="DS_API_KEY",
+            extract_use_llm_extractor=True,
+            progress_callback=None,
+            runtime_state={},
+            raw_event_fn=None,
+            deps={
+                "prepare_extract_target_fn": prepare_mod.prepare_extract_target,
+                "emit_progress_fn": lambda *args, **kwargs: None,
+                "next_op_id_fn": lambda _state, prefix="op": f"{prefix}-1",
+                "normalize_anchor_terms_fn": text_mod._normalize_anchor_terms,
+                "resolve_active_extract_filters_fn": text_mod._resolve_active_extract_filters,
+                "prepare_extract_segments_fn": lambda **kwargs: (list(kwargs["row"].get("segments") or []), "page"),
+                "extract_segment_token_budget_fn": lambda **kwargs: 4000,
+                "slice_segments_by_token_budget_fn": lambda segments, start, max_segments, token_budget, min_segments: list(segments[start : start + max_segments]),
+                "extract_facts_with_llm_fn": _fake_extract_facts_with_llm,
+                "candidate_dedup_key_fn": search_mod._candidate_dedup_key,
+                "to_paper_candidates_from_facts_fn": lambda facts: [],
+                "collect_candidate_url_inputs_from_records_fn": lambda records, paths, known_urls: [],
+                "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,
+                "openai_complete_json_fn": llm_mod.openai_complete_json,
+                "peek_text_fn": search_mod._peek_text,
+                "context_limit_tokens": 128000,
+                "safety_margin": 0.18,
+                "output_token_reserve": 6000,
+            },
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(llm_calls[0], ["segment 1", "segment 2", "segment 3", "segment 4"])
+        self.assertEqual(llm_calls[1], ["segment 1", "segment 2"])
+        self.assertFalse(result["extract_windows_trace"][0].get("failed"))
+        self.assertTrue(result["extract_windows_trace"][0].get("coverage_has_more"))
 
     def test_execute_resolved_extract_request_dedup_timeout_is_nonfatal(self):
         result = extract_runtime_mod.execute_resolved_extract_request(
@@ -2114,6 +2241,94 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(llm_calls, [["segment 1", "segment 2"]])
         self.assertTrue(result["extract_windows_trace"][0].get("scope_reset"))
+
+    def test_execute_resolved_extract_request_keeps_progress_when_ranked_windows_are_unchanged(self):
+        llm_calls: list[list[str]] = []
+
+        def _fake_extract_facts_with_llm(**kwargs):
+            llm_calls.append(list(kwargs.get("segments") or []))
+            return ([], {})
+
+        runtime_state = {
+            "extract_state_by_url": {
+                "https://conf.example/program": {
+                    "target_id": "fetch-1",
+                    "segments_done": 1,
+                    "segment_total": 2,
+                    "failed": False,
+                    "completed": False,
+                    "coverage_has_more": True,
+                    "last_error": "",
+                    "scope_signature": extract_runtime_mod._extract_scope_signature(
+                        ranked_segments=["segment 1", "segment 2"],
+                        batch_mode="page",
+                    ),
+                }
+            }
+        }
+        result = extract_runtime_mod.execute_resolved_extract_request(
+            cycle_index=1,
+            request={
+                "target_scope_by_url": {
+                    "https://conf.example/program": {
+                        "filters": {"institution": "Alibaba", "venue": "SIGCOMM", "year_gte": 2025},
+                        "text_filters": {"literal_any": ["Alibaba", "Alibaba Cloud"], "regex_any": [r"\\bAlibaba\\b"]},
+                        "semantic_focus": "accepted papers with Alibaba affiliation",
+                    }
+                },
+                "filters": {"institution": "Alibaba", "venue": "SIGCOMM", "year_gte": 2025},
+                "extract_intent": {
+                    "query_goal": "papers by alibaba at SIGCOMM in 2025",
+                    "text_filters": {"literal_any": ["Alibaba", "Alibaba Cloud"], "regex_any": [r"\\bAlibaba\\b"]},
+                    "semantic_focus": "accepted papers with Alibaba affiliation",
+                    "must_match": {"institution_any": ["Alibaba"], "venue_any": ["SIGCOMM"], "year_gte": 2025},
+                },
+                "anchor_terms": ["Alibaba", "Alibaba Cloud"],
+                "records": [
+                    {
+                        "target_id": "fetch-1",
+                        "url": "https://conf.example/program",
+                        "url_title": "Conference Program",
+                        "status": "ok",
+                        "segments": ["segment 1", "segment 2"],
+                    }
+                ],
+                "requested_urls": ["https://conf.example/program"],
+                "auto_fetched_records": [],
+            },
+            paths={"result": Path("workspace/demo/artifacts/retrieval/agentic_result.yaml")},
+            user_prompt="papers by alibaba at SIGCOMM in 2025",
+            timeout_s=45.0,
+            llm_extractor_model="dummy",
+            llm_api_key_env="DS_API_KEY",
+            extract_use_llm_extractor=True,
+            progress_callback=None,
+            runtime_state=runtime_state,
+            raw_event_fn=None,
+            deps={
+                "prepare_extract_target_fn": prepare_mod.prepare_extract_target,
+                "emit_progress_fn": lambda *args, **kwargs: None,
+                "next_op_id_fn": lambda _state, prefix="op": f"{prefix}-1",
+                "normalize_anchor_terms_fn": text_mod._normalize_anchor_terms,
+                "resolve_active_extract_filters_fn": text_mod._resolve_active_extract_filters,
+                "prepare_extract_segments_fn": lambda **kwargs: (list(kwargs["row"].get("segments") or []), "page"),
+                "extract_segment_token_budget_fn": lambda **kwargs: 4000,
+                "slice_segments_by_token_budget_fn": lambda segments, start, max_segments, token_budget, min_segments: list(segments[start : start + max_segments]),
+                "extract_facts_with_llm_fn": _fake_extract_facts_with_llm,
+                "candidate_dedup_key_fn": search_mod._candidate_dedup_key,
+                "to_paper_candidates_from_facts_fn": lambda facts: [],
+                "collect_candidate_url_inputs_from_records_fn": lambda records, paths, known_urls: [],
+                "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,
+                "openai_complete_json_fn": llm_mod.openai_complete_json,
+                "peek_text_fn": search_mod._peek_text,
+                "context_limit_tokens": 128000,
+                "safety_margin": 0.18,
+                "output_token_reserve": 6000,
+            },
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(llm_calls, [["segment 2"]])
+        self.assertFalse(result["extract_windows_trace"][0].get("scope_reset"))
 
     def test_compact_result_payload_includes_structured_authors_and_full_abstract(self):
         payload = result_mod._compact_result_payload(
@@ -3093,7 +3308,8 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             result = yamlx.load(rdir / "agentic_result.yaml")
             self.assertEqual(result["status"], "completed")
             self.assertEqual(fetch_mock.call_count, 1)
-            self.assertEqual(llm_batches, [4, 4, 4])
+            self.assertEqual(llm_batches[:2], [4, 4])
+            self.assertTrue(all(size <= 2 for size in llm_batches[2:]))
             self.assertEqual(len(result.get("papers") or []), 1)
             self.assertIn("parserhawk", str((result.get("papers") or [])[0].get("title") or "").lower())
 

@@ -591,6 +591,83 @@ def canonicalize_discovered_url(url: str) -> str:
     return urlunparse(normalized)
 
 
+_CANDIDATE_URL_POSITIVE_TOKENS = (
+    "paper",
+    "papers",
+    "pdf",
+    "proceedings",
+    "presentation",
+    "author",
+    "abstract",
+    "bibtex",
+    "doi",
+    "accepted",
+    "program",
+    "session",
+    "technical",
+    "next",
+)
+
+_CANDIDATE_URL_NEGATIVE_TOKENS = (
+    "sign in",
+    "login",
+    "register",
+    "registration",
+    "discount",
+    "grant",
+    "travel",
+    "hotel",
+    "activities",
+    "poster",
+    "call for papers",
+    "call for posters",
+    "instructions for presenters",
+    "mentorship",
+    "exhibitor",
+    "past symposia",
+    "policies",
+    "code of conduct",
+    "back to",
+)
+
+
+def _normalize_link_text_for_match(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+
+def _candidate_url_priority(
+    *,
+    url: str,
+    label: str,
+    context: str,
+    source_url: str,
+) -> int:
+    combined = " ".join(
+        [
+            _normalize_link_text_for_match(label),
+            _normalize_link_text_for_match(context),
+            _normalize_link_text_for_match(urlparse(url).path.replace("-", " ").replace("_", " ")),
+        ]
+    ).strip()
+    parsed = urlparse(url)
+    source_host = urlparse(source_url).netloc.lower()
+    target_host = parsed.netloc.lower()
+    score = 0
+    if target_host and source_host and target_host == source_host:
+        score += 2
+    if parsed.path.lower().endswith(".pdf"):
+        score += 4
+    positive_hits = sum(1 for token in _CANDIDATE_URL_POSITIVE_TOKENS if token in combined)
+    negative_hits = sum(1 for token in _CANDIDATE_URL_NEGATIVE_TOKENS if token in combined)
+    score += min(positive_hits, 4)
+    score -= negative_hits * 3
+    if not str(label or "").strip():
+        score -= 1
+    if parsed.path in {"", "/"}:
+        score -= 2
+    return score
+
+
 def collect_candidate_url_inputs_from_records(
     records: list[dict],
     *,
@@ -604,7 +681,7 @@ def collect_candidate_url_inputs_from_records(
         if canonicalize_discovered_url(value)
     }
     result_parent = paths["result"].parent
-    out: list[dict[str, Any]] = []
+    out_by_source: dict[str, list[dict[str, Any]]] = {}
     seen: set[str] = set()
 
     for record in records:
@@ -644,17 +721,55 @@ def collect_candidate_url_inputs_from_records(
             seen.add(lowered_url)
             label = _clean_text(str(match.group(2) or ""), limit_chars=240).strip()
             context = _clean_text(raw_html[max(0, match.start() - 180): min(len(raw_html), match.end() + 240)], limit_chars=320)
-            out.append(
+            priority = _candidate_url_priority(
+                url=resolved,
+                label=label,
+                context=context,
+                source_url=base_url,
+            )
+            if priority <= 0:
+                continue
+            out_by_source.setdefault(base_url, []).append(
                 {
                     "url": resolved,
                     "label": label,
                     "context": _peek_text(context, 160),
                     "source_url": base_url,
                     "source_title": str(record.get("url_title") or ""),
+                    "_priority": priority,
                 }
             )
+
+    for source_rows in out_by_source.values():
+        source_rows.sort(
+            key=lambda row: (
+                int(row.get("_priority") or 0),
+                len(str(row.get("label") or "")),
+                len(str(row.get("context") or "")),
+            ),
+            reverse=True,
+        )
+
+    ordered_sources = sorted(
+        out_by_source.keys(),
+        key=lambda source: max(int(row.get("_priority") or 0) for row in out_by_source.get(source, []) or [{}]),
+        reverse=True,
+    )
+    out: list[dict[str, Any]] = []
+    while len(out) < max(1, int(max_links or 1)):
+        progressed = False
+        for source in ordered_sources:
+            source_rows = out_by_source.get(source) or []
+            if not source_rows:
+                continue
+            row = dict(source_rows.pop(0))
+            row.pop("_priority", None)
+            out.append(row)
+            progressed = True
             if len(out) >= max(1, int(max_links or 1)):
-                return out
+                break
+        if not progressed:
+            break
     return out
 
 

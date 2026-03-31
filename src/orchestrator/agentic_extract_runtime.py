@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -19,31 +20,19 @@ DETAIL_EXTRACT_BATCH_CAP = 3
 
 def _extract_scope_signature(
     *,
-    filters: dict[str, Any],
-    text_filters: dict[str, list[str]],
-    semantic_focus: str,
+    ranked_segments: list[str],
     batch_mode: str,
 ) -> str:
-    normalized_filters = {
-        str(key): value
-        for key, value in sorted((filters or {}).items(), key=lambda item: str(item[0]))
-    }
-    normalized_text_filters = {
-        "literal_any": sorted(
-            {
-                str(item).strip().lower()
-                for item in (text_filters or {}).get("literal_any", [])
-                if str(item).strip()
-            }
-        ),
-        "regex_any": [str(item).strip() for item in (text_filters or {}).get("regex_any", []) if str(item).strip()],
-    }
+    window_keys = [
+        hashlib.sha1(str(segment or "").encode("utf-8")).hexdigest()[:16]
+        for segment in ranked_segments
+        if str(segment or "").strip()
+    ]
     return json.dumps(
         {
-            "filters": normalized_filters,
-            "text_filters": normalized_text_filters,
-            "semantic_focus": str(semantic_focus or ""),
             "batch_mode": str(batch_mode or ""),
+            "segment_total": len(window_keys),
+            "window_keys": window_keys,
         },
         ensure_ascii=True,
         sort_keys=True,
@@ -293,9 +282,7 @@ def _run_prepared_extract_target(
         },
     )
     scope_signature = _extract_scope_signature(
-        filters=active_filters,
-        text_filters=row_text_filters,
-        semantic_focus=row_semantic_focus,
+        ranked_segments=ranked_segments,
         batch_mode=effective_batch_mode,
     )
     previous_scope_signature = str(page_state.get("scope_signature") or "").strip()
@@ -351,6 +338,7 @@ def _run_prepared_extract_target(
         batch_mode=effective_batch_mode,
         segment_count=len(ranked_segments),
     )
+    adaptive_batch_size = effective_batch_size
     start = max(0, min(int(page_state.get("segments_done") or 0), len(ranked_segments)))
     if start >= len(ranked_segments):
         page_state["completed"] = True
@@ -411,7 +399,7 @@ def _run_prepared_extract_target(
         batch = slice_segments_by_token_budget_fn(
             ranked_segments,
             start=batch_start,
-            max_segments=effective_batch_size,
+            max_segments=adaptive_batch_size,
             token_budget=segment_token_budget,
             min_segments=1 if effective_batch_mode == "page" else 2,
         )
@@ -503,14 +491,10 @@ def _run_prepared_extract_target(
         except Exception as exc:
             last_error = f"{type(exc).__name__}:{exc}"
             trace_entry["llm_errors"] = int(trace_entry.get("llm_errors") or 0) + 1
-            if "timeout" in last_error.lower():
+            is_timeout = "timeout" in last_error.lower()
+            if is_timeout:
                 llm_timeout_errors += 1
                 trace_entry["llm_timeout_errors"] = int(trace_entry.get("llm_timeout_errors") or 0) + 1
-            page_state["failed"] = True
-            page_state["completed"] = False
-            page_state["coverage_has_more"] = False
-            page_state["last_error"] = last_error
-            page_state["segments_done"] = max(int(page_state.get("segments_done") or 0), batch_start)
             if raw_event_fn is not None:
                 raw_event_fn(
                     "op_end",
@@ -542,6 +526,16 @@ def _run_prepared_extract_target(
                 pass_index=pass_count,
                 error=f"llm_extract_failed:{last_error}",
             )
+            if is_timeout and len(batch) > 1:
+                adaptive_batch_size = max(1, min(len(batch) - 1, max(1, len(batch) // 2)))
+                trace_entry["timeout_retry_batch_size"] = adaptive_batch_size
+                coverage_has_more = True
+                continue
+            page_state["failed"] = True
+            page_state["completed"] = False
+            page_state["coverage_has_more"] = False
+            page_state["last_error"] = last_error
+            page_state["segments_done"] = max(int(page_state.get("segments_done") or 0), batch_start)
             break
 
         llm_trace["batch_start"] = batch_start

@@ -86,8 +86,10 @@ def extract_candidate_urls_llm_system_prompt() -> str:
         "Return JSON only with key `candidate_urls` as a list of objects with keys: "
         "url, title, why. "
         "Only choose URLs from the supplied link_candidates list. "
-        "Suggest URLs that may provide complementary paper metadata, author affiliation, abstract, "
-        "or venue/proceedings context relevant to the overall query. "
+        "Suggest direct next-page complements that may provide paper metadata, author affiliation, abstract, "
+        "PDF/proceedings content, or closely related venue subpages relevant to the overall query. "
+        "Prefer paper detail pages, proceedings PDFs, author pages tied to extracted papers, and nearby venue subpages. "
+        "Avoid generic conference homepages, schedules, login/registration/policy pages, and broad site navigation unless no closer complement exists. "
         "Do not invent, rewrite, or normalize URLs beyond choosing from the provided candidates. "
         "Exclude links that are already known or already covered."
     )
