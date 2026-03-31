@@ -3821,6 +3821,16 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                     "query_used": "NSDI 2025 accepted papers Alibaba",
                     "source": "startpage",
                 },
+                {
+                    "url": "https://www.linkedin.com/posts/example-nsdi25-alibaba",
+                    "url_title": "Alibaba Cloud presents papers at NSDI 2025",
+                    "host": "www.linkedin.com",
+                    "peek": "social post about accepted papers",
+                    "rank": 3,
+                    "score": 0.82,
+                    "query_used": "NSDI 2025 accepted papers Alibaba",
+                    "source": "startpage",
+                },
             ],
             extract_state_by_url={},
             max_items=10,
@@ -3828,6 +3838,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         urls = [row["url"] for row in rows]
         self.assertIn("https://www.usenix.org/conference/nsdi25/technical-sessions", urls)
         self.assertNotIn("https://paper.example/reading-notes/conference/nsdi-2025", urls)
+        self.assertNotIn("https://www.linkedin.com/posts/example-nsdi25-alibaba", urls)
 
     def test_priority_extract_urls_for_agent_prefers_new_companion_listing_over_home_or_proceedings(self):
         rows = view_mod._priority_extract_urls_for_agent(

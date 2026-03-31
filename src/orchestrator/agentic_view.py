@@ -375,7 +375,7 @@ def _compact_known_urls_for_agent(
         row
         for row in ordered
         if not (
-            str(row.get("page_role") or "") == "listing"
+            str(row.get("page_role") or "") in {"listing", "home", "proceedings", "pdf", "other"}
             and str(row.get("query_used") or "").strip().lower() in official_queries
         )
     ]

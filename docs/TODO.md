@@ -348,6 +348,7 @@ Immediate queue for the next stage:
       - use the improved CLI progress plus `agentic_trajectory.yaml` to confirm the selected extract URL set is now intelligible during live runs
     - `E14`: canonical loop-state reconciliation before more extraction feature work
       - top priority: fix extract-state / todo-state drift so planner memory, todo status, result coverage, and retry decisions all reconcile from the same canonical per-page state
+      - planner-vs-memory note: the latest failures are now more about app-side memory/status design than raw planner capability; when the planner sees low-quality mirrors or missing field-gap signals as first-class options, it will spend cycles there
       - done: reconcile `extract_content` todo status from actual per-page coverage after each extract action, so loop-owned state can reopen incomplete work and close completed work even when the planner's own todo update is wrong
       - done: make extract page state scope-aware and retryable: completed pages only skip when the extraction scope is unchanged, and previously failed pages can be retried instead of being skipped forever
       - latest `workspace/alibabanew` run is the reference failure: SIGCOMM pages remain incomplete/failed, but later cycles still drift onto already completed NSDI work
@@ -364,6 +365,8 @@ Immediate queue for the next stage:
       - next: keep obviously dead pages such as `dl.acm` proceedings URLs with `segment_filter 0/0` out of later extract plans instead of re-presenting them as live extraction options
       - done: handle venue page families earlier in planner memory: `memory.known_urls` now exposes `page_role` / `page_family`, and `memory.priority_extract_urls` now selects one high-value listing representative per family instead of surfacing home/proceedings pages alongside the real companion listing
       - done: suppress generic third-party listing mirrors when the same search query already has an official `accepted` or `program` page, so planner memory does not present both as equal candidates
+      - next: add a stronger source-quality / officialness signal to planner memory so official venue pages outrank mirrors and social/news/blog pages even when they look structurally similar
+      - next: expose missing-field pressure per page family in planner memory (for example `papers found but venue/doi/abstract still missing`), so the planner only chooses a companion page when it clearly fills a known gap rather than because it is merely another listing-like URL
       - stop wasting cycles on URLs that runtime will immediately skip, and make the user-facing trajectory say explicitly why a page was skipped or retried
     - `E15`: remove or relax heuristics that are harming extraction quality
       - top priority: trim false-negative title filters in `src/orchestrator/agentic_extract_candidates.py` (for example the current short-title / `cloud`-ish rejection path that can drop valid papers such as the Alibaba congestion-control row)
@@ -397,6 +400,7 @@ Immediate queue for the next stage:
       - result status should not read as fully completed when the stop reason is `max_cycles_reached` and important pages are still failed/in-progress
       - fix the current projection gaps: `user_view.action` is still empty and `user_view.extract_summary` is often missing even when the raw trace contains `action_debug.targets`, `candidate_urls`, and `url_checks`
     - `E18`: metadata enrichment and result-contract cleanup after state consistency is fixed
+      - planner-vs-memory note: `venue` / `doi` / `arxiv_url` being empty is not mainly a planner failure; the planner currently lacks a canonical memory signal that says which missing fields justify another companion-page extraction turn
       - remove `authors_with_affiliations` and `abstract_snippet` from the final result contract after dependent readers/tests are updated
       - keep `author_affiliations` as the primary author/affiliation export field
       - prefer full abstract text when available; on listing pages, do not pretend title+author lines are full abstracts
