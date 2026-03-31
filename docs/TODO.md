@@ -41,7 +41,7 @@ This document tracks:
 | Module | Progress | Status |
 |---|---:|---|
 | Meta Info Retrieval (deterministic) | `86%` (`████████░░`) | Stabilized |
-| Agentic Meta Info Retrieval | `74%` (`███████░░░`) | Active (state consistency + extraction quality + trace readability) |
+| Agentic Meta Info Retrieval | `75%` (`███████░░░`) | Active (state consistency + extraction quality + trace readability) |
 | Data Backend and RAG | `22%` (`██░░░░░░░░`) | Planned |
 | Paper Context Retrieval | `8%` (`░░░░░░░░░░`) | Not started |
 | Paper Context Formatted Extraction | `12%` (`█░░░░░░░░░`) | Not started |
@@ -228,6 +228,7 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-30: Investigating the resulting `workspace/alibabanew` artifacts exposed a concrete mixed-target extraction bug: the NSDI page was fully extracted and produced `SimAI`, `Learning Production-Optimized...`, `Evolution of Aegis`, and `Mitigating Scalability Walls...` in cycle-2 trace data, but those rows were later dropped because the shared `extract_intent.must_match.venue_any` still carried `SIGCOMM` from the first target. The fix is now in `src/orchestrator/agentic_extract_prepare.py` and `src/orchestrator/agentic_extract_runtime.py`: shared request filters no longer collapse mixed target venues to the first target, and each prepared extract target now carries a scoped intent derived from its own filters before the LLM call. Regression coverage now asserts both neutral mixed-target request filters and per-target `venue_any` scoping.
 - 2026-03-30: A fresh live rerun on `workspace/alibabanew` after the mixed-target fix now reaches `17` extracted rows in cycle 2 and `13` retained paper candidates there, confirming the missing NSDI rows were a real regression and are now materially restored. That same run also surfaced two follow-up issues: the persisted paper contract still flattens authors and affiliations into separate loose strings and still favors `abstract_snippet` over a full abstract field, and late cycles can still waste an LLM call on `candidate_url_proposal` even when an extract pass produced no paper candidates. Both are now addressed in the owning modules: result rows carry paired `author_affiliations` plus `authors_with_affiliations`, full `abstract` text is preserved when the extractor returns it, and `src/orchestrator/agentic_extract_runtime.py` skips candidate-URL proposal entirely when there are no newly retained paper candidates to ground that proposal.
 - 2026-03-31: Rechecking the rerun in `workspace/alibabanew` exposed a separate planner-loop issue: even when cycle 1 actually executed both venue searches, the matching `search_web` todos remained open, so later cycles reissued exact same queries such as `NSDI 2025 program Alibaba`. This is now fixed in `src/orchestrator/agentic_loop.py`: after a `search_web` action, exact-match executed queries are reconciled back into the plan state and the corresponding `search_web` todos are marked `done`. This keeps the fix narrow and inspectable: only exact executed-query/todo matches are auto-closed, while broader replanning still stays with the planner.
+- 2026-03-31: Completed the first `E14` state-consistency slice. `src/orchestrator/agentic_loop.py` now reconciles `extract_content` todo status from actual per-page coverage after each extract action, so planner-authored todo drift does not leave incomplete SIGCOMM work marked `done` while completed NSDI work stays `doing`. In parallel, `src/orchestrator/agentic_extract_runtime.py` now treats failed pages as retryable and resets stale completion state when the extraction scope changes, instead of skipping pages forever based on URL-only state. Retrieval-focused and full `pytest` both pass (`115` retrieval tests; `166 passed, 27 subtests passed` overall).
 
 ### 3.2.7 Next Big Stage
 
@@ -333,9 +334,12 @@ Immediate queue for the next stage:
       - use the improved CLI progress plus `agentic_trajectory.yaml` to confirm the selected extract URL set is now intelligible during live runs
     - `E14`: canonical loop-state reconciliation before more extraction feature work
       - top priority: fix extract-state / todo-state drift so planner memory, todo status, result coverage, and retry decisions all reconcile from the same canonical per-page state
+      - done: reconcile `extract_content` todo status from actual per-page coverage after each extract action, so loop-owned state can reopen incomplete work and close completed work even when the planner's own todo update is wrong
+      - done: make extract page state scope-aware and retryable: completed pages only skip when the extraction scope is unchanged, and previously failed pages can be retried instead of being skipped forever
       - latest `workspace/alibabanew` run is the reference failure: SIGCOMM pages remain incomplete/failed, but later cycles still drift onto already completed NSDI work
       - do not let planner-authored todo updates alone decide completion; loop/runtime state must be able to close or reopen extract todos from actual per-page coverage and failure state
       - fix URL-only completion assumptions; extraction state may need to account for scope changes that alter ranked segment sets for the same URL
+      - next: rerun `workspace/alibabanew` and confirm cycle 3 returns to unfinished SIGCOMM work instead of re-targeting already completed NSDI extraction
       - stop wasting cycles on URLs that runtime will immediately skip, and make the user-facing trajectory say explicitly why a page was skipped or retried
     - `E15`: remove or relax heuristics that are harming extraction quality
       - top priority: trim false-negative title filters in `src/orchestrator/agentic_extract_candidates.py` (for example the current short-title / `cloud`-ish rejection path that can drop valid papers such as the Alibaba congestion-control row)

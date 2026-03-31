@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +15,35 @@ DEFAULT_EXTRACT_BATCH_SIZE = 6
 DEFAULT_EXTRACT_MAX_CALLS = 6
 LISTING_EXTRACT_BATCH_CAP = 4
 DETAIL_EXTRACT_BATCH_CAP = 3
+
+
+def _extract_scope_signature(
+    *,
+    filters: dict[str, Any],
+    anchor_terms: list[str],
+    batch_mode: str,
+) -> str:
+    normalized_filters = {
+        str(key): value
+        for key, value in sorted((filters or {}).items(), key=lambda item: str(item[0]))
+    }
+    normalized_anchor_terms = sorted(
+        {
+            str(item).strip().lower()
+            for item in (anchor_terms or [])
+            if str(item).strip()
+        }
+    )
+    return json.dumps(
+        {
+            "filters": normalized_filters,
+            "anchor_terms": normalized_anchor_terms,
+            "batch_mode": str(batch_mode or ""),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        default=str,
+    )
 
 
 def _effective_extract_batch_size(
@@ -253,11 +283,27 @@ def _run_prepared_extract_target(
             "last_error": "",
         },
     )
-    if bool(page_state.get("failed")) or bool(page_state.get("completed")):
+    scope_signature = _extract_scope_signature(
+        filters=active_filters,
+        anchor_terms=row_anchor_terms,
+        batch_mode=effective_batch_mode,
+    )
+    previous_scope_signature = str(page_state.get("scope_signature") or "").strip()
+    scope_changed = bool(previous_scope_signature) and previous_scope_signature != scope_signature
+    page_state["scope_signature"] = scope_signature
+    if scope_changed:
+        page_state["segments_done"] = 0
+        page_state["segment_total"] = 0
+        page_state["failed"] = False
+        page_state["completed"] = False
+        page_state["coverage_has_more"] = False
+        page_state["last_error"] = ""
+        trace_entry["scope_reset"] = True
+    if bool(page_state.get("completed")):
         trace_entry["status"] = "skipped"
-        trace_entry["skip_reason"] = "failed" if bool(page_state.get("failed")) else "completed"
-        trace_entry["failed"] = bool(page_state.get("failed"))
-        trace_entry["completed"] = bool(page_state.get("completed"))
+        trace_entry["skip_reason"] = "completed"
+        trace_entry["failed"] = False
+        trace_entry["completed"] = True
         trace_entry["coverage_has_more"] = bool(page_state.get("coverage_has_more"))
         trace_entry["last_error"] = str(page_state.get("last_error") or "")
         trace_entry["segments_done"] = int(page_state.get("segments_done") or 0)
@@ -274,6 +320,13 @@ def _run_prepared_extract_target(
             "coverage_has_more": False,
             "coverage_passes": 0,
         }
+    if bool(page_state.get("failed")):
+        trace_entry["retry_reason"] = "previous_failure"
+        trace_entry["previous_error"] = str(page_state.get("last_error") or "")
+        page_state["failed"] = False
+        page_state["completed"] = False
+        page_state["coverage_has_more"] = False
+        page_state["last_error"] = ""
 
     emit_progress_fn(
         progress_callback,

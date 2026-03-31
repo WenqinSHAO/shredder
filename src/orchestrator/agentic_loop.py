@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from src.orchestrator.agentic_result import (
     _cleanup_agentic_artifacts,
@@ -131,6 +132,141 @@ def _reconcile_completed_search_todos(
         normalized_target = _search_query_from_todo_target(str(item.get("target") or ""), user_prompt=user_prompt).lower()
         if normalized_target and normalized_target in normalized_executed:
             todo_updates.append({"todo_id": str(item.get("todo_id") or ""), "status": "done"})
+
+    if not todo_updates:
+        return dict(plan_state or {})
+    return _apply_plan_update(dict(plan_state or {}), {"todo_updates": todo_updates})
+
+
+def _normalize_extract_targets(action_params: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    shared_filters = dict(action_params.get("filters") or {}) if isinstance(action_params.get("filters"), dict) else {}
+    for item in action_params.get("targets") or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        out.append(
+            {
+                "url": url,
+                "filters": dict(shared_filters | dict(item.get("filters") or {})),
+            }
+        )
+    for url in action_params.get("urls") or []:
+        normalized = str(url or "").strip()
+        if not normalized or normalized in seen_urls:
+            continue
+        seen_urls.add(normalized)
+        out.append({"url": normalized, "filters": dict(shared_filters)})
+    return out
+
+
+def _extract_todo_matches_target(todo_target: str, target: dict[str, Any]) -> bool:
+    todo_text = str(todo_target or "").strip().lower()
+    if not todo_text:
+        return False
+    url = str(target.get("url") or "").strip().lower()
+    if url and url in todo_text:
+        return True
+    venue = str((target.get("filters") or {}).get("venue") or "").strip().lower()
+    if venue and venue in todo_text:
+        return True
+    path = urlparse(url).path.lower()
+    phrase_map = {
+        "accepted papers": "accepted-papers",
+        "papers info": "papers-info",
+        "technical sessions": "technical-sessions",
+        "proceedings": "proceedings",
+        "presentation": "presentation",
+        "program": "program",
+    }
+    return any(phrase in todo_text and token in path for phrase, token in phrase_map.items())
+
+
+def _reconcile_extract_todos_from_coverage(
+    plan_state: dict[str, Any],
+    *,
+    action_params: dict[str, Any],
+    extract_state_by_url: dict[str, dict[str, Any]],
+    url_hits: list[dict[str, Any]],
+) -> dict[str, Any]:
+    targets = _normalize_extract_targets(action_params)
+    if not targets:
+        return dict(plan_state or {})
+
+    todos = [dict(item) for item in (plan_state.get("todo") or []) if isinstance(item, dict)]
+    extract_todos = [
+        item
+        for item in todos
+        if str(item.get("action") or "").strip().lower() == "extract_content"
+        and str(item.get("status") or "").strip().lower() not in {"blocked", "error"}
+    ]
+    if not extract_todos:
+        return dict(plan_state or {})
+
+    coverage_summary = _build_extract_coverage_summary(
+        extract_state_by_url,
+        url_hits=url_hits,
+    )
+    status_by_url = {
+        str(row.get("url") or "").strip(): dict(row)
+        for row in (coverage_summary.get("url_checks") or [])
+        if isinstance(row, dict) and str(row.get("url") or "").strip()
+    }
+
+    matched_urls_by_todo: dict[str, list[str]] = {}
+    assigned_urls: set[str] = set()
+    unmatched_todos: list[str] = []
+    for item in extract_todos:
+        todo_id = str(item.get("todo_id") or "").strip()
+        if not todo_id:
+            continue
+        matched_urls = [
+            str(target.get("url") or "").strip()
+            for target in targets
+            if _extract_todo_matches_target(str(item.get("target") or ""), target)
+        ]
+        if matched_urls:
+            matched_urls_by_todo[todo_id] = matched_urls
+            assigned_urls.update(matched_urls)
+        else:
+            unmatched_todos.append(todo_id)
+
+    remaining_urls = [
+        str(target.get("url") or "").strip()
+        for target in targets
+        if str(target.get("url") or "").strip() and str(target.get("url") or "").strip() not in assigned_urls
+    ]
+    if len(unmatched_todos) == 1 and remaining_urls:
+        matched_urls_by_todo[unmatched_todos[0]] = list(remaining_urls)
+
+    todo_updates: list[dict[str, Any]] = []
+    for item in extract_todos:
+        todo_id = str(item.get("todo_id") or "").strip()
+        matched_urls = matched_urls_by_todo.get(todo_id) or []
+        if not todo_id or not matched_urls:
+            continue
+        matched_rows = [status_by_url.get(url, {"status": "new", "has_more_results": False}) for url in matched_urls]
+        if matched_rows and all(
+            str(row.get("status") or "").strip().lower() == "completed" and not bool(row.get("has_more_results"))
+            for row in matched_rows
+        ):
+            next_status = "done"
+        elif any(
+            str(row.get("status") or "").strip().lower() in {"in_progress", "failed"}
+            or bool(row.get("has_more_results"))
+            for row in matched_rows
+        ):
+            next_status = "doing"
+        elif any(str(row.get("status") or "").strip().lower() == "completed" for row in matched_rows):
+            next_status = "doing"
+        else:
+            next_status = "todo"
+        if str(item.get("status") or "").strip().lower() != next_status:
+            todo_updates.append({"todo_id": todo_id, "status": next_status})
 
     if not todo_updates:
         return dict(plan_state or {})
@@ -453,6 +589,7 @@ def _finalize_cycle(
     else:
         url_shortlisted = _finalize_extract_action(
             loop=loop,
+            action_params=dict(plan_result.action_params or {}),
             extracted_paper_candidates=extracted_paper_candidates,
             action_result=action_result,
         )
@@ -546,11 +683,18 @@ def _finalize_search_action(
 def _finalize_extract_action(
     *,
     loop: _AgenticSearchLoop,
+    action_params: dict[str, Any],
     extracted_paper_candidates: list[dict[str, Any]],
     action_result: dict[str, Any],
 ) -> list[dict[str, Any]]:
     _ = extracted_paper_candidates
     _apply_extract_coverage_update(loop.extract_state.by_url, action_result=action_result)
+    loop.agent_plan = _reconcile_extract_todos_from_coverage(
+        loop.agent_plan,
+        action_params=action_params,
+        extract_state_by_url=loop.extract_state.by_url,
+        url_hits=[row for row in loop.url_state.hits if isinstance(row, dict)],
+    )
     return []
 
 
