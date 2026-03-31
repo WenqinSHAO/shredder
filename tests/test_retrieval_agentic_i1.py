@@ -3763,6 +3763,82 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(memory["priority_extract_urls"][0]["url"], "https://sigcomm.example")
         self.assertIn("remaining extract windows", str(memory["priority_extract_urls"][0]["why"]).lower())
 
+    def test_build_agent_memory_exposes_query_profile_and_priority_direct_hits_for_latest_semantic_query(self):
+        memory = view_mod._build_agent_memory(
+            user_prompt="latest paper on agentic memory from top AI conferences such as ICLR, ICML, AAAI, etc.",
+            plan_state={
+                "active_step": {"step_id": "search_venues", "action": "search_web", "goal": "search venue and paper pages"},
+                "todo": [
+                    {"todo_id": "search_iclr", "action": "search_web", "status": "todo", "target": "ICLR accepted papers agentic memory"},
+                    {"todo_id": "search_icml", "action": "search_web", "status": "todo", "target": "ICML accepted papers agentic memory"},
+                ],
+            },
+            url_hits=[
+                {
+                    "url": "https://iclr.cc/virtual/2025/papers.html",
+                    "url_title": "ICLR 2025 Papers",
+                    "host": "iclr.cc",
+                    "peek": "Stable Hadamard Memory; Benchmarking Agentic Workflow Generation",
+                    "rank": 1,
+                    "score": 0.97,
+                    "query_used": "ICLR accepted papers agentic memory",
+                    "source": "startpage",
+                },
+                {
+                    "url": "https://icml.cc/virtual/2025/poster/45496",
+                    "url_title": "ICML Poster Agent Workflow Memory",
+                    "host": "icml.cc",
+                    "peek": "learn reusable task workflows from past experiences",
+                    "rank": 2,
+                    "score": 0.94,
+                    "query_used": "ICML accepted papers agentic memory",
+                    "source": "startpage",
+                },
+                {
+                    "url": "https://arxiv.org/abs/2502.12110",
+                    "url_title": "[2502.12110] A-MEM: Agentic Memory for LLM Agents - arXiv.org",
+                    "host": "arxiv.org",
+                    "peek": "a novel agentic memory system for LLM agents",
+                    "rank": 3,
+                    "score": 1.28,
+                    "query_used": "AAAI accepted papers agentic memory",
+                    "source": "duckduckgo",
+                },
+                {
+                    "url": "https://dblp.org/db/conf/aaai/aaai2025",
+                    "url_title": "dblp: AAAI 2025",
+                    "host": "dblp.org",
+                    "peek": "AAAI 2025 bibliography",
+                    "rank": 4,
+                    "score": 0.88,
+                    "query_used": "AAAI accepted papers agentic memory",
+                    "source": "bing",
+                },
+                {
+                    "url": "https://openreview.net/pdf?id=FiM0M8gcct",
+                    "url_title": "A-MEM: Agentic Memory for LLM Agents - OpenReview PDF",
+                    "host": "openreview.net",
+                    "peek": "paper details in PDF form",
+                    "rank": 5,
+                    "score": 0.91,
+                    "query_used": "AAAI accepted papers agentic memory",
+                    "source": "startpage",
+                },
+            ],
+            extract_state_by_url={},
+            papers=[],
+            cycle_trace=[],
+            stop_reason="",
+        )
+        self.assertEqual(memory["query_profile"]["modes"][:2], ["latest", "topic_led"])
+        direct_urls = [row["url"] for row in memory["priority_direct_hits"]]
+        self.assertIn("https://icml.cc/virtual/2025/poster/45496", direct_urls)
+        self.assertIn("https://arxiv.org/abs/2502.12110", direct_urls)
+        self.assertNotIn("https://iclr.cc/virtual/2025/papers.html", direct_urls)
+        self.assertNotIn("https://dblp.org/db/conf/aaai/aaai2025", direct_urls)
+        self.assertNotIn("https://openreview.net/pdf?id=FiM0M8gcct", direct_urls)
+        self.assertTrue(any("direct paper hit" in str(row.get("why") or "").lower() for row in memory["priority_direct_hits"]))
+
     def test_compact_known_urls_for_agent_prefers_listing_pages_and_keeps_quality_fields(self):
         rows = view_mod._compact_known_urls_for_agent(
             [

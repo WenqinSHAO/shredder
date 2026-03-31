@@ -49,7 +49,9 @@ DETAIL_URL_TOKENS = {
     "/doi/",
     "/abs/",
     "/pdf/",
+    "/poster/",
     "/presentation/",
+    "forum?id=",
 }
 
 PAPER_SIGNAL_TOKENS = {

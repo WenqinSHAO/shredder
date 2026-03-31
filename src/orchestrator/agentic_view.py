@@ -28,6 +28,34 @@ ALLOWED_SHORTLIST_HINTS = {
     "avoid_detail_pages",
 }
 
+QUERY_PROFILE_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "accepted",
+    "ai",
+    "as",
+    "conference",
+    "conferences",
+    "etc",
+    "find",
+    "for",
+    "from",
+    "latest",
+    "me",
+    "most",
+    "newest",
+    "of",
+    "on",
+    "paper",
+    "papers",
+    "recent",
+    "such",
+    "the",
+    "top",
+}
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -48,6 +76,44 @@ def _unique_nonempty(items: list[str], limit: int) -> list[str]:
         if len(out) >= limit:
             break
     return out
+
+
+def _query_profile_for_agent(user_prompt: str) -> dict[str, Any]:
+    text = str(user_prompt or "").strip()
+    lowered = text.lower()
+    years = sorted({int(match) for match in re.findall(r"\b(20\d{2})\b", lowered)})
+    modes: list[str] = []
+    if any(token in lowered for token in ("latest", "most recent", "newest")):
+        modes.append("latest")
+    if len(years) >= 2 and any(token in lowered for token in (" from ", " between ", " to ", " through ")):
+        modes.append("range_years")
+    elif len(years) == 1:
+        modes.append("single_year")
+    if "papers by " in lowered or "paper by " in lowered:
+        modes.append("by_subject")
+    if any(token in lowered for token in ("papers on ", "paper on ", "related to", "about ")):
+        modes.append("topic_led")
+    if not modes:
+        modes.append("general")
+    return {
+        "modes": modes,
+        "year_gte": min(years) if years else None,
+        "year_lte": max(years) if years else None,
+    }
+
+
+def _query_keywords_for_agent(user_prompt: str, *, limit: int = 8) -> list[str]:
+    tokens = re.findall(r"[a-z0-9]+", str(user_prompt or "").lower())
+    filtered: list[str] = []
+    for token in tokens:
+        if len(token) < 3:
+            continue
+        if re.fullmatch(r"20\d{2}", token):
+            continue
+        if token in QUERY_PROFILE_STOPWORDS:
+            continue
+        filtered.append(token)
+    return _unique_nonempty(filtered, limit=limit)
 
 
 def _normalize_shortlist_hints(value: Any) -> dict:
@@ -548,6 +614,79 @@ def _priority_extract_urls_for_agent(
     return selected
 
 
+def _priority_direct_hits_for_agent(
+    *,
+    user_prompt: str,
+    extract_state_by_url: dict[str, Any],
+    url_hits: list[dict[str, Any]],
+    max_items: int = 4,
+) -> list[dict[str, Any]]:
+    keywords = _query_keywords_for_agent(user_prompt, limit=10)
+    if not keywords:
+        return []
+    known_rows = _compact_known_urls_for_agent(
+        [item for item in url_hits if isinstance(item, dict)],
+        extract_state_by_url=extract_state_by_url,
+        max_items=max(24, len(url_hits) + 4),
+    )
+    prioritized: list[dict[str, Any]] = []
+    for row in known_rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("page_role") or "") != "detail":
+            continue
+        text = " ".join([str(row.get("title") or ""), str(row.get("peek") or "")]).lower()
+        matched_terms = [term for term in keywords if term in text]
+        if not matched_terms:
+            continue
+        prioritized.append(
+            {
+                "url": str(row.get("url") or ""),
+                "title": _peek_text(str(row.get("title") or ""), 120),
+                "page_role": "detail",
+                "page_family": str(row.get("page_family") or ""),
+                "query_used": str(row.get("query_used") or ""),
+                "score": round(float(row.get("score") or 0.0), 4),
+                "matched_terms": matched_terms[:6],
+                "why": _peek_text(
+                    "direct paper hit from search/title overlap: " + ", ".join(matched_terms[:4]),
+                    160,
+                ),
+                "rank": int(row.get("rank") or 0),
+            }
+        )
+
+    ordered = sorted(
+        prioritized,
+        key=lambda row: (
+            len(row.get("matched_terms") or []),
+            float(row.get("score") or 0.0),
+            -int(row.get("rank") or 0),
+        ),
+        reverse=True,
+    )
+    out: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for row in ordered:
+        url = str(row.get("url") or "")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        out.append(
+            {
+                "url": url,
+                "title": str(row.get("title") or ""),
+                "page_role": "detail",
+                "page_family": str(row.get("page_family") or ""),
+                "query_used": str(row.get("query_used") or ""),
+                "why": str(row.get("why") or ""),
+            }
+        )
+        if len(out) >= max(1, int(max_items or 1)):
+            break
+    return out
+
+
 def _build_agent_memory(
     *,
     user_prompt: str,
@@ -593,10 +732,17 @@ def _build_agent_memory(
         }
     return {
         "goal": _peek_text(str(user_prompt or ""), 180),
+        "query_profile": _query_profile_for_agent(user_prompt),
         "active_step": dict(plan.get("active_step") or {}),
         "todo": dict(plan.get("todo_counts") or {}),
         "next_todos": [dict(item) for item in (plan.get("next_todos") or [])[:4] if isinstance(item, dict)],
         "priority_extract_urls": _priority_extract_urls_for_agent(
+            extract_state_by_url=extract_state_by_url,
+            url_hits=[item for item in url_hits if isinstance(item, dict)],
+            max_items=4,
+        ),
+        "priority_direct_hits": _priority_direct_hits_for_agent(
+            user_prompt=user_prompt,
             extract_state_by_url=extract_state_by_url,
             url_hits=[item for item in url_hits if isinstance(item, dict)],
             max_items=4,
