@@ -205,8 +205,13 @@ The planner side should be understood as:
 
 For `extract_content`, planner params should stay high level:
 - target `url`
-- `anchor_terms`
+- optional lexical `text_filters`
+  `literal_any` for grep-like phrases or names
+  `regex_any` for compact regex when lexical trimming is useful
+- optional `semantic_focus` for short semantic guidance when lexical trimming is weak or absent
 - minimal semantic `filters` or `match`
+
+`anchor_terms` is now a legacy compatibility alias. The preferred contract is: planner decides whether a URL needs lexical trimming, semantic guidance, or both, and the app keeps batching/retry/ranking mechanics on its own side.
 
 ## 7) Action Contracts
 

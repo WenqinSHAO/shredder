@@ -79,6 +79,46 @@ NON_PAPER_TITLE_TOKENS = {
     "panel",
 }
 
+GENERIC_EXTRACT_ANCHOR_TERMS = {
+    "paper",
+    "papers",
+    "paper title",
+    "paper titles",
+    "title",
+    "titles",
+    "doi",
+    "arxiv",
+    "arxiv id",
+    "arxiv_id",
+    "source",
+    "source url",
+    "source_url",
+    "url",
+    "urls",
+    "author",
+    "authors",
+    "affiliation",
+    "affiliations",
+    "abstract",
+    "abstracts",
+    "session",
+    "sessions",
+    "presentation",
+    "presentations",
+    "speaker",
+    "speakers",
+    "program",
+    "conference",
+    "conference program",
+    "program schedule",
+    "proceedings",
+    "accepted paper",
+    "accepted papers",
+    "technical session",
+    "technical sessions",
+    "venue",
+}
+
 
 def _safe_int(value: Any) -> int | None:
     try:
@@ -341,40 +381,166 @@ def _normalize_anchor_terms(value: Any) -> list[str]:
     return _unique_nonempty(items, limit=24)
 
 
-def _resolve_extract_anchor_terms(*, params: dict, filters: dict, intent: dict, user_prompt: str) -> list[str]:
-    terms = _normalize_anchor_terms(params.get("anchor_terms"))
-    if not terms:
-        terms = _normalize_anchor_terms(intent.get("anchor_terms"))
-    if terms:
-        return terms
+def _normalize_text_filters(value: Any) -> dict[str, list[str]]:
+    if isinstance(value, dict):
+        literal_any = _normalize_anchor_terms(value.get("literal_any"))
+        regex_any: list[str] = []
+        regex_raw = value.get("regex_any")
+        if isinstance(regex_raw, list):
+            candidates = [str(v).strip() for v in regex_raw if str(v).strip()]
+        elif isinstance(regex_raw, str):
+            candidates = [part.strip() for part in re.split(r"[\n;|]", regex_raw) if part.strip()]
+        else:
+            candidates = []
+        seen: set[str] = set()
+        for pattern in candidates:
+            if pattern in seen:
+                continue
+            try:
+                re.compile(pattern, flags=re.IGNORECASE)
+            except re.error:
+                continue
+            seen.add(pattern)
+            regex_any.append(pattern)
+            if len(regex_any) >= 12:
+                break
+        out: dict[str, list[str]] = {}
+        if literal_any:
+            out["literal_any"] = literal_any[:12]
+        if regex_any:
+            out["regex_any"] = regex_any
+        return out
+    literal_any = _normalize_anchor_terms(value)
+    return {"literal_any": literal_any[:12]} if literal_any else {}
 
-    generated: list[str] = []
-    for key in ("institution", "institution_contains", "author", "author_contains", "venue", "topic"):
+
+def _normalize_semantic_focus(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    return text[:240]
+
+
+def _sanitize_extract_anchor_terms(
+    value: Any,
+    *,
+    filters: dict[str, Any] | None = None,
+    limit: int = 12,
+) -> list[str]:
+    normalized = _normalize_anchor_terms(value)
+    scoped_filters = dict(filters or {})
+    lowered_venue = str(scoped_filters.get("venue") or "").strip().lower()
+    year_gte = _safe_int(scoped_filters.get("year_gte"))
+    cleaned: list[str] = []
+    for raw in normalized:
+        text = re.sub(r"\s+", " ", str(raw or "")).strip(" -:;,.")
+        lowered = text.lower()
+        if not lowered:
+            continue
+        if lowered in GENERIC_EXTRACT_ANCHOR_TERMS:
+            continue
+        if lowered in LISTING_TITLE_TOKENS or lowered in LISTING_HEADING_PHRASES:
+            continue
+        if lowered_venue and lowered == lowered_venue:
+            continue
+        if year_gte is not None and lowered == str(year_gte):
+            continue
+        if re.fullmatch(r"(?:19|20)\d{2}", lowered):
+            continue
+        cleaned.append(text)
+    if cleaned:
+        return _unique_nonempty(cleaned, limit=limit)
+
+    fallback: list[str] = []
+    for key in ("institution", "author"):
+        text = str(scoped_filters.get(key) or "").strip()
+        if text:
+            fallback.append(text)
+    return _unique_nonempty(fallback, limit=limit)
+
+
+def _sanitize_extract_text_filters(
+    value: Any,
+    *,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, list[str]]:
+    normalized = _normalize_text_filters(value)
+    if not normalized:
+        return {}
+    literal_raw = list(normalized.get("literal_any") or [])
+    literal_any = _sanitize_extract_anchor_terms(literal_raw, filters=filters) if literal_raw else []
+    regex_any = list(normalized.get("regex_any") or [])[:12]
+    out: dict[str, list[str]] = {}
+    if literal_any:
+        out["literal_any"] = literal_any
+    if regex_any:
+        out["regex_any"] = regex_any
+    return out
+
+
+def _resolve_extract_text_filters(*, params: dict, filters: dict, intent: dict, user_prompt: str) -> dict[str, list[str]]:
+    text_filters = _sanitize_extract_text_filters(params.get("text_filters"), filters=filters)
+    if not text_filters:
+        text_filters = _sanitize_extract_text_filters(params.get("anchor_terms"), filters=filters)
+    if not text_filters:
+        text_filters = _sanitize_extract_text_filters(intent.get("text_filters"), filters=filters)
+    if not text_filters:
+        text_filters = _sanitize_extract_text_filters(intent.get("anchor_terms"), filters=filters)
+    if text_filters:
+        return text_filters
+
+    fallback: list[str] = []
+    for key in ("institution", "institution_contains", "author", "author_contains"):
         raw = str(filters.get(key) or "").strip()
         if raw:
-            generated.append(raw)
-    return _unique_nonempty(generated, limit=24)
+            fallback.append(raw)
+    if not fallback and user_prompt:
+        fallback.append(user_prompt)
+    return _sanitize_extract_text_filters({"literal_any": fallback}, filters=filters)
+
+
+def _resolve_extract_anchor_terms(*, params: dict, filters: dict, intent: dict, user_prompt: str) -> list[str]:
+    text_filters = _resolve_extract_text_filters(
+        params=params,
+        filters=filters,
+        intent=intent,
+        user_prompt=user_prompt,
+    )
+    return list(text_filters.get("literal_any") or [])
 
 
 def _anchor_segments_for_filters(
     segments: list[str],
     filters: dict,
     *,
+    text_filters: dict[str, list[str]] | None = None,
     anchor_terms: list[str] | None = None,
     radius: int = 1,
 ) -> list[str]:
     cleaned_segments = [str(seg) for seg in segments if str(seg).strip()]
     if not cleaned_segments:
         return []
-    lowered_terms = [term.lower() for term in _normalize_anchor_terms(anchor_terms or []) if term]
+    normalized_filters = _normalize_text_filters(text_filters or {})
+    if not normalized_filters and anchor_terms:
+        normalized_filters = {"literal_any": _normalize_anchor_terms(anchor_terms or [])}
+    lowered_terms = [term.lower() for term in normalized_filters.get("literal_any") or [] if term]
+    regex_terms = list(normalized_filters.get("regex_any") or [])
     year_gte = _safe_int(filters.get("year_gte"))
-    if not lowered_terms and year_gte is None:
+    if not lowered_terms and not regex_terms and year_gte is None:
         return cleaned_segments
 
     hit_indexes: list[int] = []
     for idx, segment in enumerate(cleaned_segments):
         lowered = segment.lower()
         matched = any(term in lowered for term in lowered_terms)
+        if not matched and regex_terms:
+            for pattern in regex_terms:
+                try:
+                    if re.search(pattern, segment, flags=re.IGNORECASE):
+                        matched = True
+                        break
+                except re.error:
+                    continue
         if not matched and year_gte is not None:
             years = [int(v) for v in re.findall(r"\b(?:19|20)\d{2}\b", lowered)]
             matched = any(v >= year_gte for v in years)
@@ -440,12 +606,19 @@ def _prepare_extract_segments(
     *,
     row: dict,
     filters: dict,
-    anchor_terms: list[str],
+    text_filters: dict[str, list[str]] | None = None,
+    anchor_terms: list[str] | None = None,
 ) -> tuple[list[str], str]:
     segments = [str(v) for v in (row.get("segments") or []) if str(v).strip()]
     if not segments:
         segments = _extract_text_segments(str(row.get("text") or ""), max_chars=1800)
     page_is_listing = _is_listing_page(title=str(row.get("url_title") or ""), url=str(row.get("url") or ""))
     batch_mode = "page" if page_is_listing else "segments"
-    ranked_segments = _anchor_segments_for_filters(segments, filters, anchor_terms=anchor_terms, radius=1)
+    ranked_segments = _anchor_segments_for_filters(
+        segments,
+        filters,
+        text_filters=text_filters,
+        anchor_terms=anchor_terms,
+        radius=1,
+    )
     return ranked_segments, batch_mode

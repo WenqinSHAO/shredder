@@ -312,6 +312,7 @@ def execute_extract_content_action(
         raw_event_fn=raw_event_fn,
         deps={
             "normalize_anchor_terms_fn": text_mod._normalize_anchor_terms,
+            "resolve_extract_text_filters_fn": text_mod._resolve_extract_text_filters,
             "resolve_active_extract_filters_fn": text_mod._resolve_active_extract_filters,
             "prepare_extract_segments_fn": text_mod._prepare_extract_segments,
             "resolve_extract_request_fn": prepare_mod.resolve_extract_request,
@@ -327,7 +328,6 @@ def execute_extract_content_action(
             "normalize_fetch_target_fn": prepare_mod.normalize_fetch_target,
             "extract_target_filters_fn": prepare_mod.extract_target_filters,
             "resolve_extract_intent_fn": prepare_mod.resolve_extract_intent,
-            "resolve_extract_anchor_terms_fn": text_mod._resolve_extract_anchor_terms,
             "safe_int_fn": text_mod._safe_int,
             "reuse_fetched_record_for_target_fn": search_mod._reuse_fetched_record_for_target,
             "fetch_target_record_fn": _fetch_target_record,

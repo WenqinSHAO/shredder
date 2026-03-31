@@ -20,24 +20,29 @@ DETAIL_EXTRACT_BATCH_CAP = 3
 def _extract_scope_signature(
     *,
     filters: dict[str, Any],
-    anchor_terms: list[str],
+    text_filters: dict[str, list[str]],
+    semantic_focus: str,
     batch_mode: str,
 ) -> str:
     normalized_filters = {
         str(key): value
         for key, value in sorted((filters or {}).items(), key=lambda item: str(item[0]))
     }
-    normalized_anchor_terms = sorted(
-        {
-            str(item).strip().lower()
-            for item in (anchor_terms or [])
-            if str(item).strip()
-        }
-    )
+    normalized_text_filters = {
+        "literal_any": sorted(
+            {
+                str(item).strip().lower()
+                for item in (text_filters or {}).get("literal_any", [])
+                if str(item).strip()
+            }
+        ),
+        "regex_any": [str(item).strip() for item in (text_filters or {}).get("regex_any", []) if str(item).strip()],
+    }
     return json.dumps(
         {
             "filters": normalized_filters,
-            "anchor_terms": normalized_anchor_terms,
+            "text_filters": normalized_text_filters,
+            "semantic_focus": str(semantic_focus or ""),
             "batch_mode": str(batch_mode or ""),
         },
         ensure_ascii=True,
@@ -160,7 +165,9 @@ def _new_extract_window_trace(
         "url_title": str(row.get("url_title") or ""),
         "status": str(row.get("status") or ""),
         "filters": dict(prepared["filters"]),
+        "text_filters": dict(prepared.get("text_filters") or {}),
         "anchor_terms": list(prepared["anchor_terms"]),
+        "semantic_focus": str(prepared.get("semantic_focus") or ""),
         "intent": dict(target_extract_intent or {}),
         "window_count": len(ranked_segments),
         "windows": ranked_segments[: min(12, len(ranked_segments))],
@@ -251,7 +258,9 @@ def _run_prepared_extract_target(
 
     row = prepared["row"]
     active_filters = dict(prepared["filters"])
+    row_text_filters = dict(prepared.get("text_filters") or {})
     row_anchor_terms = list(prepared["anchor_terms"])
+    row_semantic_focus = str(prepared.get("semantic_focus") or "")
     target_extract_intent = (
         dict(prepared.get("extract_intent"))
         if isinstance(prepared.get("extract_intent"), dict)
@@ -285,7 +294,8 @@ def _run_prepared_extract_target(
     )
     scope_signature = _extract_scope_signature(
         filters=active_filters,
-        anchor_terms=row_anchor_terms,
+        text_filters=row_text_filters,
+        semantic_focus=row_semantic_focus,
         batch_mode=effective_batch_mode,
     )
     previous_scope_signature = str(page_state.get("scope_signature") or "").strip()
@@ -354,6 +364,8 @@ def _run_prepared_extract_target(
         trace_entry["segments_pending"] = 0
         trace_entry["coverage_pct"] = 100.0
         trace_entry["anchor_terms"] = list(row_anchor_terms)
+        trace_entry["text_filters"] = dict(row_text_filters)
+        trace_entry["semantic_focus"] = row_semantic_focus
         trace_entry["filters"] = active_filters
         return {
             "facts": [],
@@ -705,7 +717,9 @@ def execute_resolved_extract_request(
     target_scope_by_url = dict(request["target_scope_by_url"])
     filters = dict(request["filters"])
     extract_intent = dict(request["extract_intent"])
+    text_filters = dict(request.get("text_filters") or {})
     anchor_terms = list(request["anchor_terms"])
+    semantic_focus = str(request.get("semantic_focus") or "")
     records = list(request["records"])
     requested_urls = list(request["requested_urls"])
     auto_fetched_records = list(request["auto_fetched_records"])
@@ -750,7 +764,9 @@ def execute_resolved_extract_request(
         filters=dict(filters),
         institutions=scope_institutions,
         venues=scope_venues,
+        text_filters=text_filters,
         anchor_terms=anchor_terms,
+        semantic_focus=semantic_focus,
         intent=extract_intent,
     )
     must_match = extract_intent.get("must_match") if isinstance(extract_intent.get("must_match"), dict) else {}
@@ -759,6 +775,8 @@ def execute_resolved_extract_request(
             row=row,
             target_scope_by_url=target_scope_by_url,
             filters=filters,
+            text_filters=text_filters,
+            semantic_focus=semantic_focus,
             anchor_terms=anchor_terms,
             must_match=must_match,
             extract_intent=extract_intent,

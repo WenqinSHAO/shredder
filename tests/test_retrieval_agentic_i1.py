@@ -934,15 +934,16 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             target_scope_by_url={
                 "https://www.usenix.org/conference/nsdi25/technical-sessions": {
                     "filters": {"institution": "Alibaba", "venue": "NSDI", "year_gte": 2025},
-                    "anchor_terms": ["Alibaba", "NSDI"],
+                    "text_filters": {"literal_any": ["Alibaba", "NSDI"]},
                 }
             },
             filters={"institution": "Alibaba", "venue": "SIGCOMM", "year_gte": 2025},
-            anchor_terms=["Alibaba", "SIGCOMM"],
+            text_filters={"literal_any": ["Alibaba", "SIGCOMM"]},
+            semantic_focus="papers by alibaba at SIGCOMM and NSDI in 2025",
             must_match={"institution_any": ["Alibaba"], "venue_any": ["SIGCOMM"], "year_gte": 2025},
             extract_intent={
                 "query_goal": "papers by alibaba at SIGCOMM and NSDI in 2025",
-                "anchor_terms": ["Alibaba", "SIGCOMM"],
+                "text_filters": {"literal_any": ["Alibaba", "SIGCOMM"]},
                 "must_match": {"institution_any": ["Alibaba"], "venue_any": ["SIGCOMM"], "year_gte": 2025},
                 "return_fields": ["paper_title_raw"],
                 "selection_policy": "strict_row_match",
@@ -961,7 +962,48 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         )
         self.assertEqual(prepared["filters"]["venue"], "NSDI")
         self.assertEqual(prepared["extract_intent"]["must_match"]["venue_any"], ["NSDI"])
-        self.assertIn("NSDI", prepared["extract_intent"]["anchor_terms"])
+        self.assertEqual(prepared["text_filters"], {"literal_any": ["Alibaba"]})
+        self.assertEqual(prepared["extract_intent"]["text_filters"], {"literal_any": ["Alibaba"]})
+
+    def test_prepare_extract_target_sanitizes_generic_anchor_terms_to_structured_fallbacks(self):
+        prepared = prepare_mod.prepare_extract_target(
+            row={
+                "target_id": "fetch-1",
+                "url": "https://www.usenix.org/conference/nsdi25/technical-sessions",
+                "status": "ok",
+                "segments": ["SimAI by Alibaba Cloud"],
+            },
+            target_scope_by_url={
+                "https://www.usenix.org/conference/nsdi25/technical-sessions": {
+                    "filters": {"institution": "Alibaba", "venue": "NSDI", "year_gte": 2025},
+                    "text_filters": {"literal_any": ["paper", "title", "doi", "technical sessions"]},
+                }
+            },
+            filters={"institution": "Alibaba", "venue": "NSDI", "year_gte": 2025},
+            text_filters={"literal_any": ["paper", "source_url", "2025"]},
+            semantic_focus="papers by alibaba at NSDI in 2025",
+            must_match={"institution_any": ["Alibaba"], "venue_any": ["NSDI"], "year_gte": 2025},
+            extract_intent={
+                "query_goal": "papers by alibaba at NSDI in 2025",
+                "text_filters": {"literal_any": ["paper", "title", "doi"]},
+                "must_match": {"institution_any": ["Alibaba"], "venue_any": ["NSDI"], "year_gte": 2025},
+                "return_fields": ["paper_title_raw"],
+                "selection_policy": "strict_row_match",
+                "confidence_policy": {"min_confidence_match": 0.55, "min_confidence_uncertain": 0.35},
+            },
+            user_prompt="papers by alibaba at NSDI in 2025",
+            context_limit_tokens=128000,
+            safety_margin=0.18,
+            output_token_reserve=6000,
+            deps={
+                "normalize_anchor_terms_fn": text_mod._normalize_anchor_terms,
+                "resolve_active_extract_filters_fn": text_mod._resolve_active_extract_filters,
+                "prepare_extract_segments_fn": lambda **kwargs: (list(kwargs["row"].get("segments") or []), "page"),
+                "extract_segment_token_budget_fn": lambda **kwargs: 4000,
+            },
+        )
+        self.assertEqual(prepared["text_filters"], {"literal_any": ["Alibaba"]})
+        self.assertEqual(prepared["extract_intent"]["text_filters"], {"literal_any": ["Alibaba"]})
 
     def test_extract_candidates_accept_bool_llm_institution_match(self):
         facts = [
@@ -3281,14 +3323,38 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(len(finalized["final_candidates"]), 1)
         self.assertEqual(len(finalized["fallback_candidates"]), 1)
 
-    def test_resolve_extract_anchor_terms_prefers_agent_supplied_terms(self):
+    def test_resolve_extract_anchor_terms_drops_generic_listing_terms(self):
         terms = text_mod._resolve_extract_anchor_terms(
             params={"anchor_terms": ["Google", "NDD", "technical sessions"]},
             filters={"institution": "Google", "topic": "formal verification"},
             intent={},
             user_prompt="papers by Google at NSDI in 2025",
         )
-        self.assertEqual(terms, ["Google", "NDD", "technical sessions"])
+        self.assertEqual(terms, ["Google", "NDD"])
+
+    def test_resolve_extract_text_filters_prefers_explicit_regex_and_literals(self):
+        filters = text_mod._resolve_extract_text_filters(
+            params={
+                "text_filters": {
+                    "literal_any": ["Alibaba", "paper"],
+                    "regex_any": [r"Alibaba Cloud", r"(?i)simai"],
+                }
+            },
+            filters={"institution": "Alibaba"},
+            intent={},
+            user_prompt="papers by Alibaba at NSDI in 2025",
+        )
+        self.assertEqual(filters["literal_any"], ["Alibaba"])
+        self.assertEqual(filters["regex_any"], [r"Alibaba Cloud", r"(?i)simai"])
+
+    def test_resolve_extract_anchor_terms_falls_back_to_grep_friendly_filters_when_terms_are_generic(self):
+        terms = text_mod._resolve_extract_anchor_terms(
+            params={"anchor_terms": ["paper", "title", "doi", "source_url", "2025"]},
+            filters={"institution": "Alibaba", "topic": "production-optimized congestion control"},
+            intent={},
+            user_prompt="papers by Alibaba at NSDI in 2025",
+        )
+        self.assertEqual(terms, ["Alibaba"])
 
     def test_sanitize_agent_action_params_removes_extract_micropolicy(self):
         params = view_mod._sanitize_agent_action_params(
@@ -3296,7 +3362,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             {
                 "urls": ["https://example.com/program"],
                 "filters": {"institution": "Google", "year_gte": 2025},
-                "anchor_terms": ["Google", "NSDI"],
+                "anchor_terms": ["Google", "paper", "title", "doi"],
                 "intent": {"query_goal": "find papers"},
                 "auto_fetch": True,
                 "coverage": {"batch_size": 8, "continue_until_exhausted": True, "max_passes": 9},
@@ -3304,7 +3370,8 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             },
         )
         self.assertEqual(params["urls"], ["https://example.com/program"])
-        self.assertEqual(params["anchor_terms"], ["Google", "NSDI"])
+        self.assertEqual(params["text_filters"], {"literal_any": ["Google"]})
+        self.assertEqual(params["semantic_focus"], "")
         self.assertNotIn("auto_fetch", params)
         self.assertNotIn("coverage", params)
         self.assertNotIn("max_calls_per_target", params)
@@ -3316,7 +3383,8 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "targets": [
                     {
                         "url": "https://example.com/program",
-                        "anchor_terms": ["Google", "Nandita Dukkipati"],
+                        "text_filters": {"literal_any": ["Google", "title", "Nandita Dukkipati"], "regex_any": [r"Nandita\\s+Dukkipati"]},
+                        "semantic_focus": "Google networking papers",
                         "match": {
                             "institution_any": ["Google", "Google LLC"],
                             "year_gte": "2025",
@@ -3334,7 +3402,11 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                         "url": "https://example.com/program",
                         "title": "",
                         "why": "",
-                        "anchor_terms": ["Google", "Nandita Dukkipati"],
+                        "text_filters": {
+                            "literal_any": ["Google", "Nandita Dukkipati"],
+                            "regex_any": [r"Nandita\\s+Dukkipati"],
+                        },
+                        "semantic_focus": "Google networking papers",
                         "match": {"institution_any": ["Google", "Google LLC"], "year_gte": "2025"},
                         "filters": {"institution": "Google", "year_gte": 2025},
                     }

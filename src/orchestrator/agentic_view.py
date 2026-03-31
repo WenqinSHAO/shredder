@@ -11,6 +11,11 @@ from src.orchestrator.agentic_text import (
     _is_detail_page,
     _is_listing_page,
     _normalize_anchor_terms,
+    _normalize_semantic_focus,
+    _normalize_text_filters,
+    _resolve_extract_text_filters,
+    _sanitize_extract_anchor_terms,
+    _sanitize_extract_text_filters,
     _peek_text,
 )
 from src.retrieval.service import write_yaml
@@ -507,7 +512,8 @@ def _trace_action_input(action: str, params: dict) -> dict:
                 "targets": [
                     {
                         "url": str(row.get("url") or ""),
-                        "anchor_terms": _normalize_anchor_terms(row.get("anchor_terms")),
+                        "text_filters": _normalize_text_filters(row.get("text_filters") or row.get("anchor_terms")),
+                        "semantic_focus": _normalize_semantic_focus(row.get("semantic_focus")),
                         "match": dict(row.get("match") or row.get("filters") or {}),
                     }
                     for row in targets[:8]
@@ -517,7 +523,8 @@ def _trace_action_input(action: str, params: dict) -> dict:
             "target_ids": [str(v) for v in (params.get("target_ids") or [])[:12]],
             "urls": [str(v) for v in (params.get("urls") or [])[:12]],
             "filters": dict(params.get("filters") or {}),
-            "anchor_terms": _normalize_anchor_terms(params.get("anchor_terms")),
+            "text_filters": _normalize_text_filters(params.get("text_filters") or params.get("anchor_terms")),
+            "semantic_focus": _normalize_semantic_focus(params.get("semantic_focus")),
         }
     return {"params_keys": sorted(list(params.keys()))[:16]}
 
@@ -568,13 +575,20 @@ def _sanitize_agent_action_params(action: str, params: dict) -> dict:
             url = str(row.get("url") or "").strip()
             if not url:
                 continue
-            target_anchor_terms = _normalize_anchor_terms(row.get("anchor_terms"))
             target_filters = _normalize_match(row.get("filters") or row.get("match"))
+            target_text_filters = _sanitize_extract_text_filters(
+                row.get("text_filters") or row.get("anchor_terms"),
+                filters=target_filters,
+            )
+            target_semantic_focus = _normalize_semantic_focus(
+                row.get("semantic_focus") or target_filters.get("topic")
+            )
             normalized = {
                 "url": url,
                 "title": str(row.get("title") or row.get("url_title") or "").strip(),
                 "why": str(row.get("why") or "").strip(),
-                "anchor_terms": target_anchor_terms,
+                "text_filters": target_text_filters,
+                "semantic_focus": target_semantic_focus,
                 "filters": target_filters,
             }
             if isinstance(row.get("match"), dict):
@@ -588,6 +602,10 @@ def _sanitize_agent_action_params(action: str, params: dict) -> dict:
             "target_ids": [str(v) for v in (raw.get("target_ids") or []) if str(v).strip()][:12],
             "urls": [str(v) for v in (raw.get("urls") or []) if str(v).strip()][:12],
             "filters": dict(raw.get("filters") or {}),
-            "anchor_terms": _normalize_anchor_terms(raw.get("anchor_terms")),
+            "text_filters": _sanitize_extract_text_filters(
+                raw.get("text_filters") or raw.get("anchor_terms"),
+                filters=dict(raw.get("filters") or {}),
+            ),
+            "semantic_focus": _normalize_semantic_focus(raw.get("semantic_focus") or (raw.get("filters") or {}).get("topic")),
         }
     return {}

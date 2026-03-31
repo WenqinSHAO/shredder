@@ -32,7 +32,11 @@ def _agent_output_contract() -> dict[str, Any]:
                 "targets": [
                     {
                         "url": "str",
-                        "anchor_terms": ["str"],
+                        "text_filters": {
+                            "literal_any": ["str"],
+                            "regex_any": ["str"],
+                        },
+                        "semantic_focus": "str?",
                         "filters": {
                             "institution": "str?",
                             "author": "str?",
@@ -55,11 +59,11 @@ def _agent_system_prompt() -> str:
         "SOP: (1) decompose cues: topic/author/venue/institution/year; "
         "(2) set the current active_step and todo; "
         "(3) search and shortlist URLs; "
-        "(4) extract paper facts from chosen URLs using explicit lexical anchor terms and minimal match constraints; "
+        "(4) extract paper facts from chosen URLs using explicit text filters and minimal match constraints; "
         "(5) update progress and continue until coverage is sufficient. "
         "Action Catalog: "
         "search_web(params.queries[]) => ranked URL hits with title/url/peek; "
-        "extract_content(params.targets[{url, anchor_terms[], filters?}]) => fetch + extract paper facts for chosen URLs. "
+        "extract_content(params.targets[{url, text_filters?, semantic_focus?, filters?}]) => fetch + extract paper facts for chosen URLs. "
         "Rules: one search query per venue when multiple venues are in scope. "
         "Do not combine many venue names in one query. "
         "Do not broaden one venue into multiple near-duplicate queries unless the first query clearly failed to land an official venue page. "
@@ -71,8 +75,11 @@ def _agent_system_prompt() -> str:
         "If author cues dominate, prioritize DBLP/arXiv/OpenReview/author pages and then filter. "
         "If topic cue dominates, first land likely venues or influential authors/institutions, then expand. "
         "The app decides result limits, fetch behavior, batching, retries, and extraction mechanics. "
-        "For extract_content, choose URLs from prior search results and provide compact high-signal anchor_terms per URL. "
-        "anchor_terms should be grep-like phrases or names that help the app isolate relevant text blocks. "
+        "For extract_content, decide per URL whether lexical trimming is helpful. "
+        "Use text_filters.literal_any for grep-like phrases or names, text_filters.regex_any for compact regex patterns when that is genuinely better, "
+        "and semantic_focus for short semantic guidance when lexical trimming is weak or not enough. "
+        "Do not force all three; only include the parts that help for that URL. "
+        "Avoid generic schema words such as paper, title, doi, arxiv, source_url, session, or bare years as text filters. "
         "Use filters only for minimal semantic constraints such as institution/author/year; do not restate generic extraction schema or tool mechanics. "
         "Do not pass low-level extraction controls such as batch size, coverage windows, target_ids, or token budgets; the app decides those. "
         "state_delta is delta-based: only send fields that changed, do not restate the full active_step/todo state every cycle. "

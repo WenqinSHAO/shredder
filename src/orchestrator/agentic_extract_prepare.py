@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.orchestrator.agentic_text import (
-    _normalize_anchor_terms,
+    _normalize_semantic_focus,
+    _resolve_extract_text_filters,
+    _sanitize_extract_anchor_terms,
+    _sanitize_extract_text_filters,
     _safe_int,
     _unique_nonempty,
 )
@@ -66,9 +69,12 @@ def normalize_fetch_target(item: dict, idx: int) -> dict:
     filters = extract_target_filters(item)
     if filters:
         out["filters"] = dict(filters)
-    anchor_terms = _normalize_anchor_terms(item.get("anchor_terms"))
-    if anchor_terms:
-        out["anchor_terms"] = list(anchor_terms)
+    text_filters = _sanitize_extract_text_filters(item.get("text_filters") or item.get("anchor_terms"), filters=filters)
+    if text_filters:
+        out["text_filters"] = dict(text_filters)
+    semantic_focus = _normalize_semantic_focus(item.get("semantic_focus") or filters.get("topic"))
+    if semantic_focus:
+        out["semantic_focus"] = semantic_focus
     match = item.get("match")
     if isinstance(match, dict):
         out["match"] = dict(match)
@@ -153,7 +159,13 @@ def resolve_extract_intent(
     return_fields = base.get("return_fields") if isinstance(base.get("return_fields"), list) else []
     selection_policy = str(base.get("selection_policy") or "").strip() or "strict_row_match"
     confidence_policy = base.get("confidence_policy") if isinstance(base.get("confidence_policy"), dict) else {}
-    anchor_terms = _normalize_anchor_terms(base.get("anchor_terms"))
+    text_filters = _resolve_extract_text_filters(
+        params={"text_filters": base.get("text_filters"), "anchor_terms": base.get("anchor_terms")},
+        filters=filters,
+        intent={},
+        user_prompt=user_prompt,
+    )
+    semantic_focus = _normalize_semantic_focus(base.get("semantic_focus") or filters.get("topic"))
 
     institution = str(filters.get("institution") or "").strip()
     author = str(filters.get("author") or "").strip()
@@ -208,7 +220,8 @@ def resolve_extract_intent(
 
     return {
         "query_goal": str(base.get("query_goal") or user_prompt),
-        "anchor_terms": anchor_terms,
+        "text_filters": text_filters,
+        "semantic_focus": semantic_focus,
         "must_match": {
             "institution_any": institution_any,
             "author_any": author_any,
@@ -236,7 +249,8 @@ def scope_extract_intent(
     *,
     extract_intent: dict[str, Any],
     filters: dict[str, Any],
-    anchor_terms: list[str],
+    text_filters: dict[str, list[str]],
+    semantic_focus: str,
     user_prompt: str,
 ) -> dict[str, Any]:
     base = dict(extract_intent if isinstance(extract_intent, dict) else {})
@@ -257,7 +271,8 @@ def scope_extract_intent(
         filters=filters,
         user_prompt=user_prompt,
     )
-    scoped["anchor_terms"] = _normalize_anchor_terms(anchor_terms)
+    scoped["text_filters"] = _sanitize_extract_text_filters(text_filters, filters=filters)
+    scoped["semantic_focus"] = _normalize_semantic_focus(semantic_focus or scoped.get("semantic_focus") or filters.get("topic"))
     return scoped
 
 
@@ -300,7 +315,9 @@ def prepare_extract_target(
     row: dict[str, Any],
     target_scope_by_url: dict[str, dict[str, Any]],
     filters: dict[str, Any],
-    anchor_terms: list[str],
+    text_filters: dict[str, list[str]] | None = None,
+    semantic_focus: str = "",
+    anchor_terms: list[str] | None = None,
     must_match: dict[str, Any],
     extract_intent: dict[str, Any],
     user_prompt: str,
@@ -309,7 +326,6 @@ def prepare_extract_target(
     output_token_reserve: int,
     deps: dict[str, Any],
 ) -> dict[str, Any]:
-    normalize_anchor_terms_fn = deps["normalize_anchor_terms_fn"]
     resolve_active_extract_filters_fn = deps["resolve_active_extract_filters_fn"]
     prepare_extract_segments_fn = deps["prepare_extract_segments_fn"]
     extract_segment_token_budget_fn = deps["extract_segment_token_budget_fn"]
@@ -322,18 +338,31 @@ def prepare_extract_target(
     row_scope = next((scope for url, scope in target_scope_by_url.items() if url in row_aliases), {})
     scoped_filters = dict(filters)
     scoped_filters.update(dict(row_scope.get("filters") or {}))
-    row_anchor_terms = normalize_anchor_terms_fn(list(anchor_terms) + list(row_scope.get("anchor_terms") or []))
+    shared_text_filters = dict(text_filters or {})
+    if not shared_text_filters and anchor_terms:
+        shared_text_filters = _sanitize_extract_text_filters(anchor_terms, filters=scoped_filters)
+    row_text_filters = _sanitize_extract_text_filters(
+        row_scope.get("text_filters") or row_scope.get("anchor_terms"),
+        filters=scoped_filters,
+    )
+    if not row_text_filters:
+        row_text_filters = _sanitize_extract_text_filters(shared_text_filters, filters=scoped_filters)
+    row_semantic_focus = _normalize_semantic_focus(
+        row_scope.get("semantic_focus") or semantic_focus or scoped_filters.get("topic")
+    )
     active_filters = resolve_active_extract_filters_fn(scoped_filters, must_match, user_prompt)
     scoped_extract_intent = scope_extract_intent(
         extract_intent=extract_intent,
         filters=active_filters,
-        anchor_terms=row_anchor_terms,
+        text_filters=row_text_filters,
+        semantic_focus=row_semantic_focus,
         user_prompt=user_prompt,
     )
     ranked_segments, batch_mode = prepare_extract_segments_fn(
         row=row,
         filters=active_filters,
-        anchor_terms=row_anchor_terms,
+        text_filters=row_text_filters,
+        anchor_terms=list(row_text_filters.get("literal_any") or []),
     )
     token_budget = extract_segment_token_budget_fn(
         record=row,
@@ -347,7 +376,9 @@ def prepare_extract_target(
     return {
         "row": row,
         "filters": active_filters,
-        "anchor_terms": row_anchor_terms,
+        "text_filters": row_text_filters,
+        "anchor_terms": list(row_text_filters.get("literal_any") or []),
+        "semantic_focus": row_semantic_focus,
         "extract_intent": scoped_extract_intent,
         "ranked_segments": ranked_segments,
         "batch_mode": batch_mode,
@@ -370,7 +401,13 @@ def resolve_extract_request(
     normalize_fetch_target_fn = deps["normalize_fetch_target_fn"]
     extract_target_filters_fn = deps["extract_target_filters_fn"]
     resolve_extract_intent_fn = deps["resolve_extract_intent_fn"]
-    resolve_extract_anchor_terms_fn = deps["resolve_extract_anchor_terms_fn"]
+    resolve_extract_text_filters_fn = deps.get("resolve_extract_text_filters_fn")
+    if resolve_extract_text_filters_fn is None:
+        resolve_extract_text_filters_fn = (
+            lambda **kwargs: {
+                "literal_any": deps["resolve_extract_anchor_terms_fn"](**kwargs)
+            }
+        )
     safe_int_fn = deps["safe_int_fn"]
     reuse_fetched_record_for_target_fn = deps["reuse_fetched_record_for_target_fn"]
     fetch_target_record_fn = deps["fetch_target_record_fn"]
@@ -390,9 +427,11 @@ def resolve_extract_request(
         if not normalized["url"]:
             continue
         normalized_targets.append(normalized)
+        target_filters = extract_target_filters_fn(item)
         target_scope_by_url[normalized["url"]] = {
-            "filters": extract_target_filters_fn(item),
-            "anchor_terms": deps["normalize_anchor_terms_fn"](item.get("anchor_terms")),
+            "filters": target_filters,
+            "text_filters": _sanitize_extract_text_filters(item.get("text_filters") or item.get("anchor_terms"), filters=target_filters),
+            "semantic_focus": _normalize_semantic_focus(item.get("semantic_focus") or target_filters.get("topic")),
         }
         requested_urls.append(normalized["url"])
 
@@ -408,7 +447,8 @@ def resolve_extract_request(
 
     if not normalized_targets and requested_urls:
         shared_filters = extract_target_filters_fn({"filters": params.get("filters")})
-        shared_anchor_terms = deps["normalize_anchor_terms_fn"](params.get("anchor_terms"))
+        shared_text_filters = _sanitize_extract_text_filters(params.get("text_filters") or params.get("anchor_terms"), filters=shared_filters)
+        shared_semantic_focus = _normalize_semantic_focus(params.get("semantic_focus") or shared_filters.get("topic"))
         for idx, url in enumerate(requested_urls, start=1):
             normalized = {
                 "target_id": f"auto-fetch-{idx}",
@@ -420,7 +460,8 @@ def resolve_extract_request(
             normalized_targets.append(normalized)
             target_scope_by_url[url] = {
                 "filters": dict(shared_filters),
-                "anchor_terms": list(shared_anchor_terms),
+                "text_filters": dict(shared_text_filters),
+                "semantic_focus": shared_semantic_focus,
             }
 
     if not normalized_targets:
@@ -443,11 +484,14 @@ def resolve_extract_request(
         ],
     )
     extract_intent = resolve_extract_intent_fn(params=params, filters=filters, user_prompt=user_prompt)
-    anchor_terms = resolve_extract_anchor_terms_fn(
+    text_filters = resolve_extract_text_filters_fn(
         params=params,
         filters=filters,
         intent=extract_intent,
         user_prompt=user_prompt,
+    )
+    semantic_focus = _normalize_semantic_focus(
+        params.get("semantic_focus") or extract_intent.get("semantic_focus") or filters.get("topic")
     )
     if safe_int_fn(filters.get("year_gte")) is None:
         intent_year = safe_int_fn((extract_intent.get("must_match") or {}).get("year_gte"))
@@ -492,7 +536,9 @@ def resolve_extract_request(
         "target_scope_by_url": target_scope_by_url,
         "filters": filters,
         "extract_intent": extract_intent,
-        "anchor_terms": anchor_terms,
+        "text_filters": text_filters,
+        "anchor_terms": list(text_filters.get("literal_any") or []),
+        "semantic_focus": semantic_focus,
         "records": records,
         "requested_urls": requested_urls,
         "auto_fetched_records": auto_fetched_records,
