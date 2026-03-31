@@ -365,7 +365,21 @@ def _compact_known_urls_for_agent(
         ),
         reverse=True,
     )
-    return ordered[: max(1, int(max_items or 1))]
+    official_queries = {
+        str(row.get("query_used") or "").strip().lower()
+        for row in ordered
+        if str(row.get("page_role") or "") in {"accepted", "program"}
+        and str(row.get("query_used") or "").strip()
+    }
+    filtered = [
+        row
+        for row in ordered
+        if not (
+            str(row.get("page_role") or "") == "listing"
+            and str(row.get("query_used") or "").strip().lower() in official_queries
+        )
+    ]
+    return filtered[: max(1, int(max_items or 1))]
 
 
 def _compact_matched_papers_for_agent(papers: list[dict], *, max_items: int = 6) -> list[dict]:
@@ -491,6 +505,7 @@ def _priority_extract_urls_for_agent(
                 "status": status,
                 "page_role": role,
                 "page_family": _page_family(url),
+                "query_used": str(item.get("query_used") or ""),
                 "why": _peek_text(reason, 160),
             }
         )
@@ -505,6 +520,20 @@ def _priority_extract_urls_for_agent(
         )
 
     ordered = sorted(prioritized, key=_priority_rank, reverse=True)
+    official_queries = {
+        str(row.get("query_used") or "").strip().lower()
+        for row in ordered
+        if str(row.get("page_role") or "") in {"accepted", "program"}
+        and str(row.get("query_used") or "").strip()
+    }
+    ordered = [
+        row
+        for row in ordered
+        if not (
+            str(row.get("page_role") or "") == "listing"
+            and str(row.get("query_used") or "").strip().lower() in official_queries
+        )
+    ]
     selected: list[dict[str, Any]] = []
     seen_families: set[str] = set()
     for row in ordered:

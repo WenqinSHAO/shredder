@@ -3798,6 +3798,37 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(rows[1]["page_kind"], "detail")
         self.assertEqual(rows[1]["page_role"], "detail")
 
+    def test_compact_known_urls_for_agent_suppresses_generic_listing_mirror_when_official_page_exists(self):
+        rows = view_mod._compact_known_urls_for_agent(
+            [
+                {
+                    "url": "https://www.usenix.org/conference/nsdi25/technical-sessions",
+                    "url_title": "NSDI '25 Technical Sessions - USENIX",
+                    "host": "www.usenix.org",
+                    "peek": "Official listing page",
+                    "rank": 1,
+                    "score": 1.19,
+                    "query_used": "NSDI 2025 accepted papers Alibaba",
+                    "source": "startpage",
+                },
+                {
+                    "url": "https://paper.example/reading-notes/conference/nsdi-2025",
+                    "url_title": "NSDI 2025 | Awesome Papers",
+                    "host": "paper.example",
+                    "peek": "Third-party mirror",
+                    "rank": 2,
+                    "score": 0.88,
+                    "query_used": "NSDI 2025 accepted papers Alibaba",
+                    "source": "startpage",
+                },
+            ],
+            extract_state_by_url={},
+            max_items=10,
+        )
+        urls = [row["url"] for row in rows]
+        self.assertIn("https://www.usenix.org/conference/nsdi25/technical-sessions", urls)
+        self.assertNotIn("https://paper.example/reading-notes/conference/nsdi-2025", urls)
+
     def test_priority_extract_urls_for_agent_prefers_new_companion_listing_over_home_or_proceedings(self):
         rows = view_mod._priority_extract_urls_for_agent(
             extract_state_by_url={
@@ -3856,6 +3887,44 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertIn("https://conferences.sigcomm.org/sigcomm/2025/program/papers-info/", urls)
         self.assertNotIn("https://www.usenix.org/conference/nsdi25", urls)
         self.assertNotIn("https://dl.acm.org/doi/proceedings/10.5555/3767955", urls)
+
+    def test_priority_extract_urls_for_agent_suppresses_generic_listing_mirror_when_official_page_exists(self):
+        rows = view_mod._priority_extract_urls_for_agent(
+            extract_state_by_url={
+                "https://www.usenix.org/conference/nsdi25/technical-sessions": {
+                    "fetched": True,
+                    "segments_done": 12,
+                    "segment_total": 16,
+                    "coverage_has_more": True,
+                }
+            },
+            url_hits=[
+                {
+                    "url": "https://www.usenix.org/conference/nsdi25/technical-sessions",
+                    "url_title": "NSDI '25 Technical Sessions - USENIX",
+                    "host": "www.usenix.org",
+                    "peek": "Official listing page",
+                    "rank": 1,
+                    "score": 1.19,
+                    "query_used": "NSDI 2025 accepted papers Alibaba",
+                    "source": "startpage",
+                },
+                {
+                    "url": "https://paper.example/reading-notes/conference/nsdi-2025",
+                    "url_title": "NSDI 2025 | Awesome Papers",
+                    "host": "paper.example",
+                    "peek": "Third-party mirror",
+                    "rank": 2,
+                    "score": 0.88,
+                    "query_used": "NSDI 2025 accepted papers Alibaba",
+                    "source": "startpage",
+                },
+            ],
+            max_items=4,
+        )
+        urls = [row["url"] for row in rows]
+        self.assertIn("https://www.usenix.org/conference/nsdi25/technical-sessions", urls)
+        self.assertNotIn("https://paper.example/reading-notes/conference/nsdi-2025", urls)
 
     def test_normalize_fetch_target_skips_pdf_urls(self):
         normalized = prepare_mod.normalize_fetch_target(
