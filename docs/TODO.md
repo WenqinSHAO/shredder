@@ -162,7 +162,7 @@ Interpretation rules:
 - `H*` items in `3.2.4` are the higher-level outcome workstreams
 - `Q*` items in `3.2.5` are concrete execution slices that advance one or more `H*` items
 - completing a `Q*` item does **not** mean its related `H*` workstream is complete
-- `E*` items in `3.2.7` are the next-stage execution slices after the current `Q*` queue
+- `E*` items in `3.2.10` are the current next-stage execution slices after the older `Q*` queue
 
 Current mapping from completed/deferred queue slices to workstreams:
 - `Q1 -> H1, H2, H3`
@@ -183,7 +183,10 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 | Q4 | Tighten fetch-store ownership and prepare global raw-fetch cache path | Deferred | Revisit only after extraction behavior/contracts are stable enough that cache work is worth the extra surface area. |
 | Q5 | Re-run targeted replay/contract tests after each slice | Done | Full `tests/test_retrieval_agentic_i1.py` now passes after the runtime/state-apply/trace extraction slices. |
 
-### 3.2.6 Progress Log
+### 3.2.6 Historical Progress Log
+
+Use this section as implementation history only.
+If you are picking up active work, start with `3.2.7 Current Focus`, then `3.2.8 Active Priority Stack`, then `3.2.10 Active Next Slices`.
 
 - 2026-03-23: Replaced the older mixed active board with this hardened minimum-structure plan so the remaining work is organized around contract boundaries instead of more planner complexity.
 - 2026-03-23: Started Q1 to move runtime bridge responsibilities out of `agentic.py` before deeper fetch/cache or extraction changes.
@@ -249,204 +252,68 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-31: The cross-venue semantic query `latest paper on agentic memory from top AI conferences such as ICLR, ICML, AAAI, etc.` exposed a different but related failure class. Search did surface stronger candidates early (`A-MEM`, `Agent Workflow Memory`, `MemoryAgentBench`, ICLR 2026 workshop context), but the planner still decomposed the task into only `ICLR accepted papers agentic memory`, `ICML accepted papers agentic memory`, and `AAAI accepted papers agentic memory`, with no explicit recency-aware search, no `latest`/`2026` planning, and no broader semantic variants. The loop then over-invested in the wrong page types: a giant ICLR 2025 listing page, DBLP AAAI 2025, an arXiv PDF, and an OpenReview PDF, while never converging on the strongest paper-detail hits already visible in search. The final retained row was the unrelated AAAI 2025 paper `HiCM²`, which shows that broad lexical pairs such as `agentic` + `memory` on giant bibliographies are still far too weak for semantic-topic queries. Record this as a general semantic-search issue: planner search/query generation must treat `latest` and cross-venue topical queries as recency-aware semantic tasks, planner memory must distinguish high-value paper-detail pages from broad listing/bibliography/PDF pages, and extraction should not spend large budgets on bibliography-style pages when the lexical evidence is this weak.
 - 2026-03-31: Completed a small planner-memory slice against that `workspace/mem` failure class. `src/orchestrator/agentic_view.py` now exposes `memory.query_profile` (including `latest` / year-range cues) plus `memory.priority_direct_hits` for strong paper-detail hits already surfaced in search, and `src/orchestrator/agentic_contracts.py` now tells the planner to treat those direct hits as first-class options on latest/semantic queries instead of defaulting immediately to giant listings, bibliographies, or PDFs. As part of the same boundary, `src/orchestrator/agentic_text.py` now recognizes common poster/forum paper-detail URLs as detail pages for planner memory. Retrieval-focused tests now cover the new memory shape and pass (`8` focused tests; `128 passed` in `tests/test_retrieval_agentic_i1.py`).
 
-### 3.2.7 Next Big Stage
+### 3.2.7 Current Focus
 
-Next stage focus: make the system robust across query archetypes by improving planner memory, query decomposition, and query-mode-aware extraction before spending more effort on budgets or new heuristics.
+Current stage focus: make the system robust across query archetypes by improving planner memory, query decomposition, and query-mode-aware extraction before spending more effort on budgets or new heuristics.
 
-Why this comes next:
-- the code boundaries are now mostly in the right places; the newer failures come from what the planner sees and how canonical state is translated into obligations, not from one giant mixed file
-- the diverse runs now expose at least five distinct query classes with different failure modes: venue+institution, venue+author, venue+topic, multi-year/range, and `latest` cross-venue semantic search
-- increasing `max_cycles`, widening search, or adding more local rules would mostly hide those state-interface problems instead of solving them
-- the remaining replay/live work should be used to improve query decomposition, page-type/source-quality memory, extraction-mode behavior, and result retention
-- fetch-store/cache work is still lower leverage than fixing the current planner-memory and query-mode seams
+Why this is the active stage:
+- the code boundaries are now mostly serviceable; the main remaining failures come from planner-state quality, not one giant mixed-purpose file
+- the broader query set now exposes distinct failure classes: venue+institution, venue+author, venue+topic, multi-year/range, and `latest` cross-venue semantic search
+- raising `max_cycles`, widening search fanout, or adding local heuristics would mostly hide those state-interface problems instead of fixing them
+- the highest-leverage work now is in planner memory, canonical state, query-mode-aware extraction, and trajectory readability
 
-Stage goals:
-1. represent query intent explicitly in planner state: venue set, author/institution/topic cues, year range, and recency/`latest` obligations
-2. make planner memory encode page type, source quality, page family, and page richness clearly enough that broad listings, bibliographies, detail pages, and mirrors are not treated as peers
-3. keep extraction mode aligned with the query class: author queries need local title+author boundaries, topic queries need continuation plus abstract-rich escalation, and latest/semantic queries need strong direct-hit pages preserved
-4. preserve strong direct paper hits in canonical state and planner memory so later broad listing/bibliography passes do not crowd them out
-5. keep human-facing trajectory output aligned with canonical state, especially on repeated same-URL extraction and runtime skip/retry decisions
-6. expand regression coverage by query archetype before more live-token tuning or budget changes
-
-Next session checklist:
+Working rules for the next slices:
 - before adding heuristics, identify whether the issue belongs to planner query generation, planner memory, extract runtime, candidate shaping, or trace projection
+- keep HTML-first and official-first behavior as the default, including for broad semantic queries
+- when strong direct paper hits are already visible in search, do not let giant listings, bibliographies, or PDFs become the only first-class options
 - do not raise `max_cycles` or broaden search fanout to hide decomposition or memory defects
-- keep HTML-first and official-first behavior as the default even on broad semantic queries
-- prefer page-local evidence plus explicit page-type/source-quality memory over broad local ranking rules
-- when strong direct paper hits are already visible in search, do not let giant listing/bibliography pages become the only first-class options
-- prefer replay/fixture-backed tests for author/topic/multi-year/latest query classes before another round of live tuning
-- when adding tests, assert positive extracted outputs, planner-memory state, and user-facing trajectory semantics, not just the absence of a stop reason
-- update this board after each meaningful boundary change or replay-backed correction
+- prefer replay/fixture-backed tests for new failure classes before another round of live tuning
 
-Immediate queue for the next stage:
-- `E5 -> H5, H9`: replay-backed extraction audit after the above seams settle
-  - done: require venue evidence on the fallback candidate-filter path when venue intent exists and `match_decision` is not explicit
-  - done: require full multi-token author-name evidence on the fallback candidate-filter path when `match_decision` is absent
-  - done: require full institution-phrase evidence on the fallback candidate-filter path when `match_decision` is absent
-  - avoid broader heuristic rewrites unless replay evidence clearly justifies them
-- `E6 -> H5, H9`: make complementary page-local URL discovery a first-class extraction output
-  - done: add a small page-local candidate URL proposal path alongside extracted papers
-  - done: keep deterministic code limited to link collection / normalization / dedupe against already known URLs
-  - done: keep discovered URLs planner-facing as suggestions rather than auto-merging them into `url_hits`
-  - next: refine the complementary-URL LLM prompt/schema using replay fixtures if proposal quality is weak
-  - avoid broad URL taxonomies or hard-coded ranking/classification rules
-- `E7 -> H1, H3, H6, H10`: extract the loop engine out of `agentic.py`
-  - done: move cycle-start/run/finalize/decision helpers into `src/orchestrator/agentic_loop.py`
-  - done: keep `agentic.py` as entrypoint and wiring shell instead of the place where the state machine lives
-  - next: reduce the remaining compatibility/wrapper surface now that the loop engine no longer lives there
-- `E8 -> H1, H5, H6, H10`: split `agentic_extract.py` by ownership, not by convenience
-  - done: separate the stateless extract contract/prompt/schema and LLM exchange helpers into `src/orchestrator/agentic_extract_llm.py`
-  - done: separate candidate shaping / canonicalization into `src/orchestrator/agentic_extract_candidates.py`
-  - done: extraction contract bugs, candidate-shaping bugs, and extraction runtime bugs can now be debugged in different modules
-  - done: split extract request preparation / target preparation into `src/orchestrator/agentic_extract_prepare.py`
-  - done: move per-target execution / result-shaping into `src/orchestrator/agentic_extract_runtime.py` so the action entrypoint no longer mixes LLM helper exports with runtime loop mechanics
-  - next: only split `src/orchestrator/agentic_extract_runtime.py` further if replay/debugging shows a concrete mixed-ownership bottleneck inside that runtime module
-- `E9 -> H1, H6, H10`: burn down temporary compatibility wrappers after each boundary move
-  - done: remove the candidate-only forwarding helpers from `src/orchestrator/agentic.py` once callers/tests moved to the extracted modules
-  - done: remove the target-normalization and extract-budget forwarding helpers from `src/orchestrator/agentic.py`
-  - done: move search/fetch/extract action execution into `src/orchestrator/agentic_actions.py` and retarget runtime tests to that boundary
-  - done: delete the dead cycle-local candidate canonicalization path that no longer ran in the live runtime
-  - done: move low-level LLM/fetch/extract helper tests to their owning modules and remove the corresponding test-only wrappers from `src/orchestrator/agentic.py`
-  - done: move `run_extract_agentic_local` into its own module and stop using `src/orchestrator/agentic.py` as the saved-fetch local extract entrypoint
-  - done: retarget the remaining accidental helper tests to owning modules and remove those imports from `src/orchestrator/agentic.py`
-  - done: remove the pure candidate/LLM pass-through exports from `src/orchestrator/agentic_extract.py` once tests and callers were already on the owning modules
-  - done: move extract request/intent/target preparation out of `src/orchestrator/agentic_extract.py`
-  - done: move extract action runtime ownership from `src/orchestrator/agentic_extract.py` into `src/orchestrator/agentic_extract_runtime.py`, and point the action layer at that owner directly
-  - next: if more wrapper cleanup is needed, keep it inside `src/orchestrator/agentic_extract_runtime.py` or `src/orchestrator/agentic_actions.py` rather than rebuilding facade layers in `src/orchestrator/agentic_extract.py`
-  - success check: wrapper count and line count both decrease, not just file count
-- `E10 -> H9, H10`: require replay/targeted validation after each refactor slice that moved ownership
-  - each slice should leave behind focused tests for the new boundary before the next move
-  - do not batch multiple ownership moves together if it makes regressions harder to localize
-  - done: add `replay-agentic-extract` so saved trajectory + `fetch_raw/` can be replayed through the current extract action and, when needed, narrowed to saved LLM request segments
-  - done: use the replay artifact on representative `google` and `alibaba` saved workspaces; both showed timeout-dominated LLM extraction behavior rather than new precision bugs
-  - done: reduce replay/extract payload size by using current cleaned segments for probes and hard-capping per-call extract batches in the runtime
-  - next: use the now-stable replay artifacts to trim duplicate/over-broad matches before adding any new extraction policy
-  - next: split this into two separate follow-ups:
-    - `E11`: precision cleanup on extracted papers only
-      - done: remove `decision_reason` from fallback evidence matching so uncertain rows do not pass institution/author filters just because the reason text repeats the filter term
-      - keep `llm_extract.match_decision == match` as the only case where the LLM's explicit semantic judgment short-circuits fallback matching
-      - done: add replay-backed tests for current Google false positives such as the `Discovering Millions...` and `NIER ... Solution` rows
-      - done: add a narrow LLM dedup pass for small same-title-family clusters and use it to collapse replay-backed near-duplicates such as the `Firefly` variants
-      - keep this LLM-owned; do not reopen broad local title heuristics unless new replay evidence forces it
-    - `E12`: prompt reuse / batching efficiency after precision stabilizes
-      - do not reopen large per-call batches blindly, but also do not keep arbitrary caps that clearly cut off useful venue-page coverage
-      - revisit the current `6` LLM-call per-target limit and listing-page `4`-segment batch cap with replay/live evidence; if they are harming recall more than helping latency, relax or remove them
-      - prefer simpler runtime controls such as scope-aware continuation, contiguous-hit grouping, or adaptive continuation over more hand-tuned heuristics
-      - latest `workspace/alibabanew` run shows how harmful the current combination can be on large venue pages: NSDI `technical-sessions` widened to `143` ranked segments, yet extraction still stopped at `24/143`; fix the upstream ranking/anchor breadth before deciding whether to raise the call cap
-      - latest rerun makes this even clearer: `accepted-papers` timed out by pass 2 and NSDI widened to `178` ranked segments under generic anchors; narrow the scope first, then revisit call-cap tuning
-      - keep this separate from precision so bad matches are not hidden behind efficiency tuning
-    - `E13`: end-to-end venue companion-page discovery before more efficiency tuning
-      - done: make planner memory expose pending todo targets (`memory.next_todos`) and align `search_web` action queries with planner-declared search todos so explicit multi-venue search plans do not silently collapse to one venue
-      - done: fix mixed-target extract intent scoping so cycle-level `extract_content` actions do not reuse one venue's strict `must_match` constraints for another venue page
-      - next: rerun live end-to-end venue queries (`google*`, `alibaba*`) to confirm SIGCOMM + NSDI both get searched before extraction
-      - done: tighten search query expansion so explicit `search_web` queries stay one-per-venue unless a later cycle truly needs a broader variant
-      - done: rerunning `workspace/alibabanew` confirms cycle 1 stays on the tighter venue-query set rather than auto-expanding into four overlapping queries
-      - search+shortlist should not strand key venue companion pages such as SIGCOMM `accepted-papers` / `papers-info` when one generic program page was already found
-      - next: for topic-led queries, strengthen semantic query generation instead of relying on one surface-form venue query; the current live runs still depend too much on literal user wording plus a few keywords, which is why semantic topics only recover well when the search snippet already happens to name the right papers
-      - next: make recency explicit for `latest`-style semantic queries; the `workspace/mem` run never represented `latest` as a search/planning constraint, so it stayed on 2025 venue listings even though search already surfaced 2026 workshop/benchmark signals and a 2025-accepted AAAI paper detail
-      - done: expose `memory.query_profile` and `memory.priority_direct_hits` so latest/semantic queries now carry recency cues and strong direct paper hits into planner memory instead of only broad venue/listing candidates
-      - next: when search already surfaces strong direct paper hits for semantic/latest queries, keep them as first-class extract options all the way through action selection and follow-up state, not just in planner memory
-      - prefer a simple, inspectable path such as companion-page expansion from trusted venue program roots or small planner-visible venue-page suggestions; do not hide this behind more opaque ranking heuristics
-      - next: trim obviously low-value third-party venue-adjacent URLs (for example LinkedIn promo posts) without collapsing official companion venue pages into one opaque representative
-      - done: make the late candidate-URL proposal path best-effort instead of fatal; extracted papers and coverage should survive even if URL suggestion times out
-      - done: shrink planner-visible `known_urls` memory and candidate-URL proposal payloads to more bounded, inspectable shapes (more URL slots for the planner, smaller candidate-URL payload caps for the LLM)
-      - next: rerun `workspace/alibabanew` after the above changes and confirm (a) repeated `search_web` queries stay gone, (b) official SIGCOMM pages stay visible in planner memory, and (c) a late candidate-URL timeout can no longer erase successful extraction work
-      - next: trim obviously low-value third-party venue-adjacent URLs (for example LinkedIn promo posts) without collapsing official companion venue pages into one opaque representative
-      - next: simplify the final paper contract by dropping `authors_with_affiliations` and `abstract_snippet`; keep the structured `author_affiliations` field plus `abstract`
-      - next: metadata enrichment is optional per field, but not having `doi`, `arxiv_url`, and `venue` for all rows is now a quality gap; add a narrow follow-up pass so at least some of those fields are recovered when the source page clearly exposes them
-      - next: rerun `workspace/alibabanew` after exact-match search-todo reconciliation and confirm repeated queries such as `NSDI 2025 program Alibaba` no longer reappear in later cycles unless the planner emits a genuinely new variant
-      - use the improved CLI progress plus `agentic_trajectory.yaml` to confirm the selected extract URL set is now intelligible during live runs
-    - `E14`: canonical loop-state reconciliation before more extraction feature work
-      - top priority: fix extract-state / todo-state drift so planner memory, todo status, result coverage, and retry decisions all reconcile from the same canonical per-page state
-      - planner-vs-memory note: the latest failures are now more about app-side memory/status design than raw planner capability; when the planner sees low-quality mirrors or missing field-gap signals as first-class options, it will spend cycles there
-      - done: reconcile `extract_content` todo status from actual per-page coverage after each extract action, so loop-owned state can reopen incomplete work and close completed work even when the planner's own todo update is wrong
-      - done: make extract page state scope-aware and retryable: completed pages only skip when the extraction scope is unchanged, and previously failed pages can be retried instead of being skipped forever
-      - latest `workspace/alibabanew` run is the reference failure: SIGCOMM pages remain incomplete/failed, but later cycles still drift onto already completed NSDI work
-      - do not let planner-authored todo updates alone decide completion; loop/runtime state must be able to close or reopen extract todos from actual per-page coverage and failure state
-      - fix URL-only completion assumptions; extraction state may need to account for scope changes that alter ranked segment sets for the same URL
-      - done: rerunning `workspace/alibabanew` confirms cycle 3 no longer wastes turns on already completed NSDI listing extraction
-      - next: unfinished high-value listing pages must stay ahead of lower-value detail pages; the latest run still pivoted to `dl.acm` / presentation detail pages while both official venue listings were `in_progress`
-      - done: reflect listing-priority state directly in planner memory via `memory.priority_extract_urls`, instead of assuming the planner will infer it from compact `known_urls` alone
-      - done: rerunning `workspace/alibabanew` confirms cycle 3 keeps unfinished official listing pages ahead of `dl.acm` / presentation detail-page pivots
-      - next: avoid gratuitous scope-reset churn; the latest SIGCOMM listing rerun restarted from segment `1/39` in cycle 4 because anchor-term drift changed the scope fingerprint, which is safer than stale completion reuse but still too expensive for minor planner wording changes
-      - done: make extract continuation depend on the ranked window set rather than planner-side wording drift, so semantically equivalent re-plans keep their progress instead of restarting from segment `1`
-      - done: the latest `workspace/alibabanew` run validates that fix directly; `accepted-papers` resumes at `25-39/39` in cycle 3 instead of restarting from `1-24`
-      - next: tighten page-priority memory so low-yield venue homepages such as `https://www.usenix.org/conference/nsdi25` do not become `priority_extract_urls` once the real listing page (`technical-sessions`) has already been completed
-      - next: keep obviously dead pages such as `dl.acm` proceedings URLs with `segment_filter 0/0` out of later extract plans instead of re-presenting them as live extraction options
-      - done: handle venue page families earlier in planner memory: `memory.known_urls` now exposes `page_role` / `page_family`, and `memory.priority_extract_urls` now selects one high-value listing representative per family instead of surfacing home/proceedings pages alongside the real companion listing
-      - done: suppress generic third-party listing mirrors when the same search query already has an official `accepted` or `program` page, so planner memory does not present both as equal candidates
-      - next: add a stronger source-quality / officialness signal to planner memory so official venue pages outrank mirrors and social/news/blog pages even when they look structurally similar
-      - next: make multi-year/range coverage explicit in planner memory and todo state, so uncovered years remain first-class obligations instead of being starved by repeated extraction or same-year refinement
-      - next: keep same-host sibling venues/families from satisfying the wrong venue goal in memory (for example `HotNets 2021 accepted` should not become the best `SIGCOMM 2021` follow-up just because it is an `accepted` page on `conferences.sigcomm.org`)
-      - next: stop planner no-op loops on completed listing pages; if runtime says a page is already `completed` for the current scope and there are no priority URLs or open search obligations, planner memory should not keep re-proposing the same extract action
-      - next: for topic-led queries on the same listing page, make planner memory expose whether a repeated extract is true continuation versus a new narrowed scope; the latest `workspace/congestion` run re-extracted `accepted-papers` three times under drifting filter packs that the CLI trace did not make visible
-      - next: for topic-led queries where one official accepted/program page already contains most or all plausible answer rows, keep extraction on that page as true continuation until coverage is materially exhausted; the latest `workspace/aiinfra` run spent all five cycles on repeated same-page scope resets (`151 -> 51 -> 66 -> 151` ranked windows) instead of converging on later relevant rows already present on the fetched accepted page
-      - next: expose a simple planner-memory signal for abstract-rich versus title-only pages, so topic queries can escalate from accepted lists to `papers-info` / detail companions when semantic evidence is likely to live in abstracts rather than titles
-      - next: expose a stronger page-type / source-quality signal for cross-venue semantic queries, so planner memory can clearly separate official conference listings, paper-detail pages, bibliographies such as DBLP, preprint/PDF mirrors, workshop pages, and code repositories; the `workspace/mem` run treated giant ICLR listings and DBLP AAAI as first-class extract targets even after search had already surfaced better paper-specific hits
-      - next: make the earlier HTML-first / no-PDF simplification hold for broad semantic queries too; the `workspace/mem` run still let arXiv/OpenReview PDF targets become default extract work even though they were not clearly the best next page type
-      - next: preserve strong direct-hit papers in canonical state and planner memory once extracted; the `workspace/mem` run surfaced and extracted `A-MEM` but still ended with only the unrelated `HiCM²`, which means later broad passes were allowed to crowd out a stronger early hit
-      - defer: expose missing-field pressure per page family (for example `papers found but venue/doi/abstract still missing`) until after the higher-value coverage and venue-family fixes; title/author recovery is already good enough to postpone this
-      - stop wasting cycles on URLs that runtime will immediately skip, and make the user-facing trajectory say explicitly why a page was skipped or retried
-    - `E15`: remove or relax heuristics that are harming extraction quality
-      - top priority: trim false-negative title filters in `src/orchestrator/agentic_extract_candidates.py` (for example the current short-title / `cloud`-ish rejection path that can drop valid papers such as the Alibaba congestion-control row)
-      - prefer explicit LLM judgment or simple evidence-preserving cleanup over bespoke reject rules when the local rule is causing recall loss
-      - audit remaining candidate-shaping heuristics with replay artifacts and remove any that lower recall without clearly improving precision
-      - done: move anchor-term hygiene into the app boundary; planner-supplied schema words such as `paper`, `title`, `doi`, `arxiv`, `source_url`, `session`, and bare years are now dropped before extract prep
-      - done: keep listing-page lexical filters concrete and query-grounded by falling back only to grep-friendly structured filters (`institution`, `author`) when the planner only supplied generic extraction-field names
-      - done: expose the extractor boundary more explicitly to the planner: use `text_filters.literal_any` / `text_filters.regex_any` for lexical trimming and `semantic_focus` for purely semantic extraction guidance; keep `anchor_terms` only as a compatibility alias
-      - done: rerunning `workspace/alibabanew` confirms the broad ranking regression is gone for the first extraction pass; cycle 2 is back to `39/176` for `accepted-papers` and `16/319` for `technical-sessions` instead of the earlier `135-178` window blow-up
-      - next: trim overly broad lexical filters / ranking hints that are still coming from page boilerplate or residual venue labels on listing pages
-      - next: preserve local paper-block structure on accepted/program listing pages for author queries, so a title line is paired with its own adjacent author line before the LLM call instead of being misattached to the neighboring paper title
-      - next: on topic queries, avoid planner overfitting by feeding already surfaced paper titles back as literal filters unless they have been explicitly validated as in-scope; the latest `workspace/congestion` run promoted `ByteDance Jakiro` into a later literal filter pack and then kept it while still missing `Falcon`, which only became clearly in-scope through abstract-level evidence on `papers-info`
-      - next: on broader topic-led venue queries, stop letting generic domain words plus a few surfaced paper titles explode ranking scope or self-poison later passes; the latest `workspace/aiinfra` run selected `151/176` accepted-page windows on the first pass, then later filter packs still surfaced `Hummingbird` and `Revisiting RDMA` while missing ground-truth rows already present lower on the same accepted page (`MegaScale-Infer`, `Astral`, `ByteScale`, `HACK`)
-      - next: when abstract-rich pages are available, let abstract-level semantic evidence dominate title-level lexical overlap for topic queries; today the system is still too title-first, which is why `Falcon`-style rows are missed even when the abstract clearly contains the relevant topic
-      - next: do not let broad lexical pairs like `agentic` + `memory` drive extraction over giant bibliographies or venue-wide listings unless the planner has also identified a strong paper-detail or abstract-rich target; the `workspace/mem` run shows those filters are too weak and end up retaining unrelated generic-memory papers such as `HiCM²`
-      - next: revisit the fixed `DEFAULT_EXTRACT_MAX_CALLS = 6` only after the ranked-window count is back under control; do not hide scope problems by simply raising the call cap first
-      - done: make timeout handling adaptive before raising the global call cap; a timeout on one rich batch now retries with a smaller batch instead of failing the whole page immediately
-      - done: the latest `workspace/alibabanew` run validates the adaptive retry path directly on `papers-info`; the timed-out `17-20/44` batch was retried as `17-18/44` and extraction continued
-      - do not add new hardcoded venue/institution rules while fixing this
-    - `E16`: narrow candidate-URL proposal to true next-page complements
-      - make candidate-URL proposal page-local and narrow by default: detail pages, proceedings/program subpages, PDFs, and clearly relevant author pages
-      - avoid broad page-wide harvesting from large venue pages; if needed, let the LLM help prune a small prefiltered link set instead of encoding more local ranking heuristics
-      - keep candidate URLs as planner suggestions only; planner adoption stays explicit
-      - low-value third-party and boilerplate links should fall out from the narrower contract, not from a large growing denylist
-      - latest `workspace/alibabanew` suggestions are still too broad: conference homepages, schedule pages, BibTeX exports, and unrelated presentation pages are crowding out higher-value companion pages
-      - done: stop filling the capped candidate-link bucket from the first page in DOM order; candidate-link collection now balances across source pages and filters generic site navigation before the LLM proposal step
-      - done: the latest `workspace/alibabanew` cycle-2 proposal is materially narrower (`3` URLs: one SimAI presentation page plus the two NSDI proceedings PDFs) instead of the earlier broad homepage/schedule-heavy set
-      - done: drop candidate-URL proposal during the main shortlisted-page extraction loop for now; it is adding complexity, late-cycle failures, and redundant-page churn without enough yield on the current HTML-first venue tasks
-      - if candidate-URL proposal comes back later, make it an explicit fallback for metadata recovery or no-good-HTML cases, not a default step on every listing-page extraction pass
-      - next: bias the proposal contract toward same-paper or same-session complements first, and only suggest generic conference pages when they expose metadata the current page clearly lacks
-      - next: second-stage candidate-URL proposals are still too broad on weaker pages; cycle 4 and cycle 5 still hit `candidate_url_failed`, so the proposal input should exclude venue homepages and low-signal policy/contact/accessibility links before the LLM step
-    - `E17`: improve human-facing trajectory readability without losing raw trace detail
-      - keep raw trace rich and machine-oriented, but make CLI / trajectory projection explain actions in human terms: why this page, why skipped, why retry, what changed
-      - next: when the same URL is extracted again, surface the effective filter / semantic-focus delta and whether the pass is continuation or restart; the current CLI makes repeated same-page extraction look like opaque loops
-      - consider using the planner LLM to phrase concise human-readable progress notes, but keep the underlying raw event data complete and authoritative
-      - make extracted-vs-dropped rows visible in the user-facing trajectory when candidate shaping removes a real extracted row
-      - result status should not read as fully completed when the stop reason is `max_cycles_reached` and important pages are still failed/in-progress
-      - fix the current projection gaps: `user_view.action` is still empty and `user_view.extract_summary` is often missing even when the raw trace contains `action_debug.targets`, `candidate_urls`, and `url_checks`
-    - `E18`: metadata enrichment and result-contract cleanup after state consistency is fixed
-      - planner-vs-memory note: `venue` / `doi` / `arxiv_url` being empty is not mainly a planner failure; the planner currently lacks a canonical memory signal that says which missing fields justify another companion-page extraction turn
-      - remove `authors_with_affiliations` and `abstract_snippet` from the final result contract after dependent readers/tests are updated
-      - keep `author_affiliations` as the primary author/affiliation export field
-      - prefer full abstract text when available; on listing pages, do not pretend title+author lines are full abstracts
-      - add a narrow enrichment step so venue/DOI/arXiv are recovered when clearly present on companion/detail pages
-      - latest `workspace/alibabanew` now reaches `17` final rows, but `venue`, `doi`, and `arxiv_url` are still empty for all `17`; abstract presence is `17/17`, yet several rows are still title/author listing text rather than a real abstract
-      - latest rerun after the HTML-first simplification still shows the same metadata gap at smaller scale: `15/15` final rows have empty `venue`, `doi`, and `arxiv_url`, and several retained rows still carry listing-text pseudo-abstracts rather than true abstracts
-    - `E19`: keep PDF extraction out of the active queue unless new evidence justifies it
-      - done: drop PDF URLs from extract target normalization so the active agentic path stays HTML-first
-      - do not spend active refactor effort on PDF extraction or PDF-specific heuristics right now; the current failures and duplication are centered on HTML venue pages and planner page choice
-      - keep PDF extraction as a guarded fallback only for cases where there is no good HTML venue/listing page or when a concrete saved artifact shows it is the only source of needed metadata
-      - latest `workspace/alibabanew` run makes this more urgent: final recall regressed further to `4` papers and all `venue` / `doi` / `arxiv_url` fields are still empty
-      - only reopen PDF work once we have replay/live cases where HTML venue pages are insufficient and the missing value is concrete
-    - `E20`: expand the regression matrix to cover the now-visible query archetypes
-      - add an author-query accepted-list fixture/replay case derived from `workspace/ennan`, asserting local title+author block preservation and preventing neighboring-title misattachment (`CellFusion` / `XRON` vs `ChameleMon` / `ZGaming`)
-      - add a multi-year/range planning fixture derived from the `SIGCOMM 2020-2022` replay, asserting that uncovered years remain explicit planner obligations and that sibling venues such as `HotNets` cannot satisfy a `SIGCOMM` year slot
-      - add a topic-led continuation fixture derived from `workspace/congestion`, asserting that the same accepted page is treated as continuation rather than opaque restart and that abstract-rich companion pages can lift a paper like `Falcon`
-      - add a broader topic-led late-row fixture derived from `workspace/aiinfra`, asserting that one known-relevant accepted page can continue far enough to recover later ground-truth rows instead of being repeatedly narrowed by surfaced-title filters
-      - add a `latest` cross-venue semantic fixture derived from `workspace/mem`, asserting recency-aware query generation, page-type/source-quality prioritization, HTML-first behavior, and preservation of strong direct hits such as `A-MEM` / `Agent Workflow Memory`
-      - add a direct-hit retention regression so an extracted high-confidence paper-detail row cannot be silently displaced by later broad listing/bibliography rows with weaker semantic alignment
-      - add a trajectory projection regression for repeated same-URL extraction, asserting that user-facing output says whether the pass was continuation or restart and what effective filter/scope changed
-      - prefer replay/fixture-driven offline tests over new live runs for all of the above
+### 3.2.8 Active Priority Stack
+
+Use this section first when deciding what to implement next.
+
+| Priority | Theme | Main owner | What remains | Supporting observations |
+|---|---|---|---|---|
+| `P0` | Query-aware planner memory | `agentic_view`, `agentic_contracts` | Represent `latest`, year ranges, author/institution/topic cues, page type, source quality, page family, and strong direct-hit papers clearly enough that the planner does not treat all URLs as peers. | `workspace/mem`, `workspace/alibabanew`, multi-year `SIGCOMM 2020-2022` |
+| `P1` | Query-aware extraction behavior | `agentic_extract_prepare`, `agentic_extract_runtime`, `agentic_text` | Keep author queries local-block accurate, topic queries continuation-oriented, and semantic queries abstract-aware instead of title-only. | `workspace/ennan`, `workspace/congestion`, `workspace/aiinfra` |
+| `P2` | Canonical state and result retention | `agentic_loop`, `agentic_state_apply`, `agentic_result` | Preserve strong early hits, stop no-op extract loops, and keep canonical state authoritative when pages are completed, failed, skipped, or later revisited. | `workspace/mem`, `workspace/alibabanew`, `workspace/ennan` |
+| `P3` | Human-facing trace | `cli`, `agentic_trace`, `agentic_loop` | Make repeated same-URL extraction, skip/retry reasons, and extracted-vs-dropped transitions visible in CLI and trajectory output. | `workspace/congestion`, `workspace/aiinfra`, `workspace/mem` |
+| `P4` | Metadata/result cleanup | `agentic_result`, enrichment path | Recover some `venue` / `doi` / `arxiv_url`, remove obsolete result fields, and stop listing-text pseudo-abstracts from looking complete. | `workspace/alibabanew` |
+| `P5` | Regression matrix | `tests/test_retrieval_agentic_i1.py`, replay fixtures | Add replay/fixture coverage for the query classes now known to fail differently. | all recent query families |
+
+### 3.2.9 Supporting Evidence By Query Archetype
+
+- `Venue + institution`
+  - `workspace/alibabanew` is the main reference. Search/query duplication is better, but memory/state quality still determines whether the loop stays on official listing pages, avoids mirrors, and retains extracted results consistently.
+- `Venue + author`
+  - `workspace/ennan` shows the accepted-list segmentation issue clearly. Search/shortlist are fine, but title and author lines are split across neighboring paper blocks, leading to confident wrong matches.
+- `Venue + topic` narrow
+  - `workspace/congestion` shows the `Falcon` failure mode. The same official page is re-extracted under drifting filter packs, and abstract-rich evidence arrives too late or is outweighed by surfaced-title lexical feedback.
+- `Venue + topic` broad
+  - `workspace/aiinfra` shows that one accepted page can already contain most of the answer set, yet repeated scope resets and surfaced-title filters still stop the loop from reaching later relevant rows.
+- `Multi-year / range`
+  - `papers by alibaba at SIGCOMM from 2020 to 2022` shows that the planner underuses cycle budget and that same-host sibling venues can wrongly satisfy the next year slot in memory.
+- `Latest / cross-venue semantic`
+  - `workspace/mem` shows that search can already surface strong direct paper hits (`A-MEM`, `Agent Workflow Memory`, `MemoryAgentBench`), but planner memory does not yet preserve or prioritize them strongly enough against giant listings, bibliographies, and PDFs.
+
+### 3.2.10 Active Next Slices
+
+| Slice | Status | Why active | Immediate next moves |
+|---|---|---|---|
+| `E13` query decomposition and search/selection for semantic tasks | Active | `latest` and semantic topic queries are still too surface-form and do not preserve strong direct hits through planning. | Make `latest` / recency explicit in search and planning; strengthen semantic query generation for topic-led queries; keep strong direct paper hits as first-class extract options through action selection and follow-up state. |
+| `E14` planner memory and canonical state | Active | Planner memory still under-specifies officialness, page richness, multi-year coverage, same-host sibling venues, and no-op completion state. | Add stronger page-type / source-quality / officialness signals; make multi-year/range coverage explicit; keep same-host sibling venues from satisfying the wrong venue goal; stop planner no-op loops on already completed pages; preserve strong direct-hit papers once extracted. |
+| `E15` extraction quality without new brittle heuristics | Active | The current failures are query-class specific: author blocks split, topic queries self-poison, and broad lexical semantic matching still overfires on giant pages. | Preserve local paper-block structure on accepted/program pages for author queries; avoid feeding surfaced titles back as literal filters too early; let abstract-level evidence outweigh title-only overlap when abstract-rich pages are available; revisit the fixed extract call cap only after ranked-window scope is under control. |
+| `E17` human-facing trace readability | Active | CLI and trajectory still hide why the same page was re-extracted, skipped, retried, or why extracted rows disappeared later. | Show continuation vs restart for repeated same-URL extraction; show effective filter / semantic-focus deltas; show skip/retry reasons; show when a real extracted row was later dropped by candidate shaping. |
+| `E18` metadata/result cleanup | Later | This matters, but retrieval stability is still the higher leverage problem. | Remove `authors_with_affiliations` and `abstract_snippet`; keep `author_affiliations` primary; add a narrow enrichment step for `venue` / `doi` / `arxiv_url` when clearly present; avoid listing text masquerading as full abstracts. |
+| `E19` keep PDF extraction out of the active queue | Guardrail | PDF work keeps distracting from the higher-value HTML and planner-memory problems. | Stay HTML-first by default; only reopen PDF work when a concrete replay/live case shows HTML is insufficient. |
+| `E20` regression matrix by query archetype | Active | The newer failures are no longer one bug class; they need query-class-specific regression coverage. | Add fixtures/replays for `workspace/ennan`, `workspace/congestion`, `workspace/aiinfra`, multi-year SIGCOMM 2020-2022, `workspace/mem`, direct-hit retention, and trajectory continuation-vs-restart projection. |
+
+### 3.2.11 Notes On Completed Historical Slices
+
+- `E5-E12` are mostly historical/completed slices now.
+- Keep using the `3.2.6 Historical Progress Log` above as the reference for what was already implemented and validated.
+- Do not reopen those older slices unless a new replay/live failure clearly maps back to them.
 
 ## 4) Non-Active Modules (Summary Only)
 
