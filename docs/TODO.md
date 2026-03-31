@@ -229,6 +229,7 @@ This means the queue is a delivery sequence for the workstreams rather than a se
 - 2026-03-30: A fresh live rerun on `workspace/alibabanew` after the mixed-target fix now reaches `17` extracted rows in cycle 2 and `13` retained paper candidates there, confirming the missing NSDI rows were a real regression and are now materially restored. That same run also surfaced two follow-up issues: the persisted paper contract still flattens authors and affiliations into separate loose strings and still favors `abstract_snippet` over a full abstract field, and late cycles can still waste an LLM call on `candidate_url_proposal` even when an extract pass produced no paper candidates. Both are now addressed in the owning modules: result rows carry paired `author_affiliations` plus `authors_with_affiliations`, full `abstract` text is preserved when the extractor returns it, and `src/orchestrator/agentic_extract_runtime.py` skips candidate-URL proposal entirely when there are no newly retained paper candidates to ground that proposal.
 - 2026-03-31: Rechecking the rerun in `workspace/alibabanew` exposed a separate planner-loop issue: even when cycle 1 actually executed both venue searches, the matching `search_web` todos remained open, so later cycles reissued exact same queries such as `NSDI 2025 program Alibaba`. This is now fixed in `src/orchestrator/agentic_loop.py`: after a `search_web` action, exact-match executed queries are reconciled back into the plan state and the corresponding `search_web` todos are marked `done`. This keeps the fix narrow and inspectable: only exact executed-query/todo matches are auto-closed, while broader replanning still stays with the planner.
 - 2026-03-31: Completed the first `E14` state-consistency slice. `src/orchestrator/agentic_loop.py` now reconciles `extract_content` todo status from actual per-page coverage after each extract action, so planner-authored todo drift does not leave incomplete SIGCOMM work marked `done` while completed NSDI work stays `doing`. In parallel, `src/orchestrator/agentic_extract_runtime.py` now treats failed pages as retryable and resets stale completion state when the extraction scope changes, instead of skipping pages forever based on URL-only state. Retrieval-focused and full `pytest` both pass (`115` retrieval tests; `166 passed, 27 subtests passed` overall).
+- 2026-03-31: A fresh live rerun on `workspace/alibabanew` after that first `E14` slice confirms the exact repeated-search bug is gone, but it also exposes the next planning-quality problems clearly. Cycle 1 now expands to four venue queries, which is already broader than needed and still lets obvious junk hosts into `raw_candidates`; cycle 2 then extracts the right two listing pages, but cycle 3 prematurely pivots to low-value detail pages while both high-value venue listings are still `in_progress`. The result regresses to `9` final papers with `max_cycles_reached`, while `venue`, `doi`, and `arxiv_url` remain empty for all final rows. The next queue therefore needs to prioritize (1) tighter query/search hygiene, (2) keeping unfinished high-value listing pages ahead of detail-page exploration, (3) narrowing candidate-URL suggestions, and (4) fixing the user-facing trajectory projection, which still leaves `user_view.action` / `extract_summary` too empty to explain the run.
 
 ### 3.2.7 Next Big Stage
 
@@ -316,11 +317,13 @@ Immediate queue for the next stage:
       - do not reopen large per-call batches blindly, but also do not keep arbitrary caps that clearly cut off useful venue-page coverage
       - revisit the current `6` LLM-call per-target limit and listing-page `4`-segment batch cap with replay/live evidence; if they are harming recall more than helping latency, relax or remove them
       - prefer simpler runtime controls such as scope-aware continuation, contiguous-hit grouping, or adaptive continuation over more hand-tuned heuristics
+      - latest `workspace/alibabanew` run shows how harmful the current combination can be on large venue pages: NSDI `technical-sessions` widened to `143` ranked segments, yet extraction still stopped at `24/143`; fix the upstream ranking/anchor breadth before deciding whether to raise the call cap
       - keep this separate from precision so bad matches are not hidden behind efficiency tuning
     - `E13`: end-to-end venue companion-page discovery before more efficiency tuning
       - done: make planner memory expose pending todo targets (`memory.next_todos`) and align `search_web` action queries with planner-declared search todos so explicit multi-venue search plans do not silently collapse to one venue
       - done: fix mixed-target extract intent scoping so cycle-level `extract_content` actions do not reuse one venue's strict `must_match` constraints for another venue page
       - next: rerun live end-to-end venue queries (`google*`, `alibaba*`) to confirm SIGCOMM + NSDI both get searched before extraction
+      - next: tighten search query expansion; the latest `alibabanew` run escalated to four venue queries (`accepted papers`, then `accepted papers program proceedings alibaba`) and still admitted junk hosts, so the next move should keep core venue queries tight before adding broader variants
       - search+shortlist should not strand key venue companion pages such as SIGCOMM `accepted-papers` / `papers-info` when one generic program page was already found
       - prefer a simple, inspectable path such as companion-page expansion from trusted venue program roots or small planner-visible venue-page suggestions; do not hide this behind more opaque ranking heuristics
       - next: trim obviously low-value third-party venue-adjacent URLs (for example LinkedIn promo posts) without collapsing official companion venue pages into one opaque representative
@@ -339,28 +342,36 @@ Immediate queue for the next stage:
       - latest `workspace/alibabanew` run is the reference failure: SIGCOMM pages remain incomplete/failed, but later cycles still drift onto already completed NSDI work
       - do not let planner-authored todo updates alone decide completion; loop/runtime state must be able to close or reopen extract todos from actual per-page coverage and failure state
       - fix URL-only completion assumptions; extraction state may need to account for scope changes that alter ranked segment sets for the same URL
-      - next: rerun `workspace/alibabanew` and confirm cycle 3 returns to unfinished SIGCOMM work instead of re-targeting already completed NSDI extraction
+      - done: rerunning `workspace/alibabanew` confirms cycle 3 no longer wastes turns on already completed NSDI listing extraction
+      - next: unfinished high-value listing pages must stay ahead of lower-value detail pages; the latest run still pivoted to `dl.acm` / presentation detail pages while both official venue listings were `in_progress`
+      - next: reflect that listing-priority state directly in planner memory or loop-side action selection hints, instead of assuming the planner will infer it from compact `known_urls` alone
+      - next: avoid gratuitous scope-reset churn; the latest SIGCOMM listing rerun restarted from segment `1/39` in cycle 4 because anchor-term drift changed the scope fingerprint, which is safer than stale completion reuse but still too expensive for minor planner wording changes
       - stop wasting cycles on URLs that runtime will immediately skip, and make the user-facing trajectory say explicitly why a page was skipped or retried
     - `E15`: remove or relax heuristics that are harming extraction quality
       - top priority: trim false-negative title filters in `src/orchestrator/agentic_extract_candidates.py` (for example the current short-title / `cloud`-ish rejection path that can drop valid papers such as the Alibaba congestion-control row)
       - prefer explicit LLM judgment or simple evidence-preserving cleanup over bespoke reject rules when the local rule is causing recall loss
       - audit remaining candidate-shaping heuristics with replay artifacts and remove any that lower recall without clearly improving precision
+      - next: trim overly broad extract anchor terms / ranking hints on listing pages; the latest NSDI run promoted `technical sessions`, `presentation`, `paper`, `authors`, `affiliation` into a `143`-window extract scope, which is too diffuse to be useful
       - do not add new hardcoded venue/institution rules while fixing this
     - `E16`: narrow candidate-URL proposal to true next-page complements
       - make candidate-URL proposal page-local and narrow by default: detail pages, proceedings/program subpages, PDFs, and clearly relevant author pages
       - avoid broad page-wide harvesting from large venue pages; if needed, let the LLM help prune a small prefiltered link set instead of encoding more local ranking heuristics
       - keep candidate URLs as planner suggestions only; planner adoption stays explicit
       - low-value third-party and boilerplate links should fall out from the narrower contract, not from a large growing denylist
+      - latest `workspace/alibabanew` suggestions are still too broad: conference homepages, schedule pages, BibTeX exports, and unrelated presentation pages are crowding out higher-value companion pages
+      - next: bias the proposal contract toward same-paper or same-session complements first, and only suggest generic conference pages when they expose metadata the current page clearly lacks
     - `E17`: improve human-facing trajectory readability without losing raw trace detail
       - keep raw trace rich and machine-oriented, but make CLI / trajectory projection explain actions in human terms: why this page, why skipped, why retry, what changed
       - consider using the planner LLM to phrase concise human-readable progress notes, but keep the underlying raw event data complete and authoritative
       - make extracted-vs-dropped rows visible in the user-facing trajectory when candidate shaping removes a real extracted row
       - result status should not read as fully completed when the stop reason is `max_cycles_reached` and important pages are still failed/in-progress
+      - fix the current projection gaps: `user_view.action` is still empty and `user_view.extract_summary` is often missing even when the raw trace contains `action_debug.targets`, `candidate_urls`, and `url_checks`
     - `E18`: metadata enrichment and result-contract cleanup after state consistency is fixed
       - remove `authors_with_affiliations` and `abstract_snippet` from the final result contract after dependent readers/tests are updated
       - keep `author_affiliations` as the primary author/affiliation export field
       - prefer full abstract text when available; on listing pages, do not pretend title+author lines are full abstracts
       - add a narrow enrichment step so venue/DOI/arXiv are recovered when clearly present on companion/detail pages
+      - latest `workspace/alibabanew` run makes this more urgent: final recall regressed to `9` papers and all `venue` / `doi` / `arxiv_url` fields are still empty
     - `E19`: keep PDF extraction out of the active queue unless new evidence justifies it
       - do not spend significant time on PDF extraction or PDF-specific heuristics right now
       - only reopen PDF work once we have replay/live cases where HTML venue pages are insufficient and the missing value is concrete
