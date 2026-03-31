@@ -3380,7 +3380,7 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 }
             ],
             extract_state_by_url={
-                "https://sigcomm.example": {"fetched": True, "segments_done": 32},
+                "https://sigcomm.example": {"fetched": True, "segments_done": 32, "segment_total": 64, "coverage_has_more": True},
                 "https://nsdi.example": {"failed": True, "last_error": "timeout"},
             },
             papers=[{"title": "Falcon", "url": "https://sigcomm.example/falcon", "year": "2025"}],
@@ -3401,6 +3401,8 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(memory["last_change"]["retrieved_count"], 12)
         self.assertEqual(memory["next_todos"][0]["target"], "NSDI 2025 accepted papers")
         self.assertTrue(any("timeout" in item for item in memory["blockers"]))
+        self.assertEqual(memory["priority_extract_urls"][0]["url"], "https://sigcomm.example")
+        self.assertIn("remaining extract windows", str(memory["priority_extract_urls"][0]["why"]).lower())
 
     def test_compact_known_urls_for_agent_prefers_listing_pages_and_keeps_quality_fields(self):
         rows = view_mod._compact_known_urls_for_agent(
@@ -3450,6 +3452,23 @@ class TestAgenticRetrievalI1(unittest.TestCase):
             [
                 "SIGCOMM 2025 accepted papers alibaba",
                 "NSDI 2025 accepted papers alibaba",
+            ],
+        )
+
+    def test_merge_search_queries_keeps_one_query_per_venue_when_variants_overlap(self):
+        queries = loop_mod._merge_search_queries(
+            ["SIGCOMM 2025 accepted papers", "NSDI 2025 accepted papers"],
+            [
+                "SIGCOMM 2025 accepted papers program proceedings alibaba",
+                "NSDI 2025 accepted papers program proceedings alibaba",
+            ],
+            limit=8,
+        )
+        self.assertEqual(
+            queries,
+            [
+                "SIGCOMM 2025 accepted papers",
+                "NSDI 2025 accepted papers",
             ],
         )
 

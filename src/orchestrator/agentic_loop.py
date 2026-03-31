@@ -63,6 +63,21 @@ def _unique_texts(items: list[str], *, limit: int) -> list[str]:
     return out
 
 
+def _query_primary_venue_key(query: str) -> str:
+    for token in re.findall(r"\b[A-Za-z][A-Za-z0-9\-]{2,}\b", str(query or "")):
+        normalized = str(token or "").strip().upper()
+        if len(normalized) < 4:
+            continue
+        if normalized.isdigit():
+            continue
+        if not re.fullmatch(r"[A-Z0-9\-]+", normalized):
+            continue
+        if normalized in {"PAPERS", "PROGRAM", "PROCEEDINGS", "ACCEPTED", "AUTHOR", "AUTHORS"}:
+            continue
+        return normalized
+    return ""
+
+
 def _subject_hint_from_prompt(prompt: str) -> str:
     text = str(prompt or "").strip()
     if not text:
@@ -106,6 +121,36 @@ def _planned_search_queries_from_state_delta(
         if query:
             queries.append(query)
     return _unique_texts(queries, limit=max(1, int(limit or 1)))
+
+
+def _merge_search_queries(
+    planned_queries: list[str],
+    declared_queries: list[str],
+    *,
+    limit: int,
+) -> list[str]:
+    merged = _unique_texts([str(item) for item in planned_queries], limit=max(1, int(limit or 1)))
+    covered_primary_venues: set[str] = set()
+    for query in merged:
+        venue_key = _query_primary_venue_key(query)
+        if venue_key:
+            covered_primary_venues.add(venue_key)
+    for query in declared_queries:
+        normalized = str(query or "").strip()
+        if not normalized:
+            continue
+        primary_venue = _query_primary_venue_key(normalized)
+        if primary_venue and primary_venue in covered_primary_venues:
+            continue
+        lowered = normalized.lower()
+        if lowered in {item.lower() for item in merged}:
+            continue
+        merged.append(normalized)
+        if primary_venue:
+            covered_primary_venues.add(primary_venue)
+        if len(merged) >= max(1, int(limit or 1)):
+            break
+    return merged[: max(1, int(limit or 1))]
 
 
 def _reconcile_completed_search_todos(
@@ -1013,8 +1058,9 @@ def _run_agent_turn(loop: _AgenticSearchLoop, cycle_index: int) -> _PlanTurn | N
             limit=max(1, int(loop.agent_config.max_queries_per_turn or 1)),
         )
         if declared_queries:
-            merged_queries = _unique_texts(
-                [*list(action_params.get("queries") or []), *declared_queries],
+            merged_queries = _merge_search_queries(
+                list(action_params.get("queries") or []),
+                declared_queries,
                 limit=max(1, int(loop.agent_config.max_queries_per_turn or 1)),
             )
             action_params["queries"] = merged_queries

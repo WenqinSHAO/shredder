@@ -361,6 +361,54 @@ def _compact_suggested_urls_for_agent(cycle_trace: list[dict], *, max_items: int
     return []
 
 
+def _priority_extract_urls_for_agent(
+    *,
+    extract_state_by_url: dict[str, Any],
+    url_hits: list[dict[str, Any]],
+    max_items: int = 4,
+) -> list[dict[str, Any]]:
+    projected = _project_extract_url_rows(
+        extract_state_by_url=extract_state_by_url,
+        url_hits=[item for item in url_hits if isinstance(item, dict)],
+        max_items=None,
+    )
+    prioritized: list[dict[str, Any]] = []
+    for item in projected:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not url or not _is_listing_page(title=title, url=url):
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        has_more = bool(item.get("has_more_results"))
+        if status not in {"in_progress", "failed"}:
+            continue
+        reason = "unfinished listing page still has remaining extract windows"
+        if status == "failed":
+            reason = str(item.get("last_error") or "listing page needs retry").strip() or "listing page needs retry"
+        elif not has_more:
+            reason = "listing page still needs explicit completion verification"
+        prioritized.append(
+            {
+                "url": url,
+                "title": _peek_text(title, 120),
+                "status": status,
+                "why": _peek_text(reason, 160),
+            }
+        )
+
+    def _priority_rank(row: dict[str, Any]) -> tuple[int, int]:
+        status = str(row.get("status") or "").lower()
+        return (
+            2 if status == "in_progress" else 1,
+            1 if "remaining extract windows" in str(row.get("why") or "").lower() else 0,
+        )
+
+    ordered = sorted(prioritized, key=_priority_rank, reverse=True)
+    return ordered[: max(1, int(max_items or 1))]
+
+
 def _build_agent_memory(
     *,
     user_prompt: str,
@@ -409,6 +457,11 @@ def _build_agent_memory(
         "active_step": dict(plan.get("active_step") or {}),
         "todo": dict(plan.get("todo_counts") or {}),
         "next_todos": [dict(item) for item in (plan.get("next_todos") or [])[:4] if isinstance(item, dict)],
+        "priority_extract_urls": _priority_extract_urls_for_agent(
+            extract_state_by_url=extract_state_by_url,
+            url_hits=[item for item in url_hits if isinstance(item, dict)],
+            max_items=4,
+        ),
         "known_urls": _compact_known_urls_for_agent(
             [item for item in url_hits if isinstance(item, dict)],
             extract_state_by_url=extract_state_by_url,
