@@ -776,33 +776,52 @@ def execute_resolved_extract_request(
     dedup_paper_candidates_with_llm_fn = deps.get("dedup_paper_candidates_with_llm_fn")
     if extract_use_llm_extractor and paper_candidates and dedup_paper_candidates_with_llm_fn is not None:
         dedup_op_prefix = "extract_paper_dedup"
-        paper_candidates, paper_dedup_trace = dedup_paper_candidates_with_llm_fn(
-            paper_candidates=paper_candidates,
-            user_prompt=user_prompt,
-            model=llm_extractor_model,
-            api_key_env=llm_api_key_env,
-            timeout_s=timeout_s,
-            max_retries=0,
-            raw_event_fn=(
-                (lambda event_type, payload: raw_event_fn(event_type, payload, None))
-                if raw_event_fn is not None
-                else None
-            ),
-            llm_op_id_prefix=dedup_op_prefix,
-            deps={
-                "estimate_messages_metrics_fn": deps["estimate_messages_metrics_fn"],
-                "openai_complete_json_fn": deps["openai_complete_json_fn"],
-                "next_op_id_fn": (lambda prefix: deps["next_op_id_fn"](runtime_state, prefix)),
-            },
-        )
-        emit_progress_fn(
-            progress_callback,
-            event="agentic_extract_stage",
-            cycle_index=cycle_index,
-            stage="paper_dedup_done",
-            paper_dedup_clusters=int(paper_dedup_trace.get("cluster_count") or 0),
-            paper_dedup_reduced=int(paper_dedup_trace.get("reduced_count") or 0),
-        )
+        try:
+            paper_candidates, paper_dedup_trace = dedup_paper_candidates_with_llm_fn(
+                paper_candidates=paper_candidates,
+                user_prompt=user_prompt,
+                model=llm_extractor_model,
+                api_key_env=llm_api_key_env,
+                timeout_s=timeout_s,
+                max_retries=0,
+                raw_event_fn=(
+                    (lambda event_type, payload: raw_event_fn(event_type, payload, None))
+                    if raw_event_fn is not None
+                    else None
+                ),
+                llm_op_id_prefix=dedup_op_prefix,
+                deps={
+                    "estimate_messages_metrics_fn": deps["estimate_messages_metrics_fn"],
+                    "openai_complete_json_fn": deps["openai_complete_json_fn"],
+                    "next_op_id_fn": (lambda prefix: deps["next_op_id_fn"](runtime_state, prefix)),
+                },
+            )
+            emit_progress_fn(
+                progress_callback,
+                event="agentic_extract_stage",
+                cycle_index=cycle_index,
+                stage="paper_dedup_done",
+                paper_dedup_clusters=int(paper_dedup_trace.get("cluster_count") or 0),
+                paper_dedup_reduced=int(paper_dedup_trace.get("reduced_count") or 0),
+            )
+        except Exception as exc:
+            dedup_error = f"{type(exc).__name__}:{exc}"
+            if raw_event_fn is not None:
+                raw_event_fn(
+                    "extract_paper_dedup_error",
+                    {
+                        "error": dedup_error,
+                        "paper_candidate_count": len(paper_candidates),
+                    },
+                    None,
+                )
+            emit_progress_fn(
+                progress_callback,
+                event="agentic_extract_stage",
+                cycle_index=cycle_index,
+                stage="paper_dedup_failed",
+                error=dedup_error,
+            )
     known_urls = [
         str(row.get("url") or "")
         for row in (runtime_state.get("url_hits") or [])
@@ -834,37 +853,58 @@ def execute_resolved_extract_request(
             link_candidates=len(link_candidates),
         )
         candidate_url_op_id = deps["next_op_id_fn"](runtime_state, "extract_candidate_urls")
-        candidate_urls, _candidate_url_trace = deps["extract_candidate_urls_with_llm_fn"](
-            user_prompt=user_prompt,
-            intent=extract_intent,
-            paper_candidates=paper_candidates,
-            anchor_terms=anchor_terms,
-            known_urls=known_urls,
-            link_candidates=link_candidates,
-            model=llm_extractor_model,
-            api_key_env=llm_api_key_env,
-            timeout_s=timeout_s,
-            max_retries=0,
-            raw_event_fn=(
-                (lambda event_type, payload: raw_event_fn(event_type, payload, None))
-                if raw_event_fn is not None
-                else None
-            ),
-            llm_op_id=candidate_url_op_id,
-            deps={
-                "estimate_messages_metrics_fn": deps["estimate_messages_metrics_fn"],
-                "openai_complete_json_fn": deps["openai_complete_json_fn"],
-                "peek_text_fn": deps["peek_text_fn"],
-            },
-        )
-        emit_progress_fn(
-            progress_callback,
-            event="agentic_extract_stage",
-            cycle_index=cycle_index,
-            stage="candidate_url_done",
-            link_candidates=len(link_candidates),
-            candidate_url_count=len(candidate_urls),
-        )
+        try:
+            candidate_urls, _candidate_url_trace = deps["extract_candidate_urls_with_llm_fn"](
+                user_prompt=user_prompt,
+                intent=extract_intent,
+                paper_candidates=paper_candidates,
+                anchor_terms=anchor_terms,
+                known_urls=known_urls,
+                link_candidates=link_candidates,
+                model=llm_extractor_model,
+                api_key_env=llm_api_key_env,
+                timeout_s=timeout_s,
+                max_retries=0,
+                raw_event_fn=(
+                    (lambda event_type, payload: raw_event_fn(event_type, payload, None))
+                    if raw_event_fn is not None
+                    else None
+                ),
+                llm_op_id=candidate_url_op_id,
+                deps={
+                    "estimate_messages_metrics_fn": deps["estimate_messages_metrics_fn"],
+                    "openai_complete_json_fn": deps["openai_complete_json_fn"],
+                    "peek_text_fn": deps["peek_text_fn"],
+                },
+            )
+            emit_progress_fn(
+                progress_callback,
+                event="agentic_extract_stage",
+                cycle_index=cycle_index,
+                stage="candidate_url_done",
+                link_candidates=len(link_candidates),
+                candidate_url_count=len(candidate_urls),
+            )
+        except Exception as exc:
+            candidate_url_error = f"{type(exc).__name__}:{exc}"
+            if raw_event_fn is not None:
+                raw_event_fn(
+                    "extract_candidate_urls_error",
+                    {
+                        "op_id": candidate_url_op_id,
+                        "error": candidate_url_error,
+                        "link_candidates_count": len(link_candidates),
+                    },
+                    None,
+                )
+            emit_progress_fn(
+                progress_callback,
+                event="agentic_extract_stage",
+                cycle_index=cycle_index,
+                stage="candidate_url_failed",
+                link_candidates=len(link_candidates),
+                error=candidate_url_error,
+            )
     return _build_extract_action_result(
         facts=facts,
         paper_candidates=paper_candidates,

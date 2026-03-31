@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from src.orchestrator.agentic_projection import _project_extract_url_rows
-from src.orchestrator.agentic_text import _host_from_url, _normalize_anchor_terms, _peek_text
+from src.orchestrator.agentic_text import (
+    _host_from_url,
+    _is_detail_page,
+    _is_listing_page,
+    _normalize_anchor_terms,
+    _peek_text,
+)
 from src.retrieval.service import write_yaml
 
 ALLOWED_SHORTLIST_HINTS = {
@@ -251,19 +257,59 @@ def _compact_known_urls_for_agent(
     projected = _project_extract_url_rows(
         extract_state_by_url=extract_state_by_url,
         url_hits=[item for item in url_hits if isinstance(item, dict)],
-        max_items=max_items,
+        max_items=None,
     )
-    return [
-        {
-            "url": str(item.get("url") or ""),
-            "title": str(item.get("title") or ""),
-            "host": str(item.get("host") or _host_from_url(str(item.get("url") or ""))),
-            "peek": str(item.get("peek") or ""),
-            "status": str(item.get("status") or ""),
-        }
-        for item in projected
-        if isinstance(item, dict)
-    ]
+    compacted: list[dict[str, Any]] = []
+    for item in projected:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "")
+        title = str(item.get("title") or "")
+        page_kind = "detail" if _is_detail_page(title=title, url=url) else ("listing" if _is_listing_page(title=title, url=url) else "other")
+        compacted.append(
+            {
+                "url": url,
+                "title": title,
+                "host": str(item.get("host") or _host_from_url(url)),
+                "peek": str(item.get("peek") or ""),
+                "status": str(item.get("status") or ""),
+                "page_kind": page_kind,
+                "rank": int(item.get("rank") or 0),
+                "score": round(float(item.get("score") or 0.0), 4),
+                "query_used": str(item.get("query_used") or ""),
+                "source": str(item.get("source") or ""),
+            }
+        )
+
+    def _memory_status_rank(row: dict[str, Any]) -> int:
+        status = str(row.get("status") or "").lower()
+        if status == "in_progress":
+            return 3
+        if status == "new":
+            return 2
+        if status == "completed":
+            return 1
+        return 0
+
+    def _memory_page_rank(row: dict[str, Any]) -> int:
+        kind = str(row.get("page_kind") or "")
+        if kind == "listing":
+            return 2
+        if kind == "other":
+            return 1
+        return 0
+
+    ordered = sorted(
+        compacted,
+        key=lambda row: (
+            _memory_status_rank(row),
+            _memory_page_rank(row),
+            float(row.get("score") or 0.0),
+            -int(row.get("rank") or 0),
+        ),
+        reverse=True,
+    )
+    return ordered[: max(1, int(max_items or 1))]
 
 
 def _compact_matched_papers_for_agent(papers: list[dict], *, max_items: int = 6) -> list[dict]:
@@ -366,7 +412,7 @@ def _build_agent_memory(
         "known_urls": _compact_known_urls_for_agent(
             [item for item in url_hits if isinstance(item, dict)],
             extract_state_by_url=extract_state_by_url,
-            max_items=6,
+            max_items=10,
         ),
         "matched_papers": _compact_matched_papers_for_agent(
             [item for item in papers if isinstance(item, dict)],

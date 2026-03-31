@@ -596,7 +596,7 @@ def collect_candidate_url_inputs_from_records(
     *,
     paths: dict[str, Path],
     known_urls: list[str],
-    max_links: int = 80,
+    max_links: int = 32,
 ) -> list[dict[str, Any]]:
     known_url_set = {
         canonicalize_discovered_url(value).lower()
@@ -648,7 +648,7 @@ def collect_candidate_url_inputs_from_records(
                 {
                     "url": resolved,
                     "label": label,
-                    "context": _peek_text(context, 240),
+                    "context": _peek_text(context, 160),
                     "source_url": base_url,
                     "source_title": str(record.get("url_title") or ""),
                 }

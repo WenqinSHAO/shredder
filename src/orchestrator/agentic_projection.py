@@ -33,6 +33,10 @@ def _project_extract_url_row(
     return {
         "url": normalized_url,
         "target_id": str(item.get("target_id") or ""),
+        "rank": int(hit_row.get("rank") or 0),
+        "score": float(hit_row.get("score") or 0.0),
+        "query_used": str(hit_row.get("query_used") or ""),
+        "source": str(hit_row.get("source") or ""),
         "title": _peek_text(str(hit_row.get("url_title") or hit_row.get("title") or item.get("url_title") or ""), 100),
         "host": str(hit_row.get("host") or _host_from_url(normalized_url)),
         "peek": _peek_text(str(hit_row.get("peek") or ""), 120),

@@ -11,6 +11,10 @@ from src.orchestrator.agentic_text import (
     _estimate_text_tokens,
 )
 
+MAX_CANDIDATE_URL_PAPERS = 8
+MAX_CANDIDATE_URL_KNOWN_URLS = 24
+MAX_CANDIDATE_URL_LINKS = 32
+
 
 def extract_llm_system_prompt() -> str:
     return (
@@ -99,7 +103,7 @@ def extract_candidate_urls_llm_user_payload(
     link_candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
     compact_papers: list[dict[str, Any]] = []
-    for row in paper_candidates[:16]:
+    for row in paper_candidates[:MAX_CANDIDATE_URL_PAPERS]:
         if not isinstance(row, dict):
             continue
         compact_papers.append(
@@ -115,7 +119,7 @@ def extract_candidate_urls_llm_user_payload(
         "user_prompt": user_prompt,
         "intent": intent,
         "anchor_terms": [str(v) for v in anchor_terms if str(v).strip()][:16],
-        "known_urls": [str(v) for v in known_urls if str(v).strip()][:48],
+        "known_urls": [str(v) for v in known_urls if str(v).strip()][:MAX_CANDIDATE_URL_KNOWN_URLS],
         "paper_candidates": compact_papers,
         "link_candidates": [
             {
@@ -125,7 +129,7 @@ def extract_candidate_urls_llm_user_payload(
                 "source_url": str(row.get("source_url") or ""),
                 "source_title": str(row.get("source_title") or ""),
             }
-            for row in link_candidates[:80]
+            for row in link_candidates[:MAX_CANDIDATE_URL_LINKS]
             if isinstance(row, dict) and str(row.get("url") or "").strip()
         ],
     }
@@ -447,7 +451,11 @@ def extract_candidate_urls_with_llm(
     peek_text_fn = deps["peek_text_fn"]
     canonicalize_discovered_url_fn = deps["canonicalize_discovered_url_fn"]
 
-    cleaned_links = [row for row in link_candidates if isinstance(row, dict) and str(row.get("url") or "").strip()]
+    cleaned_links = [
+        row
+        for row in link_candidates[:MAX_CANDIDATE_URL_LINKS]
+        if isinstance(row, dict) and str(row.get("url") or "").strip()
+    ]
     if not cleaned_links:
         return [], {
             "link_candidates_count": 0,
@@ -464,7 +472,7 @@ def extract_candidate_urls_with_llm(
         link_candidates=cleaned_links,
     )
     message_metrics = estimate_messages_metrics_fn(messages)
-    max_completion_tokens = min(4_000, max(800, int((message_metrics.get("input_tokens_est") or 0) * 0.2)))
+    max_completion_tokens = min(1_200, max(400, int((message_metrics.get("input_tokens_est") or 0) * 0.12)))
     if raw_event_fn is not None:
         raw_event_fn(
             "extract_candidate_urls_request",

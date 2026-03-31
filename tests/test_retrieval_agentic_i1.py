@@ -1478,6 +1478,48 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertIn("abstract", str(discovered[0].get("why") or "").lower())
         self.assertEqual(int(trace.get("response_candidate_urls_count") or 0), 2)
 
+    def test_extract_candidate_urls_with_llm_caps_request_payload(self):
+        raw_events: list[tuple[str, dict[str, Any]]] = []
+
+        with patch(
+            "src.orchestrator.agentic_llm.openai_complete_json",
+            return_value={"candidate_urls": []},
+        ):
+            _, trace = extract_mod.extract_candidate_urls_with_llm(
+                user_prompt="papers by Google at SIGCOMM in 2025",
+                intent={"query_goal": "papers by Google at SIGCOMM in 2025"},
+                paper_candidates=[
+                    {"title": f"paper-{idx}", "authors": "", "affiliations": "", "url": "https://conf.example/program"}
+                    for idx in range(12)
+                ],
+                anchor_terms=["Google", "SIGCOMM"],
+                known_urls=[f"https://conf.example/known/{idx}" for idx in range(40)],
+                link_candidates=[
+                    {
+                        "url": f"https://conf.example/paper/{idx}",
+                        "label": f"Paper {idx}",
+                        "context": "Detail page",
+                        "source_url": "https://conf.example/program",
+                        "source_title": "Conference Program",
+                    }
+                    for idx in range(50)
+                ],
+                model="dummy",
+                api_key_env="DS_API_KEY",
+                raw_event_fn=lambda event_type, payload: raw_events.append((event_type, dict(payload))) or "raw-event",
+                deps={
+                    "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,
+                    "openai_complete_json_fn": llm_mod.openai_complete_json,
+                    "peek_text_fn": search_mod._peek_text,
+                },
+            )
+        request_payload = next(payload for event_type, payload in raw_events if event_type == "extract_candidate_urls_request")
+        self.assertEqual(request_payload["link_candidates_count"], 32)
+        self.assertLessEqual(request_payload["max_completion_tokens"], 1200)
+        self.assertEqual(len(trace["user_payload"]["paper_candidates"]), 8)
+        self.assertEqual(len(trace["user_payload"]["known_urls"]), 24)
+        self.assertEqual(len(trace["user_payload"]["link_candidates"]), 32)
+
     def test_execute_resolved_extract_request_uses_runtime_boundary(self):
         result = extract_runtime_mod.execute_resolved_extract_request(
             cycle_index=1,
@@ -1629,6 +1671,164 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         )
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["candidate_urls"], [])
+
+    def test_execute_resolved_extract_request_candidate_url_timeout_is_nonfatal(self):
+        result = extract_runtime_mod.execute_resolved_extract_request(
+            cycle_index=1,
+            request={
+                "target_scope_by_url": {"https://conf.example/program": {"filters": {}, "anchor_terms": []}},
+                "filters": {"institution": "Google", "year_gte": 2025},
+                "extract_intent": {
+                    "query_goal": "papers by Google at SIGCOMM in 2025",
+                    "must_match": {"institution_any": ["Google"], "year_gte": 2025},
+                },
+                "anchor_terms": ["Google", "Falcon"],
+                "records": [
+                    {
+                        "target_id": "fetch-1",
+                        "url": "https://conf.example/program",
+                        "url_title": "Conference Program",
+                        "status": "ok",
+                        "segments": ["Falcon by Google"],
+                    }
+                ],
+                "requested_urls": ["https://conf.example/program"],
+                "auto_fetched_records": [],
+            },
+            paths={"result": Path("workspace/demo/artifacts/retrieval/agentic_result.yaml")},
+            user_prompt="papers by Google at SIGCOMM in 2025",
+            timeout_s=45.0,
+            llm_extractor_model="dummy",
+            llm_api_key_env="DS_API_KEY",
+            extract_use_llm_extractor=False,
+            progress_callback=None,
+            runtime_state={},
+            raw_event_fn=None,
+            deps={
+                "prepare_extract_target_fn": lambda **kwargs: {
+                    "row": kwargs["row"],
+                    "filters": dict(kwargs["filters"]),
+                    "anchor_terms": list(kwargs["anchor_terms"]),
+                    "ranked_segments": ["Falcon by Google"],
+                    "batch_mode": "page",
+                    "token_budget": 4000,
+                },
+                "emit_progress_fn": lambda *args, **kwargs: None,
+                "next_op_id_fn": lambda _state, prefix="op": f"{prefix}-1",
+                "collect_candidate_url_inputs_from_records_fn": lambda records, paths, known_urls: [
+                    {
+                        "url": "https://conf.example/paper/falcon",
+                        "label": "Falcon: A Reliable, Low Latency Hardware Transport",
+                        "context": "Paper detail page likely contains abstract.",
+                        "source_url": "https://conf.example/program",
+                        "source_title": "Conference Program",
+                    }
+                ],
+                "extract_candidate_urls_with_llm_fn": lambda **kwargs: (_ for _ in ()).throw(TimeoutError("Request timed out")),
+                "to_paper_candidates_from_facts_fn": lambda facts: [
+                    {
+                        "title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                        "authors": "Alice Roe",
+                        "affiliations": "Google",
+                        "url": "https://conf.example/program",
+                    }
+                ],
+                "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,
+                "openai_complete_json_fn": llm_mod.openai_complete_json,
+                "peek_text_fn": search_mod._peek_text,
+                "context_limit_tokens": 128000,
+                "safety_margin": 0.18,
+                "output_token_reserve": 6000,
+            },
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["paper_candidates"]), 1)
+        self.assertEqual(result["candidate_urls"], [])
+
+    def test_execute_resolved_extract_request_dedup_timeout_is_nonfatal(self):
+        result = extract_runtime_mod.execute_resolved_extract_request(
+            cycle_index=1,
+            request={
+                "target_scope_by_url": {"https://conf.example/program": {"filters": {}, "anchor_terms": []}},
+                "filters": {"institution": "Google", "year_gte": 2025},
+                "extract_intent": {
+                    "query_goal": "papers by Google at SIGCOMM in 2025",
+                    "must_match": {"institution_any": ["Google"], "year_gte": 2025},
+                },
+                "anchor_terms": ["Google", "Falcon"],
+                "records": [
+                    {
+                        "target_id": "fetch-1",
+                        "url": "https://conf.example/program",
+                        "url_title": "Conference Program",
+                        "status": "ok",
+                        "segments": ["Falcon by Google"],
+                    }
+                ],
+                "requested_urls": ["https://conf.example/program"],
+                "auto_fetched_records": [],
+            },
+            paths={"result": Path("workspace/demo/artifacts/retrieval/agentic_result.yaml")},
+            user_prompt="papers by Google at SIGCOMM in 2025",
+            timeout_s=45.0,
+            llm_extractor_model="dummy",
+            llm_api_key_env="DS_API_KEY",
+            extract_use_llm_extractor=True,
+            progress_callback=None,
+            runtime_state={},
+            raw_event_fn=None,
+            deps={
+                "prepare_extract_target_fn": lambda **kwargs: {
+                    "row": kwargs["row"],
+                    "filters": dict(kwargs["filters"]),
+                    "anchor_terms": list(kwargs["anchor_terms"]),
+                    "ranked_segments": ["Falcon by Google"],
+                    "batch_mode": "page",
+                    "token_budget": 4000,
+                },
+                "emit_progress_fn": lambda *args, **kwargs: None,
+                "next_op_id_fn": lambda _state, prefix="op": f"{prefix}-1",
+                "collect_candidate_url_inputs_from_records_fn": lambda records, paths, known_urls: [],
+                "extract_candidate_urls_with_llm_fn": lambda **kwargs: ([], {}),
+                "to_paper_candidates_from_facts_fn": lambda facts: [
+                    {
+                        "title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                        "authors": "Alice Roe",
+                        "affiliations": "Google",
+                        "url": "https://conf.example/program",
+                    }
+                ],
+                "dedup_paper_candidates_with_llm_fn": lambda **kwargs: (_ for _ in ()).throw(TimeoutError("Request timed out")),
+                "slice_segments_by_token_budget_fn": lambda segments, **kwargs: list(segments[:1]),
+                "extract_facts_with_llm_fn": lambda **kwargs: (
+                    [
+                        {
+                            "status": "ok",
+                            "paper_title": "Falcon: A Reliable, Low Latency Hardware Transport",
+                            "year": "2025",
+                            "doi": "",
+                            "arxiv_id": "",
+                            "url": kwargs["record"]["url"],
+                            "filters": dict(kwargs["filters"]),
+                            "extract_intent": dict(kwargs["intent"]),
+                            "llm_extract": {"match_decision": "match"},
+                            "evidence": "paper",
+                            "score": 0.9,
+                        }
+                    ],
+                    {},
+                ),
+                "candidate_dedup_key_fn": lambda row: str(row.get("paper_title") or row.get("title") or ""),
+                "estimate_messages_metrics_fn": llm_mod.estimate_messages_metrics,
+                "openai_complete_json_fn": llm_mod.openai_complete_json,
+                "peek_text_fn": search_mod._peek_text,
+                "context_limit_tokens": 128000,
+                "safety_margin": 0.18,
+                "output_token_reserve": 6000,
+            },
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["paper_candidates"]), 1)
 
     def test_execute_resolved_extract_request_uses_scoped_target_intent(self):
         seen_venues: list[list[str]] = []
@@ -3037,6 +3237,38 @@ class TestAgenticRetrievalI1(unittest.TestCase):
         self.assertEqual(memory["next_todos"][0]["target"], "NSDI 2025 accepted papers")
         self.assertTrue(any("timeout" in item for item in memory["blockers"]))
 
+    def test_compact_known_urls_for_agent_prefers_listing_pages_and_keeps_quality_fields(self):
+        rows = view_mod._compact_known_urls_for_agent(
+            [
+                {
+                    "url": "https://www.usenix.org/conference/nsdi25/presentation/zeng",
+                    "url_title": "Learning Production-Optimized Congestion Control Selection for ...",
+                    "host": "www.usenix.org",
+                    "peek": "Alibaba Cloud presentation detail page",
+                    "rank": 1,
+                    "score": 1.07,
+                    "query_used": "NSDI 2025 accepted papers Alibaba",
+                    "source": "searxng",
+                },
+                {
+                    "url": "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/",
+                    "url_title": "ACM SIGCOMM 2025 List of Accepted Papers - Events",
+                    "host": "conferences.sigcomm.org",
+                    "peek": "Official accepted papers page",
+                    "rank": 5,
+                    "score": 0.85,
+                    "query_used": "SIGCOMM 2025 accepted papers Alibaba",
+                    "source": "searxng",
+                },
+            ],
+            extract_state_by_url={},
+            max_items=10,
+        )
+        self.assertEqual(rows[0]["page_kind"], "listing")
+        self.assertEqual(rows[0]["url"], "https://conferences.sigcomm.org/sigcomm/2025/accepted-papers/")
+        self.assertEqual(rows[0]["query_used"], "SIGCOMM 2025 accepted papers Alibaba")
+        self.assertEqual(rows[1]["page_kind"], "detail")
+
     def test_planned_search_queries_from_state_delta_aligns_with_search_todos(self):
         queries = loop_mod._planned_search_queries_from_state_delta(
             {
@@ -3055,6 +3287,27 @@ class TestAgenticRetrievalI1(unittest.TestCase):
                 "NSDI 2025 accepted papers alibaba",
             ],
         )
+
+    def test_reconcile_completed_search_todos_marks_executed_queries_done(self):
+        updated = loop_mod._reconcile_completed_search_todos(
+            {
+                "active_step": {"step_id": "search_venues", "action": "search_web", "goal": "Find venue pages"},
+                "todo": [
+                    {"todo_id": "search_sigcomm_2025", "action": "search_web", "status": "todo", "target": "SIGCOMM 2025 accepted papers Alibaba"},
+                    {"todo_id": "search_nsdi_2025", "action": "search_web", "status": "todo", "target": "NSDI 2025 program Alibaba"},
+                    {"todo_id": "extract_nsdi_2025", "action": "extract_content", "status": "todo", "target": "NSDI 2025 technical sessions"},
+                ],
+            },
+            executed_queries=[
+                "SIGCOMM 2025 accepted papers Alibaba",
+                "NSDI 2025 program Alibaba",
+            ],
+            user_prompt="papers by alibaba at SIGCOMM and NSDI in 2025",
+        )
+        todo_by_id = {str(item.get("todo_id")): item for item in updated["todo"]}
+        self.assertEqual(str(todo_by_id["search_sigcomm_2025"].get("status")), "done")
+        self.assertEqual(str(todo_by_id["search_nsdi_2025"].get("status")), "done")
+        self.assertEqual(str(todo_by_id["extract_nsdi_2025"].get("status")), "todo")
 
     def test_build_agent_memory_includes_suggested_urls_from_last_extract_action(self):
         memory = view_mod._build_agent_memory(

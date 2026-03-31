@@ -107,6 +107,36 @@ def _planned_search_queries_from_state_delta(
     return _unique_texts(queries, limit=max(1, int(limit or 1)))
 
 
+def _reconcile_completed_search_todos(
+    plan_state: dict[str, Any],
+    *,
+    executed_queries: list[str],
+    user_prompt: str,
+) -> dict[str, Any]:
+    normalized_executed = {
+        _search_query_from_todo_target(query, user_prompt=user_prompt).lower()
+        for query in executed_queries
+        if _search_query_from_todo_target(query, user_prompt=user_prompt)
+    }
+    if not normalized_executed:
+        return dict(plan_state or {})
+
+    todo_updates: list[dict[str, Any]] = []
+    for item in [row for row in (plan_state.get("todo") or []) if isinstance(row, dict)]:
+        if str(item.get("action") or "").strip().lower() != "search_web":
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        if status in {"done", "blocked", "error"}:
+            continue
+        normalized_target = _search_query_from_todo_target(str(item.get("target") or ""), user_prompt=user_prompt).lower()
+        if normalized_target and normalized_target in normalized_executed:
+            todo_updates.append({"todo_id": str(item.get("todo_id") or ""), "status": "done"})
+
+    if not todo_updates:
+        return dict(plan_state or {})
+    return _apply_plan_update(dict(plan_state or {}), {"todo_updates": todo_updates})
+
+
 def _append_raw_event(
     *,
     path: Path,
@@ -409,6 +439,11 @@ def _finalize_cycle(
     extracted_paper_candidates = list(action_result.get("paper_candidates") or [])
 
     if selected_action == "search_web":
+        loop.agent_plan = _reconcile_completed_search_todos(
+            loop.agent_plan,
+            executed_queries=planned_queries,
+            user_prompt=loop.prompt,
+        )
         url_shortlisted = _finalize_search_action(
             loop=loop,
             cycle_index=cycle_index,
