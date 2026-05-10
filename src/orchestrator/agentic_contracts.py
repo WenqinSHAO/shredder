@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -178,3 +179,18 @@ def _parse_agent_action_response(
             "input_tokens_est": int((debug_metrics or {}).get("input_tokens_est") or 0),
         },
     }
+
+
+@dataclass
+class ExtractStateDelta:
+    """State delta for a single URL extraction, to be applied through state_apply."""
+    url: str
+    scope_signature: str
+    scope_changed: bool
+    segments_done: int
+    segment_total: int
+    failed: bool
+    completed: bool
+    coverage_has_more: bool
+    last_error: str
+    skip_reason: str | None

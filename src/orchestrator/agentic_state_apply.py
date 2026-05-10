@@ -149,3 +149,25 @@ def _apply_extract_candidate_results(
         "final_candidates": _merge_paper_candidates(existing_final_candidates, cycle_candidates),
         "fallback_candidates": list(existing_fallback_candidates),
     }
+
+
+# Apply a single extract state delta to the extract_state_by_url dict.
+def apply_extract_state_delta(
+    extract_state_by_url: dict[str, dict[str, Any]],
+    delta: Any,  # ExtractStateDelta from agentic_contracts
+) -> None:
+    """Apply a state delta from extract runtime to the canonical extract state.
+    
+    This is the only function that should mutate extract_state_by_url for extraction progress.
+    All extract runtime code should return deltas, not mutate state directly.
+    """
+    url_key = str(delta.url).strip()
+    extract_state_by_url[url_key] = {
+        "scope_signature": str(delta.scope_signature),
+        "segments_done": int(delta.segments_done),
+        "segment_total": int(delta.segment_total),
+        "failed": bool(delta.failed),
+        "completed": bool(delta.completed),
+        "coverage_has_more": bool(delta.coverage_has_more),
+        "last_error": str(delta.last_error),
+    }

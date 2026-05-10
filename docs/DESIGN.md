@@ -11,6 +11,12 @@ It is intentionally narrower than the older end-to-end pipeline notes: the activ
 5. applies those results back into canonical state,
 6. writes replayable local artifacts that expose both raw behavior and compact summaries.
 
+Status note:
+- use `docs/TODO.md` as the authoritative pending-work board
+- this document describes the intended current architecture and ownership boundaries
+- the active `E21` state-consistency slice means some extract-runtime paths are still being moved
+  onto the stricter `state_apply -> canonical state -> projection` boundary
+
 The design goal is debuggability first. Run control, runtime state, and replay artifacts are local to the workspace even though `search_web` and page fetches use remote services. Hard semantic choices should live in LLM prompts and compact contracts, while deterministic code should stay focused on normalization, filtering, dedupe, state updates, persistence, and projection.
 
 ## 2) Core Principles

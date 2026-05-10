@@ -1,6 +1,6 @@
 # Implementation Progress Board
 
-Last updated: 2026-03-31
+Last updated: 2026-05-09
 
 ## 0) Usage Contract
 
@@ -28,6 +28,46 @@ Hygiene reminders:
 - avoid venue/institution hardcoded logic
 - prefer generic filter contracts and extractor schema outputs
 - do not commit generated runtime artifacts (`kb/kb.sqlite`, egg-info)
+
+## 0.1 Resume Snapshot
+
+If you are returning after a break, use this order:
+
+1. `docs/TODO.md`
+   - read `3.2.7 Current Focus`
+   - then `3.2.8 Active Priority Stack`
+   - then `3.2.10 Active Next Slices`
+2. `docs/DESIGN.md`
+   - use this for module ownership and artifact/runtime boundaries
+3. `docs/agentic-search-spec.md`
+   - use this only for the compact loop/result contracts, not for the authoritative pending-work queue
+
+Current reality as of `2026-05-09`:
+- the active top priority is still `E21` state consistency foundation plus `E22` regression test matrix
+- `E21` is only partially landed:
+  - `ExtractStateDelta` exists in `src/orchestrator/agentic_contracts.py`
+  - `apply_extract_state_delta(...)` exists in `src/orchestrator/agentic_state_apply.py`
+  - `_reconcile_extract_todos_from_coverage(...)` and `_validate_state_consistency(...)` are added in `src/orchestrator/agentic_loop.py`
+  - completed-page `skip_reason="completed"` behavior already exists in `src/orchestrator/agentic_extract_runtime.py`
+  - but extract runtime still has direct state mutation paths, so the state-delta boundary is not finished yet
+- `E22` has not been completed:
+  - the repo still lacks the planned archetype-specific replay test files for author/topic/multi-year/semantic regressions
+- later slices (`E23+`) should wait until `E21` is truly complete and protected by tests
+
+Current local in-progress files:
+- `docs/TODO.md`
+- `src/orchestrator/agentic_contracts.py`
+- `src/orchestrator/agentic_loop.py`
+- `src/orchestrator/agentic_state_apply.py`
+
+Best resume path:
+1. finish `E21` by making extract runtime return/apply deltas instead of mutating `extract_state_by_url` directly
+2. add the `E22` replay/regression tests in parallel
+3. use `replay-agentic-extract` on existing workspaces before doing more live tuning
+
+Useful current commands:
+- `python -m src.cli retrieve-agentic <project_id> --prompt "..."`
+- `python -m src.cli replay-agentic-extract <project_id> --cycle-index <n>`
 
 ## 1) Program Overview
 
@@ -251,6 +291,7 @@ If you are picking up active work, start with `3.2.7 Current Focus`, then `3.2.8
 - 2026-03-31: The broader topic query `papers on AI infra for LLM training and inference in SIGCOMM 2025` confirms that the same-page topic-query problem is not limited to congestion-control wording. The fetched `accepted-papers` HTML already contains the user's hand-built ground truth (`MixNet`, `InfiniteHBD`, `DistTrain`, `MegaScale-Infer`, `Astral`, `ByteScale`, `HACK`) and also plausible borderline neighbors such as `SCX`, yet the loop never leaves that page family or converges on the later rows. Instead it re-extracts `accepted-papers` four times under different filter packs, with ranked-window counts drifting from `151` to `51` to `66` and back to `151`, and finishes with only `MixNet`, `InfiniteHBD`, and `DistTrain` plus false positives such as `Hummingbird` and `Revisiting RDMA Reliability for Lossy Fabrics`. Record this as a general topic-query failure mode: repeated same-page scope resets are burning cycle budget, broad AI/LLM lexical filters are over-selecting early windows, and planner-fed surfaced titles/regexes are self-poisoning later passes instead of letting the extractor continue deeper into the known-relevant official page.
 - 2026-03-31: The cross-venue semantic query `latest paper on agentic memory from top AI conferences such as ICLR, ICML, AAAI, etc.` exposed a different but related failure class. Search did surface stronger candidates early (`A-MEM`, `Agent Workflow Memory`, `MemoryAgentBench`, ICLR 2026 workshop context), but the planner still decomposed the task into only `ICLR accepted papers agentic memory`, `ICML accepted papers agentic memory`, and `AAAI accepted papers agentic memory`, with no explicit recency-aware search, no `latest`/`2026` planning, and no broader semantic variants. The loop then over-invested in the wrong page types: a giant ICLR 2025 listing page, DBLP AAAI 2025, an arXiv PDF, and an OpenReview PDF, while never converging on the strongest paper-detail hits already visible in search. The final retained row was the unrelated AAAI 2025 paper `HiCM²`, which shows that broad lexical pairs such as `agentic` + `memory` on giant bibliographies are still far too weak for semantic-topic queries. Record this as a general semantic-search issue: planner search/query generation must treat `latest` and cross-venue topical queries as recency-aware semantic tasks, planner memory must distinguish high-value paper-detail pages from broad listing/bibliography/PDF pages, and extraction should not spend large budgets on bibliography-style pages when the lexical evidence is this weak.
 - 2026-03-31: Completed a small planner-memory slice against that `workspace/mem` failure class. `src/orchestrator/agentic_view.py` now exposes `memory.query_profile` (including `latest` / year-range cues) plus `memory.priority_direct_hits` for strong paper-detail hits already surfaced in search, and `src/orchestrator/agentic_contracts.py` now tells the planner to treat those direct hits as first-class options on latest/semantic queries instead of defaulting immediately to giant listings, bibliographies, or PDFs. As part of the same boundary, `src/orchestrator/agentic_text.py` now recognizes common poster/forum paper-detail URLs as detail pages for planner memory. Retrieval-focused tests now cover the new memory shape and pass (`8` focused tests; `128 passed` in `tests/test_retrieval_agentic_i1.py`).
+- 2026-04-02: Started E21 state consistency foundation (P0). Added `ExtractStateDelta` dataclass in `src/orchestrator/agentic_contracts.py` to represent state changes from extract runtime. Added `apply_extract_state_delta` in `src/orchestrator/agentic_state_apply.py` as the single function that mutates `extract_state_by_url`. Simplified `_reconcile_extract_todos_from_coverage` in `src/orchestrator/agentic_loop.py` to support explicit `target_urls` in todos (preferred) with fallback to text matching (backward compatible). Added `_validate_state_consistency` validator that runs after each extract action and fails the run if state inconsistencies are detected (duplicate URLs, orphaned state, coverage/todo drift). All 128 retrieval tests pass. Remaining work: refactor `_run_prepared_extract_target` to return state deltas instead of mutating directly, and add early return for completed pages.
 
 ### 3.2.7 Current Focus
 

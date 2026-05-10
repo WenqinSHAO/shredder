@@ -1,6 +1,6 @@
 # Agentic Search Minimal Spec
 
-Last updated: 2026-03-23
+Last updated: 2026-05-09
 
 ## Purpose
 
@@ -14,6 +14,19 @@ of truth remains the implementation in:
 - `src/orchestrator/agentic_extract.py`
 - `src/orchestrator/agentic_result.py`
 - `src/orchestrator/agentic_view.py`
+
+For current pending issues and implementation priority, do **not** use this file as the main board.
+Use `docs/TODO.md`, especially:
+
+- `3.2.7 Current Focus`
+- `3.2.8 Active Priority Stack`
+- `3.2.10 Active Next Slices`
+
+Important current caveat:
+- the design is moving toward `action result -> state_apply -> canonical state -> projection`
+- but the `E21` state consistency slice is still in progress, so some extract-runtime paths still
+  mutate shared extract state directly rather than returning only state deltas
+- treat this file as the compact contract reference, not the authoritative “what is left to fix” document
 
 This spec focuses on the most important data contracts:
 
@@ -290,6 +303,8 @@ Each cycle updates state in this order:
    - concretely, the loop snapshots shared search status into a runtime payload, passes that
      payload plus action params to the selected action executor, and then re-applies the mutated
      runtime payload back onto `url_state` / `extract_state`
+   - note: this is the intended exchange boundary, but `E21` is still tightening extract-state
+     ownership so some runtime mutation still bypasses the final state-delta-only design
 7. write action-side state back onto:
    - `url_state`
    - `extract_state`
@@ -331,3 +346,9 @@ This spec is intentionally minimal. It does **not** yet fully specify:
 - the future optimization/refactor plan for how `agent_memory` is built from loop state
 
 Those should be filled in after the next compaction pass lands.
+
+Current known active follow-up, per `docs/TODO.md`:
+
+- finish `E21` state consistency foundation
+- add `E22` replay/regression coverage across author, topic, multi-year, and semantic query archetypes
+- only then move to richer planner-memory and archetype-specific extraction work
