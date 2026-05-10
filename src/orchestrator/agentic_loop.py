@@ -238,6 +238,13 @@ def _reconcile_extract_todos_from_coverage(
     extract_state_by_url: dict[str, dict[str, Any]],
     url_hits: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Reconcile extract_content todo status from actual per-URL coverage.
+    
+    Simplified version that:
+    1. Uses explicit target_urls if present in todo (preferred)
+    2. Falls back to text matching if target_urls not present (backward compatible)
+    3. Derives todo status directly from coverage state
+    """
     targets = _normalize_extract_targets(action_params)
     if not targets:
         return dict(plan_state or {})
@@ -252,6 +259,7 @@ def _reconcile_extract_todos_from_coverage(
     if not extract_todos:
         return dict(plan_state or {})
 
+    # Build coverage status by URL
     coverage_summary = _build_extract_coverage_summary(
         extract_state_by_url,
         url_hits=url_hits,
@@ -262,24 +270,39 @@ def _reconcile_extract_todos_from_coverage(
         if isinstance(row, dict) and str(row.get("url") or "").strip()
     }
 
+    # Match todos to URLs
     matched_urls_by_todo: dict[str, list[str]] = {}
     assigned_urls: set[str] = set()
     unmatched_todos: list[str] = []
+    
     for item in extract_todos:
         todo_id = str(item.get("todo_id") or "").strip()
         if not todo_id:
             continue
-        matched_urls = [
-            str(target.get("url") or "").strip()
-            for target in targets
-            if _extract_todo_matches_target(str(item.get("target") or ""), target)
-        ]
+        
+        # Preferred: use explicit target_urls if present
+        explicit_urls = item.get("target_urls")
+        if explicit_urls and isinstance(explicit_urls, list):
+            matched_urls = [
+                str(url).strip()
+                for url in explicit_urls
+                if str(url).strip()
+            ]
+        else:
+            # Fallback: use text matching
+            matched_urls = [
+                str(target.get("url") or "").strip()
+                for target in targets
+                if _extract_todo_matches_target(str(item.get("target") or ""), target)
+            ]
+        
         if matched_urls:
             matched_urls_by_todo[todo_id] = matched_urls
             assigned_urls.update(matched_urls)
         else:
             unmatched_todos.append(todo_id)
 
+    # Handle unmatched todos with remaining URLs
     remaining_urls = [
         str(target.get("url") or "").strip()
         for target in targets
@@ -288,34 +311,125 @@ def _reconcile_extract_todos_from_coverage(
     if len(unmatched_todos) == 1 and remaining_urls:
         matched_urls_by_todo[unmatched_todos[0]] = list(remaining_urls)
 
+    # Derive todo status from coverage
     todo_updates: list[dict[str, Any]] = []
     for item in extract_todos:
         todo_id = str(item.get("todo_id") or "").strip()
         matched_urls = matched_urls_by_todo.get(todo_id) or []
         if not todo_id or not matched_urls:
             continue
-        matched_rows = [status_by_url.get(url, {"status": "new", "has_more_results": False}) for url in matched_urls]
-        if matched_rows and all(
-            str(row.get("status") or "").strip().lower() == "completed" and not bool(row.get("has_more_results"))
+        
+        # Get coverage status for all matched URLs
+        matched_rows = [
+            status_by_url.get(url, {"status": "new", "has_more_results": False})
+            for url in matched_urls
+        ]
+        
+        # Derive status: done if all completed with no more results
+        all_completed = all(
+            str(row.get("status") or "").strip().lower() == "completed"
+            and not bool(row.get("has_more_results"))
             for row in matched_rows
-        ):
-            next_status = "done"
-        elif any(
+        )
+        any_in_progress = any(
             str(row.get("status") or "").strip().lower() in {"in_progress", "failed"}
             or bool(row.get("has_more_results"))
             for row in matched_rows
-        ):
-            next_status = "doing"
-        elif any(str(row.get("status") or "").strip().lower() == "completed" for row in matched_rows):
+        )
+        any_completed = any(
+            str(row.get("status") or "").strip().lower() == "completed"
+            for row in matched_rows
+        )
+        
+        if all_completed:
+            next_status = "done"
+        elif any_in_progress or any_completed:
             next_status = "doing"
         else:
             next_status = "todo"
+        
+        # Update if status changed
         if str(item.get("status") or "").strip().lower() != next_status:
             todo_updates.append({"todo_id": todo_id, "status": next_status})
 
     if not todo_updates:
         return dict(plan_state or {})
     return _apply_plan_update(dict(plan_state or {}), {"todo_updates": todo_updates})
+
+
+def _validate_state_consistency(
+    *,
+    extract_state_by_url: dict[str, dict[str, Any]],
+    url_hits: list[dict[str, Any]],
+    plan_state: dict[str, Any],
+) -> list[str]:
+    """Validate state consistency and return list of issues found.
+    
+    This validator runs after each cycle to catch state drift early.
+    If any issues are found, the run will fail with a clear error message.
+    
+    Checks:
+    1. No duplicate URLs in url_hits
+    2. No orphaned entries in extract_state_by_url (URLs not in hits)
+    3. Coverage status matches todo status for extract_content todos
+    """
+    issues = []
+    
+    # 1. Check for duplicate URLs in url_hits
+    seen_urls = set()
+    for hit in url_hits:
+        url = str(hit.get("url") or "").strip()
+        if not url:
+            continue
+        if url in seen_urls:
+            issues.append(f"Duplicate URL in url_hits: {url}")
+        seen_urls.add(url)
+    
+    # 2. Check for orphaned entries in extract_state_by_url
+    # (URLs in extract_state that are not in url_hits)
+    hit_urls = {str(hit.get("url") or "").strip() for hit in url_hits if str(hit.get("url") or "").strip()}
+    for url, state in extract_state_by_url.items():
+        url_str = str(url).strip()
+        if not url_str:
+            continue
+        if url_str not in hit_urls:
+            # Only flag as orphaned if not recently completed/failed
+            # (might be a URL that was extracted but not yet in hits)
+            is_terminal = bool(state.get("completed")) or bool(state.get("failed"))
+            if not is_terminal:
+                issues.append(f"Orphaned extract state (not in url_hits): {url_str}")
+    
+    # 3. Check that todo status matches coverage for extract_content todos
+    todos = plan_state.get("todo") or []
+    for todo in todos:
+        if not isinstance(todo, dict):
+            continue
+        if str(todo.get("action") or "").strip().lower() != "extract_content":
+            continue
+        
+        # Check if todo has explicit target_urls
+        target_urls = todo.get("target_urls")
+        if not target_urls or not isinstance(target_urls, list):
+            # Can't validate without explicit URLs
+            continue
+        
+        todo_id = str(todo.get("todo_id") or "unknown")
+        todo_status = str(todo.get("status") or "").strip().lower()
+        
+        # Check if all target URLs are completed
+        all_completed = all(
+            bool(extract_state_by_url.get(url, {}).get("completed"))
+            for url in target_urls
+            if str(url).strip()
+        )
+        
+        # If all URLs completed but todo not marked done, that's inconsistent
+        if all_completed and todo_status not in {"done", "blocked", "error"}:
+            issues.append(
+                f"Todo {todo_id} has status '{todo_status}' but all target URLs are completed"
+            )
+    
+    return issues
 
 
 def _append_raw_event(
@@ -740,6 +854,18 @@ def _finalize_extract_action(
         extract_state_by_url=loop.extract_state.by_url,
         url_hits=[row for row in loop.url_state.hits if isinstance(row, dict)],
     )
+    
+    # Validate state consistency after extract action
+    consistency_issues = _validate_state_consistency(
+        extract_state_by_url=loop.extract_state.by_url,
+        url_hits=[row for row in loop.url_state.hits if isinstance(row, dict)],
+        plan_state=loop.agent_plan,
+    )
+    if consistency_issues:
+        # Fail the run with clear error message
+        error_msg = "State consistency violation detected:\n" + "\n".join(f"  - {issue}" for issue in consistency_issues)
+        raise RuntimeError(error_msg)
+    
     return []
 
 

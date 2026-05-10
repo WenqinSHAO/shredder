@@ -1,6 +1,6 @@
 # Implementation Progress Board
 
-Last updated: 2026-03-31
+Last updated: 2026-05-09
 
 ## 0) Usage Contract
 
@@ -28,6 +28,46 @@ Hygiene reminders:
 - avoid venue/institution hardcoded logic
 - prefer generic filter contracts and extractor schema outputs
 - do not commit generated runtime artifacts (`kb/kb.sqlite`, egg-info)
+
+## 0.1 Resume Snapshot
+
+If you are returning after a break, use this order:
+
+1. `docs/TODO.md`
+   - read `3.2.7 Current Focus`
+   - then `3.2.8 Active Priority Stack`
+   - then `3.2.10 Active Next Slices`
+2. `docs/DESIGN.md`
+   - use this for module ownership and artifact/runtime boundaries
+3. `docs/agentic-search-spec.md`
+   - use this only for the compact loop/result contracts, not for the authoritative pending-work queue
+
+Current reality as of `2026-05-09`:
+- the active top priority is still `E21` state consistency foundation plus `E22` regression test matrix
+- `E21` is only partially landed:
+  - `ExtractStateDelta` exists in `src/orchestrator/agentic_contracts.py`
+  - `apply_extract_state_delta(...)` exists in `src/orchestrator/agentic_state_apply.py`
+  - `_reconcile_extract_todos_from_coverage(...)` and `_validate_state_consistency(...)` are added in `src/orchestrator/agentic_loop.py`
+  - completed-page `skip_reason="completed"` behavior already exists in `src/orchestrator/agentic_extract_runtime.py`
+  - but extract runtime still has direct state mutation paths, so the state-delta boundary is not finished yet
+- `E22` has not been completed:
+  - the repo still lacks the planned archetype-specific replay test files for author/topic/multi-year/semantic regressions
+- later slices (`E23+`) should wait until `E21` is truly complete and protected by tests
+
+Current local in-progress files:
+- `docs/TODO.md`
+- `src/orchestrator/agentic_contracts.py`
+- `src/orchestrator/agentic_loop.py`
+- `src/orchestrator/agentic_state_apply.py`
+
+Best resume path:
+1. finish `E21` by making extract runtime return/apply deltas instead of mutating `extract_state_by_url` directly
+2. add the `E22` replay/regression tests in parallel
+3. use `replay-agentic-extract` on existing workspaces before doing more live tuning
+
+Useful current commands:
+- `python -m src.cli retrieve-agentic <project_id> --prompt "..."`
+- `python -m src.cli replay-agentic-extract <project_id> --cycle-index <n>`
 
 ## 1) Program Overview
 
@@ -251,6 +291,7 @@ If you are picking up active work, start with `3.2.7 Current Focus`, then `3.2.8
 - 2026-03-31: The broader topic query `papers on AI infra for LLM training and inference in SIGCOMM 2025` confirms that the same-page topic-query problem is not limited to congestion-control wording. The fetched `accepted-papers` HTML already contains the user's hand-built ground truth (`MixNet`, `InfiniteHBD`, `DistTrain`, `MegaScale-Infer`, `Astral`, `ByteScale`, `HACK`) and also plausible borderline neighbors such as `SCX`, yet the loop never leaves that page family or converges on the later rows. Instead it re-extracts `accepted-papers` four times under different filter packs, with ranked-window counts drifting from `151` to `51` to `66` and back to `151`, and finishes with only `MixNet`, `InfiniteHBD`, and `DistTrain` plus false positives such as `Hummingbird` and `Revisiting RDMA Reliability for Lossy Fabrics`. Record this as a general topic-query failure mode: repeated same-page scope resets are burning cycle budget, broad AI/LLM lexical filters are over-selecting early windows, and planner-fed surfaced titles/regexes are self-poisoning later passes instead of letting the extractor continue deeper into the known-relevant official page.
 - 2026-03-31: The cross-venue semantic query `latest paper on agentic memory from top AI conferences such as ICLR, ICML, AAAI, etc.` exposed a different but related failure class. Search did surface stronger candidates early (`A-MEM`, `Agent Workflow Memory`, `MemoryAgentBench`, ICLR 2026 workshop context), but the planner still decomposed the task into only `ICLR accepted papers agentic memory`, `ICML accepted papers agentic memory`, and `AAAI accepted papers agentic memory`, with no explicit recency-aware search, no `latest`/`2026` planning, and no broader semantic variants. The loop then over-invested in the wrong page types: a giant ICLR 2025 listing page, DBLP AAAI 2025, an arXiv PDF, and an OpenReview PDF, while never converging on the strongest paper-detail hits already visible in search. The final retained row was the unrelated AAAI 2025 paper `HiCM²`, which shows that broad lexical pairs such as `agentic` + `memory` on giant bibliographies are still far too weak for semantic-topic queries. Record this as a general semantic-search issue: planner search/query generation must treat `latest` and cross-venue topical queries as recency-aware semantic tasks, planner memory must distinguish high-value paper-detail pages from broad listing/bibliography/PDF pages, and extraction should not spend large budgets on bibliography-style pages when the lexical evidence is this weak.
 - 2026-03-31: Completed a small planner-memory slice against that `workspace/mem` failure class. `src/orchestrator/agentic_view.py` now exposes `memory.query_profile` (including `latest` / year-range cues) plus `memory.priority_direct_hits` for strong paper-detail hits already surfaced in search, and `src/orchestrator/agentic_contracts.py` now tells the planner to treat those direct hits as first-class options on latest/semantic queries instead of defaulting immediately to giant listings, bibliographies, or PDFs. As part of the same boundary, `src/orchestrator/agentic_text.py` now recognizes common poster/forum paper-detail URLs as detail pages for planner memory. Retrieval-focused tests now cover the new memory shape and pass (`8` focused tests; `128 passed` in `tests/test_retrieval_agentic_i1.py`).
+- 2026-04-02: Started E21 state consistency foundation (P0). Added `ExtractStateDelta` dataclass in `src/orchestrator/agentic_contracts.py` to represent state changes from extract runtime. Added `apply_extract_state_delta` in `src/orchestrator/agentic_state_apply.py` as the single function that mutates `extract_state_by_url`. Simplified `_reconcile_extract_todos_from_coverage` in `src/orchestrator/agentic_loop.py` to support explicit `target_urls` in todos (preferred) with fallback to text matching (backward compatible). Added `_validate_state_consistency` validator that runs after each extract action and fails the run if state inconsistencies are detected (duplicate URLs, orphaned state, coverage/todo drift). All 128 retrieval tests pass. Remaining work: refactor `_run_prepared_extract_target` to return state deltas instead of mutating directly, and add early return for completed pages.
 
 ### 3.2.7 Current Focus
 
@@ -271,16 +312,23 @@ Working rules for the next slices:
 
 ### 3.2.8 Active Priority Stack
 
+**Replanned 2026-04-02 based on third-party code review**
+
+The review identified that state consistency is foundational and must be fixed before planner memory improvements will be effective. Regression tests should be added in parallel to prevent regressions.
+
 Use this section first when deciding what to implement next.
 
 | Priority | Theme | Main owner | What remains | Supporting observations |
 |---|---|---|---|---|
-| `P0` | Query-aware planner memory | `agentic_view`, `agentic_contracts` | Represent `latest`, year ranges, author/institution/topic cues, page type, source quality, page family, and strong direct-hit papers clearly enough that the planner does not treat all URLs as peers. | `workspace/mem`, `workspace/alibabanew`, multi-year `SIGCOMM 2020-2022` |
-| `P1` | Query-aware extraction behavior | `agentic_extract_prepare`, `agentic_extract_runtime`, `agentic_text` | Keep author queries local-block accurate, topic queries continuation-oriented, and semantic queries abstract-aware instead of title-only. | `workspace/ennan`, `workspace/congestion`, `workspace/aiinfra` |
-| `P2` | Canonical state and result retention | `agentic_loop`, `agentic_state_apply`, `agentic_result` | Preserve strong early hits, stop no-op extract loops, and keep canonical state authoritative when pages are completed, failed, skipped, or later revisited. | `workspace/mem`, `workspace/alibabanew`, `workspace/ennan` |
-| `P3` | Human-facing trace | `cli`, `agentic_trace`, `agentic_loop` | Make repeated same-URL extraction, skip/retry reasons, and extracted-vs-dropped transitions visible in CLI and trajectory output. | `workspace/congestion`, `workspace/aiinfra`, `workspace/mem` |
-| `P4` | Metadata/result cleanup | `agentic_result`, enrichment path | Recover some `venue` / `doi` / `arxiv_url`, remove obsolete result fields, and stop listing-text pseudo-abstracts from looking complete. | `workspace/alibabanew` |
-| `P5` | Regression matrix | `tests/test_retrieval_agentic_i1.py`, replay fixtures | Add replay/fixture coverage for the query classes now known to fail differently. | all recent query families |
+| `P0` | **State consistency foundation** | `agentic_extract_runtime`, `agentic_state_apply`, `agentic_loop` | Fix direct state mutation bypass, simplify todo-URL matching, add state validators, stop no-op loops. Without this, all other fixes will be unreliable. | Coverage/todo drift in `workspace/alibabanew`, no-op cycles in `workspace/ennan`, wasted retries across all workspaces |
+| `P0` (parallel) | **Regression test matrix** | `tests/` | Add archetype-specific replay tests NOW for already-identified failure modes, not after more fixes. Prevent regressions while fixing root causes. | All query archetypes: author, topic narrow, topic broad, multi-year, latest semantic |
+| `P1` | **Query archetype detection** | `agentic_view`, `agentic_contracts`, `agentic_text` | Classify queries into archetypes (author/venue/topic/semantic/multi-year/latest) and use to adjust segmentation, memory priorities, and extraction budgets. | Wrong segmentation for `workspace/ennan`, missing latest signal for `workspace/mem`, multi-year planning failure |
+| `P1` | **Planner memory completeness** | `agentic_view`, `agentic_contracts` | Add missing dimensions: is_latest, year_range_progress, archetype, page quality scores, page type distribution. Strengthen direct hit prioritization. | `workspace/mem` direct hits ignored, `workspace/alibabanew` year range not tracked |
+| `P1` | **Extraction scope management** | `agentic_extract_runtime`, `agentic_view` | Fix same-page restart vs continuation by including filter pack in scope signature. Prevent surfaced-title self-poisoning. Track filter history. | `workspace/congestion` Falcon missed, `workspace/aiinfra` repeated scope resets |
+| `P2` | **Extraction quality by archetype** | `agentic_text`, `agentic_extract_candidates` | Archetype-specific extraction: block-preserving segmentation for author queries, semantic similarity for topic queries, abstract quality validation. | `workspace/ennan` wrong papers, `workspace/aiinfra` broad filter over-matching |
+| `P2` | **Page quality scoring and budget** | `agentic_view`, `agentic_extract_runtime` | Score pages by quality (official vs mirror, rich vs sparse). Add budget tiers per page type. Prioritize high-quality sources. | Third-party mirrors in `workspace/alibabanew`, giant pages consuming budget in `workspace/mem` |
+| `P3` | **Human-facing trace** | `cli`, `agentic_trace`, `agentic_loop` | Make repeated same-URL extraction, skip/retry reasons, and extracted-vs-dropped transitions visible in CLI and trajectory output. | `workspace/congestion`, `workspace/aiinfra`, `workspace/mem` |
+| `P4` | **Metadata/result cleanup** | `agentic_result`, enrichment path | Recover some `venue` / `doi` / `arxiv_url`, remove obsolete result fields, and stop listing-text pseudo-abstracts from looking complete. | `workspace/alibabanew` |
 
 ### 3.2.9 Supporting Evidence By Query Archetype
 
@@ -299,15 +347,40 @@ Use this section first when deciding what to implement next.
 
 ### 3.2.10 Active Next Slices
 
-| Slice | Status | Why active | Immediate next moves |
-|---|---|---|---|
-| `E13` query decomposition and search/selection for semantic tasks | Active | `latest` and semantic topic queries are still too surface-form and do not preserve strong direct hits through planning. | Make `latest` / recency explicit in search and planning; strengthen semantic query generation for topic-led queries; keep strong direct paper hits as first-class extract options through action selection and follow-up state. |
-| `E14` planner memory and canonical state | Active | Planner memory still under-specifies officialness, page richness, multi-year coverage, same-host sibling venues, and no-op completion state. | Add stronger page-type / source-quality / officialness signals; make multi-year/range coverage explicit; keep same-host sibling venues from satisfying the wrong venue goal; stop planner no-op loops on already completed pages; preserve strong direct-hit papers once extracted. |
-| `E15` extraction quality without new brittle heuristics | Active | The current failures are query-class specific: author blocks split, topic queries self-poison, and broad lexical semantic matching still overfires on giant pages. | Preserve local paper-block structure on accepted/program pages for author queries; avoid feeding surfaced titles back as literal filters too early; let abstract-level evidence outweigh title-only overlap when abstract-rich pages are available; revisit the fixed extract call cap only after ranked-window scope is under control. |
-| `E17` human-facing trace readability | Active | CLI and trajectory still hide why the same page was re-extracted, skipped, retried, or why extracted rows disappeared later. | Show continuation vs restart for repeated same-URL extraction; show effective filter / semantic-focus deltas; show skip/retry reasons; show when a real extracted row was later dropped by candidate shaping. |
-| `E18` metadata/result cleanup | Later | This matters, but retrieval stability is still the higher leverage problem. | Remove `authors_with_affiliations` and `abstract_snippet`; keep `author_affiliations` primary; add a narrow enrichment step for `venue` / `doi` / `arxiv_url` when clearly present; avoid listing text masquerading as full abstracts. |
-| `E19` keep PDF extraction out of the active queue | Guardrail | PDF work keeps distracting from the higher-value HTML and planner-memory problems. | Stay HTML-first by default; only reopen PDF work when a concrete replay/live case shows HTML is insufficient. |
-| `E20` regression matrix by query archetype | Active | The newer failures are no longer one bug class; they need query-class-specific regression coverage. | Add fixtures/replays for `workspace/ennan`, `workspace/congestion`, `workspace/aiinfra`, multi-year SIGCOMM 2020-2022, `workspace/mem`, direct-hit retention, and trajectory continuation-vs-restart projection. |
+**Replanned 2026-04-02 based on third-party code review (docs/third-party-review.md)**
+
+The review identified that many issues share common root causes. The slices below are consolidated to address multiple issues with focused fixes, ordered by foundational dependency.
+
+| Slice | Status | Priority | Issues Addressed | Concrete Next Moves |
+|---|---|---|---|---|
+| `E21` state consistency foundation | Active | **P0** | Direct mutation bypass, coverage/todo drift, no-op loops, wasted retries, missing validators | 1. Refactor `agentic_extract_runtime.py` to return state deltas instead of mutating `extract_state_by_url` directly (lines 273-297). 2. Route all state changes through `agentic_state_apply.py`. 3. Simplify `_reconcile_extract_todos_from_coverage` to use explicit URL/target_id references instead of text matching (lines 234-318). 4. Add state consistency validators that run after each cycle: assert coverage matches todos, no duplicate URLs, no orphaned state. 5. Add early-return with `skipped` status for completed pages to avoid no-op finalize. |
+| `E22` regression test matrix | Active | **P0** (parallel) | No archetype-specific tests, no state consistency tests | 1. Add `tests/test_retrieval_agentic_author.py` with workspace/ennan replay asserting CellFusion and XRON are found. 2. Add `tests/test_retrieval_agentic_topic.py` with workspace/congestion replay asserting Falcon is found. 3. Add `tests/test_retrieval_agentic_multiyear.py` with SIGCOMM 2020-2022 replay asserting all three years are covered. 4. Add `tests/test_retrieval_agentic_semantic.py` with workspace/mem replay asserting direct hits are prioritized. 5. Add state consistency tests asserting coverage/todo alignment after each cycle. |
+| `E23` query archetype detection | Active | **P1** | Missing archetype classification, wrong segmentation for author queries, missing latest signal, multi-year planning failure | 1. Add `query_profile.archetype` enum in `agentic_contracts.py`: `author`, `venue`, `topic`, `semantic`, `multi_year`, `latest`. 2. Implement archetype detection in `agentic_view.py::_build_agent_memory` based on query text analysis and filter presence. 3. Add `query_profile.is_latest` boolean derived from "latest" / "recent" keywords. 4. Add `query_profile.year_range_progress` dict for multi-year queries tracking which years have been searched/extracted. 5. Use archetype to adjust segmentation strategy in `agentic_text.py`: for `author` archetype on accepted pages, use block-preserving segmentation that keeps title+author pairs together. |
+| `E24` planner memory completeness | Active | **P1** | Missing memory dimensions, direct hits not prioritized, year range not tracked, page quality not scored | 1. Extend `_build_agent_memory` to include: `query_profile.is_latest`, `query_profile.year_range_progress`, `query_profile.archetype`, `page_type_distribution` (counts of listing/detail/PDF), `extract_progress_by_venue_family`. 2. Add per-URL quality scoring in `agentic_view.py` based on: domain authority (official conference vs third-party), page_role (accepted/program high quality), content richness. 3. Strengthen `priority_direct_hits` weighting: for `latest` and `semantic` archetypes, add quality threshold that triggers auto-extraction consideration. 4. Add planner contract guidance: for `latest` queries, extract direct hits before searching listings. 5. Include venue acronym in `page_family` computation to prevent same-host sibling venue confusion (HotNets vs SIGCOMM on usenix.org). |
+| `E25` extraction scope management | Active | **P1** | Same-page restart vs continuation, filter-pack drift, surfaced-title self-poisoning, repeated scope resets | 1. Include filter pack in scope signature computation in `agentic_extract_runtime.py` to detect when filters change. 2. Add `restart_reason` field to extract trace when `segments_done` resets to 0. 3. Track filter pack history per page to avoid repeating failed packs. 4. In `agentic_view.py`, sanitize `text_filters.literal_any` to remove already-matched paper titles from `matched_papers`. 5. Add planner contract guidance: do not use surfaced paper titles as literal filters in subsequent passes. 6. Prefer continuation over restart when page has partial progress (segments_done > 0). |
+| `E26` extraction quality by archetype | Active | **P2** | Author block segmentation, broad lexical over-matching, abstract quality, missing semantic similarity | 1. For `author` archetype on accepted/program pages, implement block-preserving segmentation in `agentic_text.py` that keeps title+author+affiliation in same segment. 2. For `topic` archetype, add semantic similarity matching in `agentic_extract_candidates.py` instead of just substring matching. 3. Cap window count for broad filters (e.g., max 50 windows per page for topic queries). 4. For `semantic` archetype, weight abstract-level evidence higher than title-only overlap. 5. Add abstract quality validation: minimum length, not just author names, not just title repetition, contains content words. 6. Require multiple filter matches for broad filters to reduce false positives. |
+| `E27` page quality scoring and budget | Active | **P2** | Third-party mirrors compete with official, low-quality pages consume budget, no budget tiers | 1. Implement quality scoring in `agentic_view.py`: score = domain_authority (0-1) * page_role_bonus (accepted=1.5, program=1.3, listing=1.0, detail=1.2, PDF=0.7) * content_richness (has_abstract=1.2). 2. Filter `priority_extract_urls` by quality threshold (e.g., score > 0.5). 3. Add budget tiers in `agentic_extract_runtime.py`: direct hits get full budget, official listings get medium budget (max 40 segments), third-party listings get low budget (max 20 segments), bibliographies get very low budget (max 10 segments). 4. Use quality scores to order extraction: high-quality pages first. 5. Add early termination for low-quality pages that show no candidates after first batch. |
+| `E17` human-facing trace readability | Active | **P2** | Hidden extraction details, no continuation/restart distinction, no filter deltas, None field printing | 1. In `agentic_trace.py`, add `restart_reason` and `filter_delta` to extract debug summary. 2. In `agentic_loop.py` CLI progress, show: continuation vs restart label, effective filter deltas, skip/retry reasons. 3. Show when extracted rows were later dropped by candidate shaping. 4. Fix `None` field printing in CLI output. 5. Show selected extract URLs at action start. 6. Show candidate-URL proposal stage when it runs. |
+| `E18` metadata/result cleanup | Later | **P3** | Result field redundancy, missing venue/doi/arxiv, abstract snippet vs full | Remove `authors_with_affiliations` and `abstract_snippet`; keep `author_affiliations` primary; add a narrow enrichment step for `venue` / `doi` / `arxiv_url` when clearly present; avoid listing text masquerading as full abstracts. |
+| `E19` keep PDF extraction out of the active queue | Guardrail | - | PDF distraction | Stay HTML-first by default; only reopen PDF work when a concrete replay/live case shows HTML is insufficient. |
+
+**Mapping to previous slices:**
+- `E21` supersedes parts of `E14` (state consistency) and addresses the foundational gap not explicitly called out before
+- `E22` replaces `E20` with concrete test file names and assertions
+- `E23` addresses parts of `E13`, `E14`, `E15` with a unified archetype-based approach
+- `E24` addresses parts of `E13`, `E14` with concrete memory field additions
+- `E25` addresses parts of `E15` with concrete scope signature and filter tracking
+- `E26` addresses parts of `E15` with archetype-specific extraction strategies
+- `E27` addresses gaps not explicitly mentioned in previous slices
+- `E17`, `E18`, `E19` remain as before
+
+**Execution order:**
+1. Start `E21` and `E22` in parallel (foundational fixes + test coverage)
+2. After `E21` completes, start `E23` (depends on state consistency)
+3. After `E23` completes, start `E24` and `E25` in parallel (both depend on archetype detection)
+4. After `E24` and `E25` complete, start `E26` and `E27` in parallel (both depend on memory completeness)
+5. `E17` can start anytime after `E21` (trace improvements benefit from state consistency)
+6. `E18` and `E19` remain lower priority
 
 ### 3.2.11 Notes On Completed Historical Slices
 
